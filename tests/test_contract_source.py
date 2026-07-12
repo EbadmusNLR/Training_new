@@ -28,6 +28,13 @@ class ContractSourceTest(unittest.TestCase):
         self.assertNotIn("opendss", text)
         self.assertIn("subtree", text)
 
+    def test_hybrid_current_decoder_is_local_and_solver_free(self):
+        text = (Path(__file__).parents[1] / "gridfm" / "hybrid_current.py").read_text().lower()
+        self.assertNotIn("linalg", text)
+        self.assertNotIn("opendss", text)
+        self.assertIn("decode_currents", text)
+        self.assertNotIn('"line"', text.split("safe_physics_stores", 1)[1].split(")", 1)[0])
+
 
 if __name__ == "__main__":
     unittest.main()
