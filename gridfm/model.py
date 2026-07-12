@@ -200,7 +200,7 @@ class EdgeStateGridFM(nn.Module):
                 cd.index_add_(0, comp, edge.new_ones(edge.shape[0], 1))
                 comp_msg[store] = cm if self.aggregation == "sum" else cm / cd.clamp_min(1)
 
-                if self.directional_sweeps:
+                if self.directional_sweeps and SPECS[store].terms > 1:
                     # For each multi-terminal component, aggregate latent
                     # evidence on the deeper side toward the source and source-
                     # side context toward descendants.  Exact (unclipped) BFS
