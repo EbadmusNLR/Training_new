@@ -9,4 +9,6 @@
   `Ibus + Icomp = YV`; KCL sums `Ibus`.
 - Never use a topology-specific mean computed from solved voltage targets.
 - Never promote a seen-topology-only result as foundational generalization.
-
+- Initial implementation commit: `6a7a8ba`.
+- Compute rule remains hard: PyG/corpus/training gates run through Slurm. The first submission
+  attempt was blocked by the agent sandbox's Slurm stream-socket restriction, not a code error.

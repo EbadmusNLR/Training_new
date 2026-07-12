@@ -16,4 +16,10 @@
 - Selected explicit component-terminal edge state, terminal voltage proposals, global graph
   state, and complex branch-drop supervision as the first architecture.
 - Per-feeder solved-voltage means are forbidden; voltage is represented as `V_init + dV`.
-
+- Commit `6a7a8ba` is the initial implementation checkpoint.
+- Python syntax compilation passed under `.venv-train`.
+- Both source-level contract tests passed when invoked directly. The environment does not
+  currently contain `pytest`, so the `pytest` runner itself is not yet a completed gate.
+- Slurm smoke submission was attempted with account `gogpt` and partition `gpu-h100s`, but
+  this agent execution environment rejected the Slurm stream socket. No PyG import, corpus
+  construction, or training was moved onto the login node as a workaround.
