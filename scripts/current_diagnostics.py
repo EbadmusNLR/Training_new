@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from gridfm.data import build_strict_datasets
 from gridfm.legacy import SPECS, i_offset, physics, store_width
 from gridfm.model import EdgeStateGridFM, load_compatible_state
+from gridfm.tree_current import decode_tree_line_currents
 
 
 def decode_edge_currents(batch, preds, aux: dict, clamp: float):
@@ -103,7 +104,8 @@ def main() -> int:
 
     modes = {name: {} for name in (
         "direct", "direct_kcl", "physics_pred_v", "physics_pred_v_kcl",
-        "physics_edge_v", "physics_edge_v_kcl", "physics_truth_v",
+        "physics_edge_v", "physics_edge_v_kcl", "tree_direct", "tree_direct_kcl",
+        "physics_truth_v", "tree_truth_current",
     )}
     family = {s: {
         "entries": 0, "pu_abs_sum": 0.0, "feat_abs_sum": 0.0,
@@ -120,14 +122,18 @@ def main() -> int:
             predv_kcl = physics.kcl_decode_vsource(batch, predv, clamp)
             edgev = decode_edge_currents(batch, direct, aux, clamp)
             edgev_kcl = physics.kcl_decode_vsource(batch, edgev, clamp)
+            tree = decode_tree_line_currents(batch, direct, clamp)
+            tree_kcl = physics.kcl_decode_vsource(batch, tree, clamp)
             truth = {"node": batch["node"].dv}
             truth.update({s: batch[s].x_true for s in SPECS})
             truthv = physics.decode_currents(batch, truth, clamp)
+            truth_tree = decode_tree_line_currents(batch, truth, clamp)
             variants = {
                 "direct": direct, "direct_kcl": direct_kcl,
                 "physics_pred_v": predv, "physics_pred_v_kcl": predv_kcl,
                 "physics_edge_v": edgev, "physics_edge_v_kcl": edgev_kcl,
-                "physics_truth_v": truthv,
+                "tree_direct": tree, "tree_direct_kcl": tree_kcl,
+                "physics_truth_v": truthv, "tree_truth_current": truth_tree,
             }
             per = {}
             for name, preds in variants.items():
