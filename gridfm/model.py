@@ -52,8 +52,10 @@ class EdgeStateGridFM(nn.Module):
                  condition_on_scale: bool = True, normalize_features: bool = False,
                  aggregation: str = "mean"):
         super().__init__()
-        if aggregation not in {"mean", "sum"}:
-            raise ValueError(f"aggregation must be mean or sum, got {aggregation!r}")
+        if aggregation not in {"mean", "local_sum", "sum"}:
+            raise ValueError(
+                f"aggregation must be mean, local_sum, or sum, got {aggregation!r}"
+            )
         self.hidden = hidden
         self.steps = steps
         self.condition_on_scale = condition_on_scale
@@ -138,7 +140,8 @@ class EdgeStateGridFM(nn.Module):
         if node_batch is None:
             node_batch = torch.zeros(nd.num_nodes, dtype=torch.long, device=hn.device)
         n_graph = int(node_batch.max().item()) + 1 if node_batch.numel() else 0
-        hg = _pool(hn, node_batch, n_graph, self.aggregation)
+        global_reduce = "sum" if self.aggregation == "sum" else "mean"
+        hg = _pool(hn, node_batch, n_graph, global_reduce)
         edge_state = {}
 
         for _ in range(self.steps):
@@ -170,7 +173,7 @@ class EdgeStateGridFM(nn.Module):
 
             if self.aggregation == "mean":
                 node_msg = node_msg / node_degree.clamp_min(1)
-            hg = self.global_gru(_pool(hn, node_batch, n_graph, self.aggregation), hg)
+            hg = self.global_gru(_pool(hn, node_batch, n_graph, global_reduce), hg)
             hn = self.node_norm(self.node_gru(torch.cat([node_msg, hg[node_batch]], 1), hn))
             for store in SPECS:
                 st = batch[store]
