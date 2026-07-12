@@ -1,8 +1,0 @@
-extends: e19_foundation_identifiable.yaml
-model:
-  icomp_current_skip: true
-train:
-  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e23_foundation_icomp_skip
-wandb:
-  name: e23_foundation_icomp_skip
-  tags: [h384, steps-12, foundation, identifiable-masking, icomp-physical-skip]
