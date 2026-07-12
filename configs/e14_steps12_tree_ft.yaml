@@ -1,0 +1,9 @@
+extends: e11_tree_ft_010.yaml
+model:
+  steps: 12
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e12_h384_steps12_ft/snapshot_current_e10.pt
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft
+wandb:
+  name: e14_steps12_tree_ft
+  tags: [h384, steps-12, differentiable-tree-current, tree-line-wape-010, fractional-finetune]
