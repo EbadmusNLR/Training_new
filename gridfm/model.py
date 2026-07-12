@@ -108,6 +108,10 @@ class EdgeStateGridFM(nn.Module):
                 edge = self.edge_update[store](torch.cat([
                     hc[store][comp], hn[node], self.slot_embedding[store](slot)
                 ], dim=1))
+                # Autocast may return BF16 from the edge MLP while recurrent
+                # states and index_add accumulators remain FP32. Accumulate in
+                # the state dtype; this is also more stable for high-degree buses.
+                edge = edge.to(dtype=hn.dtype)
                 edge_state[store] = edge
                 node_msg.index_add_(0, node, edge)
                 node_degree.index_add_(0, node, edge.new_ones(edge.shape[0], 1))
@@ -139,6 +143,7 @@ class EdgeStateGridFM(nn.Module):
             es = batch[(store, "conn", "node")]
             node = es.edge_index[1]
             proposal = self.edge_dv_head[store](edge_state[store])
+            proposal = proposal.to(dtype=node_base.dtype)
             edge_dv[store] = proposal
             if node.numel():
                 edge_sum.index_add_(0, node, proposal)
@@ -152,4 +157,3 @@ class EdgeStateGridFM(nn.Module):
         if return_aux:
             return preds, {"edge_dv": edge_dv, "node_base": node_base, "gate": gate}
         return preds
-
