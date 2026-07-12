@@ -120,6 +120,9 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     lc = cfg["loss"]
     ibus_wape = physical_ibus_wape_loss(batch, preds, clamp)
     line_wape = physical_ibus_wape_loss(batch, preds, clamp, ("line",))
+    reactor_wape = preds["node"].new_zeros(())
+    if float(cfg["loss"].get("lambda_reactor_wape", 0.0)):
+        reactor_wape = physical_ibus_wape_loss(batch, preds, clamp, ("reactor",))
     tree_wape = preds["node"].new_zeros(())
     tree_line_wape = preds["node"].new_zeros(())
     if float(lc.get("lambda_tree_wape", 0.0)) or float(
@@ -139,6 +142,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         + float(lc.get("lambda_kcl", 0.0)) * kcl
         + float(lc.get("lambda_ibus_wape", 0.0)) * ibus_wape
         + float(lc.get("lambda_line_wape", 0.0)) * line_wape
+        + float(lc.get("lambda_reactor_wape", 0.0)) * reactor_wape
         + float(lc.get("lambda_tree_wape", 0.0)) * tree_wape
         + float(lc.get("lambda_tree_line_wape", 0.0)) * tree_line_wape
     )
@@ -149,6 +153,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         "loss_elem": elem.item(), "loss_kcl": kcl.item(),
         "loss_ibus_wape": ibus_wape.item(),
         "loss_line_wape": line_wape.item(),
+        "loss_reactor_wape": reactor_wape.item(),
         "loss_tree_wape": tree_wape.item(),
         "loss_tree_line_wape": tree_line_wape.item(),
         **metrics, **pmetrics,
