@@ -28,6 +28,17 @@ sbatch smoke.sbatch
 
 Full fractional run: `sbatch run.sbatch`.
 
+For an already-open GPU allocation, run the complete corrected-corpus promotion gate from
+the compute-node shell:
+
+```bash
+cd /kfs2/projects/gogpt/Ebadmus/Training_new
+MAX_PARALLEL=5 bash scripts/run_e7_in_allocation.sh
+```
+
+It creates and validates `minimal_component_det2f`, runs the matched v3f/det2f ablations,
+selects only from unseen-topology validation metrics, and evaluates the winner once on test.
+
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out
 feeders using split-level WAPE percentages.
