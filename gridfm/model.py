@@ -22,7 +22,8 @@ def _mean_pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int) -> torch.Tens
 
 
 class MLP(nn.Sequential):
-    def __init__(self, din: int, dout: int, hidden: int, dropout: float = 0.0):
+    def __init__(self, din: int, dout: int, hidden: int, dropout: float = 0.0,
+                 zero_last: bool = False):
         super().__init__(
             nn.Linear(din, hidden),
             nn.SiLU(),
@@ -30,6 +31,9 @@ class MLP(nn.Sequential):
             nn.Dropout(dropout),
             nn.Linear(hidden, dout),
         )
+        if zero_last:
+            nn.init.zeros_(self[-1].weight)
+            nn.init.zeros_(self[-1].bias)
 
 
 class EdgeStateGridFM(nn.Module):
@@ -57,11 +61,16 @@ class EdgeStateGridFM(nn.Module):
         self.node_norm = nn.LayerNorm(hidden)
         self.comp_norm = nn.ModuleDict({s: nn.LayerNorm(hidden) for s in SPECS})
 
-        self.node_head = MLP(hidden, 2, hidden, dropout)
-        self.edge_dv_head = nn.ModuleDict({s: MLP(hidden, 2, hidden, dropout) for s in SPECS})
+        # Exact zero means V=V_init and I/Y feature predictions decode to zero.
+        # This is the safe physical baseline; random asinh-feature outputs can
+        # decode through sinh to catastrophic currents before the first update.
+        self.node_head = MLP(hidden, 2, hidden, dropout, zero_last=True)
+        self.edge_dv_head = nn.ModuleDict({
+            s: MLP(hidden, 2, hidden, dropout, zero_last=True) for s in SPECS
+        })
         self.node_edge_gate = MLP(2 * hidden, 1, hidden, dropout)
         self.field_head = nn.ModuleDict({
-            s: MLP(hidden, store_width(s), hidden, dropout) for s in SPECS
+            s: MLP(hidden, store_width(s), hidden, dropout, zero_last=True) for s in SPECS
         })
 
     def _encode(self, batch):
