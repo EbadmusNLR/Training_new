@@ -20,6 +20,14 @@ class ContractSourceTest(unittest.TestCase):
         self.assertGreater(cfg["data"]["val_frac"], 0)
         self.assertFalse(cfg["data"]["cast_float32"])
 
+    def test_tree_current_decoder_is_not_a_voltage_solver(self):
+        text = (Path(__file__).parents[1] / "gridfm" / "tree_current.py").read_text().lower()
+        self.assertNotIn("linalg", text)
+        self.assertNotIn("v_init", text)
+        self.assertNotIn(".dv", text)
+        self.assertNotIn("opendss", text)
+        self.assertIn("subtree", text)
+
 
 if __name__ == "__main__":
     unittest.main()
