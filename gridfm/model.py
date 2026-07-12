@@ -193,16 +193,17 @@ class EdgeStateGridFM(nn.Module):
                     # depth is structural only and never uses solved targets.
                     depth = getattr(nd, "depth_raw", nd.depth).to(edge.dtype)
                     edge_depth = depth[node]
-                    min_depth = edge_depth.new_full((st.num_nodes,), float("inf"))
+                    n_comp = hc[store].shape[0]
+                    min_depth = edge_depth.new_full((n_comp,), float("inf"))
                     min_depth.scatter_reduce_(
                         0, comp, edge_depth, reduce="amin", include_self=True
                     )
                     shallow = edge_depth <= min_depth[comp] + 1e-6
                     deep = ~shallow
-                    shallow_sum = edge.new_zeros(st.num_nodes, self.hidden)
-                    shallow_count = edge.new_zeros(st.num_nodes, 1)
-                    deep_sum = edge.new_zeros(st.num_nodes, self.hidden)
-                    deep_count = edge.new_zeros(st.num_nodes, 1)
+                    shallow_sum = edge.new_zeros(n_comp, self.hidden)
+                    shallow_count = edge.new_zeros(n_comp, 1)
+                    deep_sum = edge.new_zeros(n_comp, self.hidden)
+                    deep_count = edge.new_zeros(n_comp, 1)
                     if shallow.any():
                         shallow_sum.index_add_(0, comp[shallow], edge[shallow])
                         shallow_count.index_add_(
