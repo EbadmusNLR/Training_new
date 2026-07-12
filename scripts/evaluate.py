@@ -19,6 +19,7 @@ from gridfm.config import load_config
 from gridfm.legacy import physics, store_width
 from gridfm.model import EdgeStateGridFM, load_compatible_state
 from gridfm.current_projection import project_kcl
+from gridfm.tree_current import decode_tree_line_currents
 
 
 def main() -> int:
@@ -32,6 +33,8 @@ def main() -> int:
     ap.add_argument("--device")
     ap.add_argument("--kcl-vsource", action="store_true")
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
+    ap.add_argument("--tree-line", action="store_true",
+                    help="reconstruct paired radial line-series currents from KCL")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:
@@ -75,6 +78,8 @@ def main() -> int:
                     for k, v in model(batch).items()
                 }
             preds = physics.clamp_structural_zeros(batch, preds)
+            if args.tree_line:
+                preds = decode_tree_line_currents(batch, preds, clamp)
             if args.kcl_project:
                 preds = project_kcl(batch, preds, clamp, args.kcl_project)
             if args.kcl_vsource:
@@ -90,6 +95,7 @@ def main() -> int:
         "baseline": args.baseline, "split": args.split,
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
+        "tree_line": args.tree_line,
     }
     for key in {k[:-4] for k in sums if k.endswith("_num")}:
         den = sums.get(f"{key}_den", 0.0)
