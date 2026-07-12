@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=det2f_reencode
+#SBATCH --account=gogpt
+#SBATCH --partition=short
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
+#SBATCH --time=02:00:00
+#SBATCH --output=det2f-%j.out
+
+set -euo pipefail
+cd /kfs2/projects/gogpt/Ebadmus/DG_FM_DK
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+python scripts/generate_training_data/reencode_corpus.py \
+  --src /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2 \
+  --out /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \
+  --flags /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2/_audit_cache/line_triplex.pt \
+  --workers 32
+python scripts/validation.py scenario \
+  --search-root /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \
+  --scenario-max-rows 1 --quiet-info
+
