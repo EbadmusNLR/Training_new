@@ -12,3 +12,8 @@
 - Initial implementation commit: `6a7a8ba`.
 - Compute rule remains hard: PyG/corpus/training gates run through Slurm. The first submission
   attempt was blocked by the agent sandbox's Slurm stream-socket restriction, not a code error.
+- `asinh` is invertible and not the physics bug. The bad conditioning came from a collapsed
+  TriplexLine P95 current scale (`9.41e-10`) in `minimal_component_ifields`; use the validated,
+  exactly re-encoded `minimal_component_v3f` (`4.05e-6` floor) for E7 onward.
+- Current oracle with truth voltage is exact (`1.18e-5%` WAPE). Unseen line current, not loads or
+  transformers, is the remaining generalization bottleneck; increasing feeder coverage helps most.
