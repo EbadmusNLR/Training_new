@@ -27,8 +27,8 @@ det2f="$ROOT/training_data/minimal_component_det2f"
 if [[ ! -f "$det2f/feature_scaler.json" ]]; then
   workers="${REENCODE_WORKERS:-$(nproc)}"
   (( workers > 32 )) && workers=32
-  cd "$ROOT/DG_FM_DK"
-  "$PYTHON_BIN" scripts/generate_training_data/reencode_corpus.py \
+  cd "$HERE"
+  "$PYTHON_BIN" scripts/reencode_corpus.py \
     --src "$src" --out "$det2f" \
     --flags "$src/_audit_cache/line_triplex.pt" --workers "$workers" \
     2>&1 | tee "$HERE/allocation_logs/e7/det2f_reencode.log"
@@ -96,4 +96,3 @@ CUDA_VISIBLE_DEVICES=0 "$PYTHON_BIN" scripts/current_diagnostics.py \
   >"allocation_logs/e7/${winner}_current_diagnostics.log" 2>&1
 "$PYTHON_BIN" scripts/summarize_e7.py \
   2>&1 | tee "allocation_logs/e7/summary.txt"
-
