@@ -110,7 +110,11 @@ def reencode_feeder(feeder_name: str) -> str:
     eps = FEAT_EPS
 
     meta = torch.load(src / "static.pt", map_location="cpu", weights_only=False)
-    dyn = np.load(src / "dynamic.npy", allow_pickle=False).astype(np.float64)
+    source_dyn = np.load(src / "dynamic.npy", allow_pickle=False)
+    source_dtype = source_dyn.dtype
+    # Do the invertible coordinate change in float64, then preserve the corpus
+    # storage dtype declared by static.pt/schema metadata.
+    dyn = source_dyn.astype(np.float64)
     skel = meta["skeleton"]
 
     def fams_for(store_key: str, n: int) -> list[str]:
@@ -145,7 +149,9 @@ def reencode_feeder(feeder_name: str) -> str:
             dyn[:, off:off + numel] = np.arcsinh(np.sinh(block) * r[None]).reshape(dyn.shape[0], -1)
 
     out.mkdir(parents=True, exist_ok=True)
-    mm = np.lib.format.open_memmap(out / "dynamic.npy", mode="w+", dtype="<f8", shape=dyn.shape)
+    mm = np.lib.format.open_memmap(
+        out / "dynamic.npy", mode="w+", dtype=source_dtype, shape=dyn.shape
+    )
     mm[:] = dyn
     mm.flush()
     del mm
@@ -203,4 +209,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
