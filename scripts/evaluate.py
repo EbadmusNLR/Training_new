@@ -20,7 +20,7 @@ from gridfm.legacy import physics, store_width
 from gridfm.model import EdgeStateGridFM, load_compatible_state
 from gridfm.current_projection import project_kcl
 from gridfm.hybrid_current import decode_hybrid_device_currents
-from gridfm.tree_current import decode_tree_line_currents
+from gridfm.tree_current import decode_tree_line_currents, decode_tree_series_currents
 
 
 def main() -> int:
@@ -44,6 +44,8 @@ def main() -> int:
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
     ap.add_argument("--tree-line", action="store_true",
                     help="reconstruct paired radial line-series currents from KCL")
+    ap.add_argument("--tree-series", action="store_true",
+                    help="reconstruct reactor branches and then radial line currents")
     ap.add_argument("--hybrid-device", action="store_true",
                     help="decode non-stiff device currents from local complex physics")
     ap.add_argument("--output", type=Path)
@@ -131,7 +133,9 @@ def main() -> int:
             preds = physics.clamp_structural_zeros(batch, preds)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
-            if args.tree_line:
+            if args.tree_series:
+                preds = decode_tree_series_currents(batch, preds, clamp)
+            elif args.tree_line:
                 preds = decode_tree_line_currents(batch, preds, clamp)
             if args.kcl_project:
                 preds = project_kcl(batch, preds, clamp, args.kcl_project)
@@ -151,6 +155,7 @@ def main() -> int:
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
         "tree_line": args.tree_line,
+        "tree_series": args.tree_series,
         "hybrid_device": args.hybrid_device,
     }
     for key in {k[:-4] for k in sums if k.endswith("_num")}:

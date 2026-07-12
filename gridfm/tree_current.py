@@ -8,15 +8,15 @@ import torch
 from .legacy import FC, SPECS, i_offset, physics
 
 
-def decode_tree_line_currents(batch, preds, clamp: float):
-    """Reconstruct line series currents by subtree current accumulation.
+def _decode_tree_store_currents(batch, preds, clamp: float, series_store: str):
+    """Reconstruct one two-terminal series store by subtree accumulation.
 
     Learned non-line terminal currents and each line's learned shunt/common-mode
     current are preserved. For every conductor-wise line forest, KCL determines
     the remaining paired series current on each tree edge. One root residual per
     connected component remains for its source/transformer boundary.
     """
-    if batch["line"].num_nodes == 0:
+    if batch[series_store].num_nodes == 0:
         return preds
     xbar, _, _ = physics.completed(batch, preds)
     dev = preds["node"].device
@@ -24,9 +24,9 @@ def decode_tree_line_currents(batch, preds, clamp: float):
     q = torch.zeros((n_node, 2), dtype=torch.float64, device=dev)
     boundary: set[int] = set()
 
-    # Everything except lines is a known injection into each line forest.
+    # Everything except the selected series store is a known forest injection.
     for store in SPECS:
-        if store == "line" or batch[store].num_nodes == 0:
+        if store == series_store or batch[store].num_nodes == 0:
             continue
         st = batch[store]
         ni = i_offset(store)
@@ -42,13 +42,13 @@ def decode_tree_line_currents(batch, preds, clamp: float):
         if store in {"transformer", "vsource"}:
             boundary.update(int(v) for v in node.detach().cpu().tolist())
 
-    st = batch["line"]
-    ni = i_offset("line")
+    st = batch[series_store]
+    ni = i_offset(series_store)
     cur = physics.decode_completed(
-        xbar["line"][:, ni:].double(), st.scale[:, ni:].double(),
+        xbar[series_store][:, ni:].double(), st.scale[:, ni:].double(),
         st.msk[:, ni:], clamp,
     )
-    es = batch[("line", "conn", "node")]
+    es = batch[(series_store, "conn", "node")]
     comp_cpu, node_cpu, slot_cpu = (
         v.detach().cpu() for v in (es.edge_index[0], es.edge_index[1], es.slot)
     )
@@ -169,8 +169,19 @@ def decode_tree_line_currents(batch, preds, clamp: float):
 
     encoded = torch.asinh(out_cur / (st.scale[:, ni:].double() + 1e-12))
     out = dict(preds)
-    p = out["line"].clone()
+    p = out[series_store].clone()
     take = st.msk[:, ni:]
     p[:, ni:] = torch.where(take, encoded.to(p.dtype), p[:, ni:])
-    out["line"] = p
+    out[series_store] = p
     return out
+
+
+def decode_tree_line_currents(batch, preds, clamp: float):
+    """Reconstruct radial line currents while preserving learned devices."""
+    return _decode_tree_store_currents(batch, preds, clamp, "line")
+
+
+def decode_tree_series_currents(batch, preds, clamp: float):
+    """Reconstruct reactor branches first, then the radial line forest."""
+    out = _decode_tree_store_currents(batch, preds, clamp, "reactor")
+    return _decode_tree_store_currents(batch, out, clamp, "line")
