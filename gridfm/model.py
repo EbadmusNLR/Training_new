@@ -13,9 +13,11 @@ from torch import nn
 from .legacy import PE_DIM_EXT, SPECS, n_slots, store_width
 
 
-def _mean_pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int) -> torch.Tensor:
+def _pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int, reduce: str) -> torch.Tensor:
     out = x.new_zeros(n_graph, x.shape[-1])
     out.index_add_(0, batch, x)
+    if reduce == "sum":
+        return out
     count = x.new_zeros(n_graph, 1)
     count.index_add_(0, batch, x.new_ones(x.shape[0], 1))
     return out / count.clamp_min(1)
@@ -47,12 +49,16 @@ class EdgeStateGridFM(nn.Module):
     """Recurrent heterogeneous component-terminal operator learner."""
 
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
-                 condition_on_scale: bool = True, normalize_features: bool = False):
+                 condition_on_scale: bool = True, normalize_features: bool = False,
+                 aggregation: str = "mean"):
         super().__init__()
+        if aggregation not in {"mean", "sum"}:
+            raise ValueError(f"aggregation must be mean or sum, got {aggregation!r}")
         self.hidden = hidden
         self.steps = steps
         self.condition_on_scale = condition_on_scale
         self.normalize_features = normalize_features
+        self.aggregation = aggregation
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -132,7 +138,7 @@ class EdgeStateGridFM(nn.Module):
         if node_batch is None:
             node_batch = torch.zeros(nd.num_nodes, dtype=torch.long, device=hn.device)
         n_graph = int(node_batch.max().item()) + 1 if node_batch.numel() else 0
-        hg = _mean_pool(hn, node_batch, n_graph)
+        hg = _pool(hn, node_batch, n_graph, self.aggregation)
         edge_state = {}
 
         for _ in range(self.steps):
@@ -160,10 +166,11 @@ class EdgeStateGridFM(nn.Module):
                 cd = hc[store].new_zeros(hc[store].shape[0], 1)
                 cm.index_add_(0, comp, edge)
                 cd.index_add_(0, comp, edge.new_ones(edge.shape[0], 1))
-                comp_msg[store] = cm / cd.clamp_min(1)
+                comp_msg[store] = cm if self.aggregation == "sum" else cm / cd.clamp_min(1)
 
-            node_msg = node_msg / node_degree.clamp_min(1)
-            hg = self.global_gru(_mean_pool(hn, node_batch, n_graph), hg)
+            if self.aggregation == "mean":
+                node_msg = node_msg / node_degree.clamp_min(1)
+            hg = self.global_gru(_pool(hn, node_batch, n_graph, self.aggregation), hg)
             hn = self.node_norm(self.node_gru(torch.cat([node_msg, hg[node_batch]], 1), hn))
             for store in SPECS:
                 st = batch[store]
