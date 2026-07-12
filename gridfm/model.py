@@ -36,15 +36,24 @@ class MLP(nn.Sequential):
             nn.init.zeros_(self[-1].bias)
 
 
+class FeatureStats(nn.Module):
+    def __init__(self, width: int):
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(width))
+        self.register_buffer("std", torch.ones(width))
+
+
 class EdgeStateGridFM(nn.Module):
     """Recurrent heterogeneous component-terminal operator learner."""
 
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
-                 condition_on_scale: bool = True):
+                 condition_on_scale: bool = True, normalize_features: bool = False):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
         self.condition_on_scale = condition_on_scale
+        self.normalize_features = normalize_features
+        self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
         self.comp_encoder = nn.ModuleDict({
@@ -76,6 +85,12 @@ class EdgeStateGridFM(nn.Module):
             s: MLP(hidden, store_width(s), hidden, dropout, zero_last=True) for s in SPECS
         })
 
+    def set_feature_stats(self, stats: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
+        for store, (mean, std) in stats.items():
+            target = self.feature_stats[store]
+            target.mean.copy_(mean.to(device=target.mean.device, dtype=target.mean.dtype))
+            target.std.copy_(std.to(device=target.std.device, dtype=target.std.dtype))
+
     def _encode(self, batch):
         nd = batch["node"]
         dtype = next(self.node_encoder.parameters()).dtype
@@ -99,7 +114,11 @@ class EdgeStateGridFM(nn.Module):
             # Omitting it made unseen components' current feature targets
             # ambiguous even when their physical parameters were visible.
             log_scale = torch.log10(st.scale.to(dtype).clamp_min(1e-12)).clamp(-12, 12) / 12
-            parts = [st.x_true.to(dtype) * visible, visible, st.act.to(dtype)]
+            values = st.x_true.to(dtype)
+            if self.normalize_features:
+                stats = self.feature_stats[store]
+                values = (values - stats.mean.to(dtype)) / stats.std.to(dtype)
+            parts = [values * visible, visible, st.act.to(dtype)]
             if self.condition_on_scale:
                 parts.append(log_scale)
             x = torch.cat(parts, dim=1)
@@ -175,7 +194,23 @@ class EdgeStateGridFM(nn.Module):
         node_dv = node_base + gate * (edge_mean - node_base)
 
         preds = {"node": node_dv}
-        preds.update({s: self.field_head[s](hc[s]) for s in SPECS})
+        field_std = {}
+        for store in SPECS:
+            head = self.field_head[store](hc[store])
+            std = self.feature_stats[store].std.to(head.dtype)
+            preds[store] = head * std if self.normalize_features else head
+            field_std[store] = std
         if return_aux:
-            return preds, {"edge_dv": edge_dv, "node_base": node_base, "gate": gate}
+            return preds, {
+                "edge_dv": edge_dv, "node_base": node_base, "gate": gate,
+                "field_std": field_std,
+            }
         return preds
+
+
+def load_compatible_state(model: nn.Module, state: dict) -> None:
+    """Load pre-normalization checkpoints while rejecting unrelated mismatch."""
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    bad_missing = [key for key in missing if not key.startswith("feature_stats.")]
+    if bad_missing or unexpected:
+        raise RuntimeError(f"checkpoint mismatch: missing={bad_missing}, unexpected={unexpected}")

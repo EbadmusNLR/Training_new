@@ -17,11 +17,11 @@ from torch_geometric.loader import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from gridfm.data import build_strict_datasets
+from gridfm.data import build_strict_datasets, fit_feature_stats
 from gridfm.config import load_config
 from gridfm.legacy import physics
 from gridfm.losses import objective
-from gridfm.model import EdgeStateGridFM
+from gridfm.model import EdgeStateGridFM, load_compatible_state
 
 
 def loader(dataset, batch: int, workers: int, shuffle: bool, samples: int | None = None):
@@ -147,9 +147,13 @@ def main() -> int:
         model = model.double()
     elif model_dtype != "float32":
         raise ValueError(f"unsupported model.dtype={model_dtype}")
+    if bool(model_cfg.get("normalize_features")):
+        stats = fit_feature_stats(bundle.train, float(cfg["data"].get("feature_min_std", 1e-8)))
+        model.set_feature_stats(stats)
+        print("fitted train-only per-column feature normalization", flush=True)
     if cfg["train"].get("init_ckpt"):
         init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
-        model.load_state_dict(init["model"])
+        load_compatible_state(model, init["model"])
         print(f"initialized model from {cfg['train']['init_ckpt']}", flush=True)
     print(f"model parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     opt = torch.optim.AdamW(

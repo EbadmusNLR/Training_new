@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from gridfm.data import build_strict_datasets
 from gridfm.legacy import SPECS, i_offset, physics, store_width
-from gridfm.model import EdgeStateGridFM
+from gridfm.model import EdgeStateGridFM, load_compatible_state
 
 
 def add(dst: dict[str, float], src: dict[str, float]) -> None:
@@ -52,7 +52,7 @@ def main() -> int:
     model = EdgeStateGridFM(**model_cfg).to(device)
     if model_dtype == "float64":
         model = model.double()
-    model.load_state_dict(ck["model"])
+    load_compatible_state(model, ck["model"])
     model.eval()
     clamp = float(cfg["loss"]["feat_clamp"])
 
@@ -132,4 +132,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

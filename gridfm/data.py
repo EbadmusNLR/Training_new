@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
+
 from .legacy import build_datasets
 
 
@@ -53,3 +55,37 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
         test_feeders=tuple(sorted(test_names)),
     )
 
+
+def fit_feature_stats(dataset, min_std: float = 1e-8) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """Fit per-column feature mean/std on training feeders and variants only."""
+    from .legacy import SPECS, store_width
+
+    acc = {
+        s: {
+            "sum": torch.zeros(store_width(s), dtype=torch.float64),
+            "sq": torch.zeros(store_width(s), dtype=torch.float64),
+            "count": torch.zeros(store_width(s), dtype=torch.float64),
+        }
+        for s in SPECS
+    }
+    for idx in range(len(dataset)):
+        sample = dataset[idx]
+        for store in SPECS:
+            st = sample[store]
+            if st.num_nodes == 0:
+                continue
+            x, active = st.x_true.double(), st.act
+            acc[store]["sum"] += (x * active).sum(0)
+            acc[store]["sq"] += (x.square() * active).sum(0)
+            acc[store]["count"] += active.sum(0)
+    out = {}
+    for store, row in acc.items():
+        count = row["count"].clamp_min(1)
+        mean = row["sum"] / count
+        var = (row["sq"] / count - mean.square()).clamp_min(0)
+        std = var.sqrt()
+        # Constant/unseen columns keep identity scaling; subtracting their
+        # fitted mean is still useful when they are visible model inputs.
+        std = torch.where(std >= min_std, std, torch.ones_like(std))
+        out[store] = (mean, std)
+    return out

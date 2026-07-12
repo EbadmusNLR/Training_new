@@ -1,0 +1,13 @@
+extends: e3_scale_edge100.yaml
+model:
+  normalize_features: true
+data:
+  feature_min_std: 0.00000001
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e4_100
+train:
+  epochs: 150
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e4_norm_edge100
+wandb:
+  name: e4_norm_edge100
+  tags: [feature-normalized, scale-conditioned, edge-state, strict-topology-holdout, pf]
+

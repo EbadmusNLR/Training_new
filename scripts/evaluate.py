@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from gridfm.data import build_strict_datasets
 from gridfm.config import load_config
 from gridfm.legacy import physics, store_width
-from gridfm.model import EdgeStateGridFM
+from gridfm.model import EdgeStateGridFM, load_compatible_state
 
 
 def main() -> int:
@@ -49,7 +49,7 @@ def main() -> int:
         model = EdgeStateGridFM(**model_cfg).to(device)
         if model_dtype == "float64":
             model = model.double()
-        model.load_state_dict(ck["model"])
+        load_compatible_state(model, ck["model"])
         model.eval()
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}

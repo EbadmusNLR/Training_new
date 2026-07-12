@@ -6,7 +6,7 @@ import torch
 from .legacy import SPECS, i_offset, physics, y_width
 
 
-def balanced_reconstruction_loss(batch, preds, weights: dict):
+def balanced_reconstruction_loss(batch, preds, weights: dict, field_std: dict | None = None):
     """Normalize each physical field independently before weighting.
 
     A single entry-count average lets hundreds of component columns drown out
@@ -25,7 +25,10 @@ def balanced_reconstruction_loss(batch, preds, weights: dict):
         if st.num_nodes == 0:
             continue
         ny, ni = y_width(store), i_offset(store)
-        err2 = (preds[store] - st.x_true.to(preds[store].dtype)).pow(2)
+        err = preds[store] - st.x_true.to(preds[store].dtype)
+        if field_std is not None:
+            err = err / field_std[store].to(err.dtype).clamp_min(1e-12)
+        err2 = err.pow(2)
         for name, cols in (
             ("y", slice(0, ny)), ("icomp", slice(ny, ni)), ("ibus", slice(ni, None))
         ):
@@ -85,7 +88,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     recon, recon_parts = balanced_reconstruction_loss(
         batch, preds, cfg["loss"].get(
             "recon_weights", {"voltage": 1.0, "y": 1.0, "icomp": 1.0, "ibus": 1.0}
-        )
+        ), aux.get("field_std")
     )
     x_bar, vr, vi = physics.completed(batch, preds)
     elem, kcl, pmetrics = physics.physics_losses(batch, x_bar, vr, vi, clamp, s_kcl)
