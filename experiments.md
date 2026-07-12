@@ -37,3 +37,16 @@
 - Fixed inherited flag-cache bug: cache covered 40/2,000 feeders; missing Line/TriplexLine families now come from baseline JSON and fail closed.
 - Clean committed validator: `2,000/2,000` stores PASS (`Ibus + Icomp = YV`, KCL, float64 schema).
 - GPU matrix: normalized 400/1,000/2,000; raw 400; physical-Ibus-WAPE 400; hidden-256 400.
+
+## E8–E10 — topology/current solution (2026-07-12)
+
+| Model | Seen V / Ibus | Unseen V / Ibus | Verdict |
+|---|---:|---:|---|
+| mean H128, 2,000 | 1.832% / 8.673% | 2.904% / 28.213% | topology scale breaks old current floor |
+| WAPE H128, 2,000 | 2.001% / 6.084% | 3.011% / 24.261% | physical current objective helps |
+| WAPE H256 + tree current | 0.845% / 1.633% | 2.021% / 6.851% | current champion; test still sealed |
+
+- Tree current reconstructs paired line series flow by subtree KCL; it never reads voltage or invokes a PF/linear solve.
+- Unseen family WAPE: line `6.711%`, transformer `5.691%`, load `4.522%`, Vsource `7.066%`.
+- Oracle tree-current WAPE: `0.00000538%`; decoded-current contract is effectively exact.
+- Mean local aggregation beats naive sum/local-sum; explicit structural accumulation belongs in the current decoder.

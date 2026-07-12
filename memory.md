@@ -22,3 +22,6 @@
   to `minimal_component_det2f`, validate, then use `det2f` for production comparisons.
 - `det2f` must floor current scales only (`alpha_y=0`): flooring stiff Y coordinates exceeded the
   `1e-6` physics gate. Derive missing triplex flags from baseline JSON; the audit cache has only 40 feeders.
+- Current solution: train direct device currents with physical WAPE and H256 on all 2,000 feeders,
+  then reconstruct radial line series current by subtree KCL. This is solver-free and gives seen
+  `0.845% V / 1.633% Ibus`, unseen `2.021% / 6.851%`; test remains sealed until final selection.
