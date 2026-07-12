@@ -17,3 +17,6 @@
   exactly re-encoded `minimal_component_v3f` (`4.05e-6` floor) for E7 onward.
 - Current oracle with truth voltage is exact (`1.18e-5%` WAPE). Unseen line current, not loads or
   transformers, is the remaining generalization bottleneck; increasing feeder coverage helps most.
+- `minimal_component_v3f` fixes scale conditioning only. The later `minimal_component_det2`
+  fixes feeder wiring/determinacy but still has a collapsed TriplexLine scale; re-encode it exactly
+  to `minimal_component_det2f`, validate, then use `det2f` for production comparisons.

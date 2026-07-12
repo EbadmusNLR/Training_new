@@ -25,8 +25,8 @@
 | one-feeder I only | 1 | n.a. / 6.87% | n.a. | current head has finite interpolation floor |
 | E4 normalized | 400 | 0.624% / 5.13% | 3.322% / 70.84% | non-line devices learn; unseen line flow fails |
 | E5 physical WAPE | 200 | 1.378% / 4.42% | 3.305% / 73.66% | helps seen current, hurts voltage |
-| E6 topology scale | 1000 | 2.377% / 8.09% | 4.787% / 49.31% | epoch 35; topology coverage is strongest current lever |
+| E6 topology scale | 1000 | 2.287% / 7.00% | 4.664% / 48.19% | final epoch 50; topology coverage is strongest current lever |
 
 - Oracle decode using truth voltage: unseen aggregate current WAPE `0.0000118%`; data and current decoder pass.
 - Predicted voltage through the stiff physics decoder is unstable; direct current heads remain necessary.
-- Root cause found in the old corpus: TriplexLine `I_scale=9.41e-10`. E7 repeats matched runs on physics-equivalent `minimal_component_v3f` (`I_scale` floored to `4.05e-6`).
+- Old-corpus issue: TriplexLine `I_scale=9.41e-10`. E7 separates scale-only `v3f` from `det2f`, which also carries the later wiring/determinacy fixes; both use floored scales.
