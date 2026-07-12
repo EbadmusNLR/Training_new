@@ -88,7 +88,10 @@ def main() -> int:
             if args.physics_line_shunt:
                 preds = decode_hybrid_device_currents(batch, preds, clamp, ("line",))
             if args.tree_line:
-                preds = decode_tree_line_currents(batch, preds, clamp)
+                preds = decode_tree_line_currents(
+                    batch, preds, clamp,
+                    line_current_unclamped=args.physics_line_shunt,
+                )
             if args.kcl_project:
                 preds = project_kcl(batch, preds, clamp, args.kcl_project)
             if args.kcl_vsource:
