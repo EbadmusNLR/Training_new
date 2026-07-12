@@ -75,21 +75,22 @@ class EdgeStateGridFM(nn.Module):
 
     def _encode(self, batch):
         nd = batch["node"]
+        dtype = next(self.node_encoder.parameters()).dtype
         vis = nd.vis_v.unsqueeze(1)
         node_x = torch.cat([
-            nd.v_init.float(),
-            nd.dv.float() * vis,
-            vis.float(),
-            nd.ground.float().unsqueeze(1),
-            nd.slack.float().unsqueeze(1),
-            nd.pe[:, :PE_DIM_EXT].float(),
+            nd.v_init.to(dtype),
+            nd.dv.to(dtype) * vis,
+            vis.to(dtype),
+            nd.ground.to(dtype).unsqueeze(1),
+            nd.slack.to(dtype).unsqueeze(1),
+            nd.pe[:, :PE_DIM_EXT].to(dtype),
         ], dim=1)
         hn = self.node_encoder(node_x)
         hc = {}
         for store in SPECS:
             st = batch[store]
-            visible = st.vis.float()
-            x = torch.cat([st.x_true.float() * visible, visible, st.act.float()], dim=1)
+            visible = st.vis.to(dtype)
+            x = torch.cat([st.x_true.to(dtype) * visible, visible, st.act.to(dtype)], dim=1)
             hc[store] = self.comp_encoder[store](x)
         return hn, hc
 

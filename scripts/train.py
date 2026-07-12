@@ -74,8 +74,12 @@ def run_epoch(model, batches, cfg, device, s_kcl, optimizer=None, scheduler=None
                 raw, aux = model(batch, return_aux=True)
             # Physical inverse transforms stay outside autocast. Model outputs may
             # be float32 while the persisted truth and scales remain float64.
-            raw = {k: v.float() for k, v in raw.items()}
-            aux["edge_dv"] = {k: v.float() for k, v in aux["edge_dv"].items()}
+            raw = {k: v.float() if v.dtype in (torch.float16, torch.bfloat16) else v
+                   for k, v in raw.items()}
+            aux["edge_dv"] = {
+                k: v.float() if v.dtype in (torch.float16, torch.bfloat16) else v
+                for k, v in aux["edge_dv"].items()
+            }
             loss, preds, row = objective(batch, raw, aux, cfg, s_kcl)
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -135,7 +139,13 @@ def main() -> int:
     (out / "split_manifest.json").write_text(json.dumps(split_manifest, indent=2) + "\n")
     (out / "config_used.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
 
-    model = EdgeStateGridFM(**cfg["model"]).to(device)
+    model_cfg = dict(cfg["model"])
+    model_dtype = model_cfg.pop("dtype", "float32")
+    model = EdgeStateGridFM(**model_cfg).to(device)
+    if model_dtype == "float64":
+        model = model.double()
+    elif model_dtype != "float32":
+        raise ValueError(f"unsupported model.dtype={model_dtype}")
     if cfg["train"].get("init_ckpt"):
         init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
         model.load_state_dict(init["model"])

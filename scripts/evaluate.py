@@ -41,7 +41,11 @@ def main() -> int:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = None
     if ck is not None:
-        model = EdgeStateGridFM(**cfg["model"]).to(device)
+        model_cfg = dict(cfg["model"])
+        model_dtype = model_cfg.pop("dtype", "float32")
+        model = EdgeStateGridFM(**model_cfg).to(device)
+        if model_dtype == "float64":
+            model = model.double()
         model.load_state_dict(ck["model"])
         model.eval()
     sums: dict[str, float] = {}
@@ -61,7 +65,10 @@ def main() -> int:
                 preds = {"node": torch.zeros_like(batch["node"].dv)}
                 preds.update({s: torch.zeros_like(batch[s].x_true) for s in physics.SPECS})
             else:
-                preds = {k: v.float() for k, v in model(batch).items()}
+                preds = {
+                    k: v.float() if v.dtype in (torch.float16, torch.bfloat16) else v
+                    for k, v in model(batch).items()
+                }
             preds = physics.clamp_structural_zeros(batch, preds)
             if args.kcl_vsource:
                 preds = physics.kcl_decode_vsource(batch, preds, clamp)

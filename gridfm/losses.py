@@ -18,14 +18,14 @@ def balanced_reconstruction_loss(batch, preds, weights: dict):
     counts = {k: torch.zeros((), device=dev) for k in sums}
     nd = batch["node"]
     mv = nd.msk_v.unsqueeze(1)
-    sums["voltage"] += ((preds["node"] - nd.dv.float()).pow(2) * mv).sum()
+    sums["voltage"] += ((preds["node"] - nd.dv.to(preds["node"].dtype)).pow(2) * mv).sum()
     counts["voltage"] += 2 * mv.sum()
     for store in SPECS:
         st = batch[store]
         if st.num_nodes == 0:
             continue
         ny, ni = y_width(store), i_offset(store)
-        err2 = (preds[store] - st.x_true.float()).pow(2)
+        err2 = (preds[store] - st.x_true.to(preds[store].dtype)).pow(2)
         for name, cols in (
             ("y", slice(0, ny)), ("icomp", slice(ny, ni)), ("ibus", slice(ni, None))
         ):
@@ -52,8 +52,8 @@ def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
             continue
         # Every incidence is a physically meaningful local voltage state. Give
         # masked nodes full weight and visible nodes a small anchoring weight.
-        weight = torch.where(nd.msk_v[node], 1.0, 0.1).unsqueeze(1)
-        total = total + (weight * (pred - nd.dv[node].float()).pow(2)).sum()
+        weight = torch.where(nd.msk_v[node], 1.0, 0.1).to(pred.dtype).unsqueeze(1)
+        total = total + (weight * (pred - nd.dv[node].to(pred.dtype)).pow(2)).sum()
         count = count + 2 * weight.sum()
         if store != "line":
             continue
@@ -69,7 +69,7 @@ def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
                 continue
             n1, n2 = slot_node[valid, s], slot_node[valid, 4 + s]
             pdrop = slot_pred[valid, s] - slot_pred[valid, 4 + s]
-            tdrop = nd.dv[n1].float() - nd.dv[n2].float()
+            tdrop = nd.dv[n1].to(pred.dtype) - nd.dv[n2].to(pred.dtype)
             scale = tdrop.norm(dim=1, keepdim=True).clamp_min(drop_floor)
             drop_total = drop_total + torch.nn.functional.smooth_l1_loss(
                 pdrop / scale, tdrop / scale, reduction="sum"
