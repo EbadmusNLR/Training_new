@@ -1,0 +1,15 @@
+extends: e10_det2f_wape_h384_2000.yaml
+data:
+  samples_per_epoch: 8000
+loss:
+  lambda_tree_line_wape: 0.01
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/best/checkpoint.pt
+  epochs: 10
+  lr: 0.00003
+  warmup_steps: 0
+  eval_every: 5
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e11_tree_ft_001
+wandb:
+  name: e11_tree_ft_001
+  tags: [h384, differentiable-tree-current, tree-line-wape-001, fractional-finetune, strict-topology-holdout]

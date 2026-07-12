@@ -22,6 +22,7 @@ from gridfm.config import load_config
 from gridfm.legacy import physics
 from gridfm.losses import objective
 from gridfm.model import EdgeStateGridFM, load_compatible_state
+from gridfm.tree_current import decode_tree_line_currents
 
 
 def loader(dataset, batch: int, workers: int, shuffle: bool, samples: int | None = None):
@@ -90,10 +91,19 @@ def run_epoch(model, batches, cfg, device, s_kcl, optimizer=None, scheduler=None
         for key, value in row.items():
             logs.setdefault(key, []).append(float(value))
         if not training:
-            for key, value in physics.percentage_error_sums(
-                batch, preds, float(cfg["loss"]["feat_clamp"])
-            ).items():
-                wape_sums[key] = wape_sums.get(key, 0.0) + value
+            clamp = float(cfg["loss"]["feat_clamp"])
+            variants = {"": preds}
+            if float(cfg["loss"].get("lambda_tree_wape", 0.0)) or float(
+                cfg["loss"].get("lambda_tree_line_wape", 0.0)
+            ):
+                tree = decode_tree_line_currents(batch, preds, clamp)
+                variants["tree_"] = physics.kcl_decode_vsource(batch, tree, clamp)
+            for prefix, variant in variants.items():
+                for key, value in physics.percentage_error_sums(
+                    batch, variant, clamp
+                ).items():
+                    name = prefix + key
+                    wape_sums[name] = wape_sums.get(name, 0.0) + value
     out = {key: statistics.fmean(values) for key, values in logs.items()}
     if not training:
         for key in {k[:-4] for k in wape_sums if k.endswith("_num")}:
@@ -207,9 +217,9 @@ def main() -> int:
         print(
             f"epoch {epoch:03d} train={train_metrics.get('loss', float('nan')):.4e} "
             f"seen V/I={seen_metrics.get('V_wape_pct', float('nan')):.4f}%/"
-            f"{seen_metrics.get('Ibus_wape_pct', float('nan')):.3f}% "
+            f"{seen_metrics.get('tree_Ibus_wape_pct', seen_metrics.get('Ibus_wape_pct', float('nan'))):.3f}% "
             f"unseen V/I={unseen_metrics.get('V_wape_pct', float('nan')):.4f}%/"
-            f"{unseen_metrics.get('Ibus_wape_pct', float('nan')):.3f}%",
+            f"{unseen_metrics.get('tree_Ibus_wape_pct', unseen_metrics.get('Ibus_wape_pct', float('nan'))):.3f}%",
             flush=True,
         )
         if wb is not None:
@@ -220,7 +230,9 @@ def main() -> int:
             wb.log(flat, step=epoch)
         score_split = unseen_metrics or seen_metrics
         v = score_split.get("V_wape_pct", float("inf"))
-        i = score_split.get("Ibus_wape_pct", float("inf"))
+        i = score_split.get(
+            "tree_Ibus_wape_pct", score_split.get("Ibus_wape_pct", float("inf"))
+        )
         state = {
             "model": model.state_dict(), "optimizer": opt.state_dict(),
             "scheduler": sched.state_dict(), "epoch": epoch,

@@ -50,7 +50,7 @@ def main() -> int:
     for store in ("load", "transformer", "generator", "pvsystem", "storage"):
         grads = [p.grad for p in model.field_head[store].parameters() if p.grad is not None]
         norms[store] = sum(float(g.abs().sum()) for g in grads)
-    print(f"tree_line_wape={float(loss):.8f}")
+    print(f"tree_line_wape={float(loss.detach()):.8f}")
     print("device_head_gradient_l1=" + ",".join(f"{k}:{v:.6e}" for k, v in norms.items()))
     if norms["load"] <= 0 or norms["transformer"] <= 0:
         raise SystemExit("structural loss did not reach required device heads")
