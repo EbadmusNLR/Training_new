@@ -1,0 +1,11 @@
+extends: e7_det2f_norm2000.yaml
+data:
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e9_det2f_wape03_2000
+loss:
+  lambda_ibus_wape: 0.03
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e9_det2f_wape03_2000
+wandb:
+  name: e9_det2f_wape03_2000
+  tags: [det2-wiring, current-floor, physical-current-wape-003, topology-scale-2000, strict-topology-holdout, pf]
+
