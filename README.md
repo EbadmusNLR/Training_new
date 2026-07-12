@@ -21,7 +21,7 @@ evaluation live here.
 ## Quick gates
 
 ```bash
-python -m pytest -q
+python -m unittest discover -s tests -v
 python scripts/audit_contract.py --config configs/pf_fraction.yaml
 python scripts/train.py --config configs/pf_fraction.yaml --epochs 2 --device cpu
 python scripts/evaluate.py --config configs/pf_fraction.yaml --ckpt runs/pf_fraction/best_voltage.pt
@@ -30,4 +30,3 @@ python scripts/evaluate.py --config configs/pf_fraction.yaml --ckpt runs/pf_frac
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out
 feeders using split-level WAPE percentages.
-

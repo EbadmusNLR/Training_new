@@ -22,21 +22,28 @@ from gridfm.model import EdgeStateGridFM
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", type=Path, required=True)
-    ap.add_argument("--ckpt", type=Path, required=True)
+    ap.add_argument("--config", type=Path,
+                    help="dataset/config override; checkpoint config is authoritative by default")
+    ap.add_argument("--ckpt", type=Path)
+    ap.add_argument("--baseline", choices=("v_init",),
+                    help="evaluate a non-learned baseline instead of a checkpoint")
     ap.add_argument("--split", choices=("seen", "unseen", "test"), default="unseen")
     ap.add_argument("--device")
     ap.add_argument("--kcl-vsource", action="store_true")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
-    cfg = yaml.safe_load(args.config.read_text())
+    if not args.ckpt and not args.baseline:
+        ap.error("provide --ckpt or --baseline")
+    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
+    cfg = yaml.safe_load(args.config.read_text()) if args.config else ck["cfg"]
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = EdgeStateGridFM(**cfg["model"]).to(device)
-    ck = torch.load(args.ckpt, map_location=device, weights_only=False)
-    model.load_state_dict(ck["model"])
-    model.eval()
+    model = None
+    if ck is not None:
+        model = EdgeStateGridFM(**cfg["model"]).to(device)
+        model.load_state_dict(ck["model"])
+        model.eval()
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
     batches = DataLoader(dataset, batch_size=int(cfg["train"]["batch_size"]), shuffle=False,
@@ -45,7 +52,11 @@ def main() -> int:
     with torch.no_grad():
         for batch in batches:
             batch = batch.to(device)
-            preds = {k: v.float() for k, v in model(batch).items()}
+            if args.baseline == "v_init":
+                preds = {"node": torch.zeros_like(batch["node"].dv)}
+                preds.update({s: torch.zeros_like(batch[s].x_true) for s in physics.SPECS})
+            else:
+                preds = {k: v.float() for k, v in model(batch).items()}
             preds = physics.clamp_structural_zeros(batch, preds)
             if args.kcl_vsource:
                 preds = physics.kcl_decode_vsource(batch, preds, clamp)
@@ -58,7 +69,8 @@ def main() -> int:
             for key, value in pm.items():
                 metric_rows.setdefault(key, []).append(float(value))
     report = {
-        "checkpoint": str(args.ckpt), "split": args.split,
+        "checkpoint": str(args.ckpt) if args.ckpt else None,
+        "baseline": args.baseline, "split": args.split,
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
     }
     for key in {k[:-4] for k in sums if k.endswith("_num")}:
@@ -75,4 +87,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
