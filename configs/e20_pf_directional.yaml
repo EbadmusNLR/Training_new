@@ -6,7 +6,7 @@ train:
   epochs: 15
   lr: 0.00003
   eval_every: 5
-  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e20_pf_directional
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e20_pf_directional_v2
 wandb:
-  name: e20_pf_directional
+  name: e20_pf_directional_v2
   tags: [h384, steps-12, pf, differentiable-tree-current, bidirectional-sweeps]

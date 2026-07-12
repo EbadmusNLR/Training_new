@@ -2,7 +2,7 @@ extends: e20_foundation_directional.yaml
 model:
   role_residual_heads: true
 train:
-  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e21_foundation_directional_roleheads
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e21_foundation_directional_roleheads_v2
 wandb:
-  name: e21_foundation_directional_roleheads
+  name: e21_foundation_directional_roleheads_v2
   tags: [h384, steps-12, foundation, identifiable-masking, bidirectional-sweeps, role-heads]
