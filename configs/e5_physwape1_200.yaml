@@ -1,0 +1,9 @@
+extends: e4_norm_edge200.yaml
+loss:
+  lambda_ibus_wape: 1.0
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e5_physwape1_200
+wandb:
+  name: e5_physwape1_200
+  tags: [feature-normalized, physical-ibus-wape-1, topology-scale, pf]
+

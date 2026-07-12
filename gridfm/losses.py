@@ -81,6 +81,25 @@ def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
     return total / count.clamp_min(1), drop_total / drop_count.clamp_min(1)
 
 
+def physical_ibus_wape_loss(batch, preds, clamp: float):
+    """Differentiable aggregate Ibus WAPE in pu, never feature coordinates."""
+    num = preds["node"].new_zeros(())
+    den = preds["node"].new_zeros(())
+    for store in SPECS:
+        st = batch[store]
+        if st.num_nodes == 0:
+            continue
+        ni = i_offset(store)
+        mask = st.msk[:, ni:]
+        if not mask.any():
+            continue
+        pred = physics.decode(preds[store][:, ni:], st.scale[:, ni:], clamp)
+        truth = physics.decode_truth(st.x_true[:, ni:], st.scale[:, ni:])
+        num = num + (pred - truth).abs()[mask].sum()
+        den = den + truth.abs()[mask].sum()
+    return num / den.clamp_min(1e-12)
+
+
 def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     clamp = float(cfg["loss"]["feat_clamp"])
     preds = physics.clamp_structural_zeros(batch, raw_preds)
@@ -93,6 +112,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     x_bar, vr, vi = physics.completed(batch, preds)
     elem, kcl, pmetrics = physics.physics_losses(batch, x_bar, vr, vi, clamp, s_kcl)
     edge, drop = edge_voltage_loss(batch, aux, float(cfg["loss"].get("drop_floor", 1e-4)))
+    ibus_wape = physical_ibus_wape_loss(batch, preds, clamp)
     lc = cfg["loss"]
     loss = (
         float(lc.get("lambda_recon", lc.get("lambda_mask", 1.0))) * recon
@@ -100,12 +120,14 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         + float(lc.get("lambda_drop", 0.0)) * drop
         + float(lc.get("lambda_elem", 0.0)) * elem
         + float(lc.get("lambda_kcl", 0.0)) * kcl
+        + float(lc.get("lambda_ibus_wape", 0.0)) * ibus_wape
     )
     logs = {
         "loss": loss.item(), "loss_mask": mask_loss.item(), "loss_recon": recon.item(),
         **{f"loss_{k}": value.item() for k, value in recon_parts.items()},
         "loss_edge": edge.item(), "loss_drop": drop.item(),
         "loss_elem": elem.item(), "loss_kcl": kcl.item(),
+        "loss_ibus_wape": ibus_wape.item(),
         **metrics, **pmetrics,
     }
     return loss, preds, logs
