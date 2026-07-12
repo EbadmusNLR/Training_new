@@ -93,6 +93,7 @@ def main() -> int:
             models.append(member)
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
+    feasibility = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
     workers = int(cfg["data"].get("num_workers", 0))
     batches = DataLoader(
         dataset, batch_size=int(cfg["train"]["batch_size"]), shuffle=False,
@@ -139,6 +140,23 @@ def main() -> int:
                 preds = physics.kcl_decode_vsource(batch, preds, clamp)
             for key, value in physics.percentage_error_sums(batch, preds, clamp).items():
                 sums[key] = sums.get(key, 0.0) + value
+            nd = batch["node"]
+            score_v = nd.msk_v
+            if score_v.any():
+                vhat = nd.v_init + torch.where(
+                    nd.msk_v.unsqueeze(1), preds["node"].to(nd.dv.dtype), nd.dv
+                )
+                vtrue = nd.v_init + nd.dv
+                pred_bad = (vhat[score_v].norm(dim=1) < 0.95) | (
+                    vhat[score_v].norm(dim=1) > 1.05
+                )
+                true_bad = (vtrue[score_v].norm(dim=1) < 0.95) | (
+                    vtrue[score_v].norm(dim=1) > 1.05
+                )
+                feasibility["tp"] += int((pred_bad & true_bad).sum())
+                feasibility["fp"] += int((pred_bad & ~true_bad).sum())
+                feasibility["tn"] += int((~pred_bad & ~true_bad).sum())
+                feasibility["fn"] += int((~pred_bad & true_bad).sum())
             xbar, vr, vi = physics.completed(batch, preds)
             _, _, pm = physics.physics_losses(batch, xbar, vr, vi, clamp, skcl)
             for key, value in pm.items():
@@ -158,6 +176,16 @@ def main() -> int:
         if den > 0:
             report[f"{key}_wape_pct"] = 100.0 * sums[f"{key}_num"] / den
     report.update({k: statistics.fmean(v) for k, v in metric_rows.items()})
+    tp, fp, tn, fn = (feasibility[k] for k in ("tp", "fp", "tn", "fn"))
+    total = tp + fp + tn + fn
+    if total:
+        report.update({
+            "feasibility_accuracy": (tp + tn) / total,
+            "feasibility_precision": tp / max(1, tp + fp),
+            "feasibility_recall": tp / max(1, tp + fn),
+            "feasibility_f1": 2 * tp / max(1, 2 * tp + fp + fn),
+            "feasibility_violation_rate": (tp + fn) / total,
+        })
     payload = json.dumps(report, indent=2, sort_keys=True)
     print(payload)
     if args.output:
