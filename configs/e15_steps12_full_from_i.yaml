@@ -1,0 +1,11 @@
+extends: e14_steps12_tree_ft.yaml
+data:
+  samples_per_epoch: 34000
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_current.pt
+  epochs: 10
+  lr: 0.00001
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e15_steps12_full_from_i
+wandb:
+  name: e15_steps12_full_from_i
+  tags: [h384, steps-12, tree-line-wape-010, full-exposure, current-init]

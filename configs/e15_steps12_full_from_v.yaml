@@ -1,0 +1,7 @@
+extends: e15_steps12_full_from_i.yaml
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_voltage.pt
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e15_steps12_full_from_v
+wandb:
+  name: e15_steps12_full_from_v
+  tags: [h384, steps-12, tree-line-wape-010, full-exposure, voltage-init]
