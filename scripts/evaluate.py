@@ -31,7 +31,7 @@ def main() -> int:
     ap.add_argument("--split", choices=("seen", "unseen", "test"), default="unseen")
     ap.add_argument("--device")
     ap.add_argument("--kcl-vsource", action="store_true")
-    ap.add_argument("--kcl-project", choices=("equal", "series"))
+    ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:

@@ -13,7 +13,7 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
     line/transformer/source terminals. `equal` uses the minimum-norm equal
     correction over all incident terminals.
     """
-    if mode not in {"equal", "series"}:
+    if mode not in {"equal", "series", "line"}:
         raise ValueError(mode)
     xbar, _, _ = physics.completed(batch, preds)
     dev = preds["node"].device
@@ -41,7 +41,10 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
         sum_i.index_add_(0, node, ii)
         ones = torch.ones_like(ir)
         all_count.index_add_(0, node, ones)
-        if store in {"line", "transformer", "vsource"}:
+        correctable = {"line", "vsource"} if mode == "line" else {
+            "line", "transformer", "vsource"
+        }
+        if store in correctable:
             series_count.index_add_(0, node, ones)
         if store == "vsource":
             source_count.index_add_(0, node, ones)
@@ -55,13 +58,17 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
         if mode == "equal":
             weight = 1.0 / all_count[node].clamp_min(1)
         else:
-            is_series = store in {"line", "transformer", "vsource"}
+            correctable = {"line", "vsource"} if mode == "line" else {
+                "line", "transformer", "vsource"
+            }
+            is_series = store in correctable
             use_series = series_count[node] > 0
             weight = torch.where(
                 use_series,
                 torch.full_like(series_count[node], float(is_series)) /
                 series_count[node].clamp_min(1),
-                1.0 / all_count[node].clamp_min(1),
+                torch.zeros_like(series_count[node]) if mode == "line"
+                else 1.0 / all_count[node].clamp_min(1),
             )
             # The source terminal is the unique slack-current degree of freedom.
             if store == "vsource":
@@ -79,4 +86,3 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
         p[:, ni:] = torch.where(take, encoded.to(p.dtype), p[:, ni:])
         out[store] = p
     return out
-
