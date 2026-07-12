@@ -25,3 +25,11 @@
   then reconstruct radial line series current by subtree KCL. It is solver-free and gives seen
   `0.570% V / 1.368% Ibus`, unseen validation `1.767% / 6.732%`, and sealed test
   `2.124% / 6.888%`. The selected checkpoint is hash-pinned by `runs/final_selection.json`.
+- Do not call legacy `topo`, `sysid`, or `ctrl` masks foundation capabilities: topology is visible,
+  system identification is single-snapshot/underdetermined, and explicit control labels are absent.
+- Masked-Y tasks must set `model.use_electrical_pe: false`; the final PE coordinate is computed from true
+  variant-0 Y. Use `se_known`, `param_one`, and `injection` for identifiable inverse tasks.
+- Generic random masking must preserve complex pairs, structural zeros, all-bus `V_init`, and solved slack
+  voltage. Train it after identifiable pretraining; starting with all random tasks caused severe interference.
+- WAPE is not dominated by tiny currents: truth above `0.1 pu` accounts for `88.6%` of unseen error.
+- A reactor is not a simple paired line edge: reactor-first subtree decoding worsened Ibus to `10.43%`.
