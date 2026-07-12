@@ -1,0 +1,8 @@
+extends: e19_foundation_identifiable.yaml
+model:
+  directional_sweeps: true
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e20_foundation_directional
+wandb:
+  name: e20_foundation_directional
+  tags: [h384, steps-12, foundation, identifiable-masking, bidirectional-sweeps]

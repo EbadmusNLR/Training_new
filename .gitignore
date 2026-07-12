@@ -11,5 +11,6 @@ logs/
 slurm-*.out
 eval-*.out
 syntax-*.out
+mask-gate-*.out
 *.pt
 *.npy

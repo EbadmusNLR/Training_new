@@ -50,7 +50,8 @@ class EdgeStateGridFM(nn.Module):
 
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
                  condition_on_scale: bool = True, normalize_features: bool = False,
-                 aggregation: str = "mean", use_electrical_pe: bool = True):
+                 aggregation: str = "mean", use_electrical_pe: bool = True,
+                 directional_sweeps: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -62,6 +63,7 @@ class EdgeStateGridFM(nn.Module):
         self.normalize_features = normalize_features
         self.aggregation = aggregation
         self.use_electrical_pe = use_electrical_pe
+        self.directional_sweeps = directional_sweeps
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -76,6 +78,9 @@ class EdgeStateGridFM(nn.Module):
         self.edge_update = nn.ModuleDict({
             s: MLP(edge_in, hidden, hidden, dropout) for s in SPECS
         })
+        # Zero initialization makes old checkpoints exactly equivalent until a
+        # directional fine-tune learns leaf-to-root and root-to-leaf messages.
+        self.directional_update = MLP(2 * hidden, hidden, hidden, dropout, zero_last=True)
         self.node_gru = nn.GRUCell(2 * hidden, hidden)
         self.comp_gru = nn.ModuleDict({s: nn.GRUCell(2 * hidden, hidden) for s in SPECS})
         self.global_gru = nn.GRUCell(hidden, hidden)
@@ -155,6 +160,8 @@ class EdgeStateGridFM(nn.Module):
         for _ in range(self.steps):
             node_msg = hn.new_zeros(hn.shape)
             node_degree = hn.new_zeros(hn.shape[0], 1)
+            up_msg = hn.new_zeros(hn.shape)
+            down_msg = hn.new_zeros(hn.shape)
             comp_msg = {}
             for store in SPECS:
                 es = batch[(store, "conn", "node")]
@@ -179,8 +186,46 @@ class EdgeStateGridFM(nn.Module):
                 cd.index_add_(0, comp, edge.new_ones(edge.shape[0], 1))
                 comp_msg[store] = cm if self.aggregation == "sum" else cm / cd.clamp_min(1)
 
+                if self.directional_sweeps:
+                    # For each multi-terminal component, aggregate latent
+                    # evidence on the deeper side toward the source and source-
+                    # side context toward descendants.  Exact (unclipped) BFS
+                    # depth is structural only and never uses solved targets.
+                    depth = getattr(nd, "depth_raw", nd.depth).to(edge.dtype)
+                    edge_depth = depth[node]
+                    min_depth = edge_depth.new_full((st.num_nodes,), float("inf"))
+                    min_depth.scatter_reduce_(
+                        0, comp, edge_depth, reduce="amin", include_self=True
+                    )
+                    shallow = edge_depth <= min_depth[comp] + 1e-6
+                    deep = ~shallow
+                    shallow_sum = edge.new_zeros(st.num_nodes, self.hidden)
+                    shallow_count = edge.new_zeros(st.num_nodes, 1)
+                    deep_sum = edge.new_zeros(st.num_nodes, self.hidden)
+                    deep_count = edge.new_zeros(st.num_nodes, 1)
+                    if shallow.any():
+                        shallow_sum.index_add_(0, comp[shallow], edge[shallow])
+                        shallow_count.index_add_(
+                            0, comp[shallow], edge.new_ones(int(shallow.sum()), 1)
+                        )
+                    if deep.any():
+                        deep_sum.index_add_(0, comp[deep], edge[deep])
+                        deep_count.index_add_(
+                            0, comp[deep], edge.new_ones(int(deep.sum()), 1)
+                        )
+                    shallow_mean = shallow_sum / shallow_count.clamp_min(1)
+                    deep_mean = deep_sum / deep_count.clamp_min(1)
+                    if shallow.any():
+                        up_msg.index_add_(0, node[shallow], deep_mean[comp[shallow]])
+                    if deep.any():
+                        down_msg.index_add_(0, node[deep], shallow_mean[comp[deep]])
+
             if self.aggregation == "mean":
                 node_msg = node_msg / node_degree.clamp_min(1)
+            if self.directional_sweeps:
+                node_msg = node_msg + self.directional_update(
+                    torch.cat([up_msg, down_msg], dim=1)
+                )
             hg = self.global_gru(_pool(hn, node_batch, n_graph, global_reduce), hg)
             hn = self.node_norm(self.node_gru(torch.cat([node_msg, hg[node_batch]], 1), hn))
             for store in SPECS:
@@ -229,6 +274,7 @@ class EdgeStateGridFM(nn.Module):
 def load_compatible_state(model: nn.Module, state: dict) -> None:
     """Load pre-normalization checkpoints while rejecting unrelated mismatch."""
     missing, unexpected = model.load_state_dict(state, strict=False)
-    bad_missing = [key for key in missing if not key.startswith("feature_stats.")]
+    allowed_missing = ("feature_stats.", "directional_update.")
+    bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
     if bad_missing or unexpected:
         raise RuntimeError(f"checkpoint mismatch: missing={bad_missing}, unexpected={unexpected}")

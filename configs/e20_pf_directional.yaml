@@ -1,0 +1,12 @@
+extends: e14_steps12_tree_ft.yaml
+model:
+  directional_sweeps: true
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_current.pt
+  epochs: 15
+  lr: 0.00003
+  eval_every: 5
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e20_pf_directional
+wandb:
+  name: e20_pf_directional
+  tags: [h384, steps-12, pf, differentiable-tree-current, bidirectional-sweeps]
