@@ -1,0 +1,15 @@
+extends: e1_voltage_only.yaml
+model:
+  normalize_features: true
+data:
+  feature_min_std: 0.00000001
+loss:
+  recon_weights: {voltage: 0.0, y: 0.0, icomp: 0.0, ibus: 1.0}
+  lambda_ibus_wape: 0.1
+train:
+  epochs: 300
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e1_current_only
+wandb:
+  name: e1_current_only
+  tags: [capacity-gate, current-only, feature-normalized, line-load, pf]
+
