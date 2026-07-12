@@ -1,0 +1,12 @@
+extends: e8_det2f_sum2000.yaml
+data:
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e8_det2f_sum_h256_2000
+model:
+  hidden: 256
+train:
+  batch_size: 96
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e8_det2f_sum_h256_2000
+wandb:
+  name: e8_det2f_sum_h256_2000
+  tags: [det2-wiring, current-floor, sum-aggregation, hidden-256, topology-scale-2000, strict-topology-holdout, pf]
+
