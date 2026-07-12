@@ -1,0 +1,13 @@
+extends: e3_scale_edge100.yaml
+data:
+  train_variants: 80
+  eval_variants: 20
+  samples_per_epoch: 6880
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e3_100_s80
+train:
+  epochs: 100
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e3_scale_edge100_s80
+wandb:
+  name: e3_scale_edge100_s80
+  tags: [sample-scale, scale-conditioned, edge-state, strict-topology-holdout, pf]
+

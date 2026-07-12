@@ -1,0 +1,12 @@
+extends: e3_scale_edge100.yaml
+data:
+  limit_feeders: 200
+  samples_per_epoch: 3440
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e3_200
+train:
+  epochs: 100
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e3_scale_edge200
+wandb:
+  name: e3_scale_edge200
+  tags: [topology-scale, scale-conditioned, edge-state, strict-topology-holdout, pf]
+
