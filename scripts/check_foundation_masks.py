@@ -42,7 +42,7 @@ def role_counts(data) -> dict[str, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", type=Path, default=Path("configs/e19_foundation_identifiable.yaml"))
+    ap.add_argument("--config", type=Path, default=Path("configs/e22_foundation_random.yaml"))
     ap.add_argument("--limit-feeders", type=int, default=20)
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -50,7 +50,7 @@ def main() -> int:
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
 
     rows = {}
-    for task in ("pf", "se_known", "param_one", "injection"):
+    for task in ("pf", "se_known", "param_one", "injection", "random"):
         data = sample_for(bundle, task)
         assert_boundary(data)
         rows[task] = role_counts(data)
@@ -63,6 +63,7 @@ def main() -> int:
     assert param["Y"] > 0 and param["V"] == param["Icomp"] == param["Ibus"] == 0
     inj = rows["injection"]
     assert inj["Icomp"] > 0 and inj["V"] == inj["Y"] == inj["Ibus"] == 0
+    assert all(rows["random"][role] > 0 for role in ("V", "Y", "Icomp", "Ibus"))
 
     # param_one must select exactly one active triangular position in every
     # non-empty component row and pair all stored real/imaginary Y fields.
