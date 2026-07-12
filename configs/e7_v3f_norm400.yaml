@@ -1,0 +1,10 @@
+extends: e4_norm_edge400.yaml
+data:
+  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_v3f
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e7_v3f_400
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_v3f_norm400
+wandb:
+  name: e7_v3f_norm400
+  tags: [v3f-floored-scales, feature-normalized, topology-scale-400, strict-topology-holdout, pf]
+
