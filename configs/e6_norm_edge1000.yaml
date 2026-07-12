@@ -1,0 +1,14 @@
+extends: e4_norm_edge100.yaml
+data:
+  limit_feeders: 1000
+  samples_per_epoch: 17000
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e6_1000
+train:
+  epochs: 50
+  batch_size: 192
+  eval_every: 5
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e6_norm_edge1000
+wandb:
+  name: e6_norm_edge1000
+  tags: [feature-normalized, topology-scale-1000, edge-state, strict-topology-holdout, pf]
+

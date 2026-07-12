@@ -1,0 +1,11 @@
+extends: e4_norm_edge200.yaml
+model:
+  steps: 24
+train:
+  epochs: 100
+  batch_size: 96
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e6_norm_steps24_200
+wandb:
+  name: e6_norm_steps24_200
+  tags: [feature-normalized, recurrent-24, topology-scale, strict-topology-holdout, pf]
+
