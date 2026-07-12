@@ -30,3 +30,10 @@
 - Oracle decode using truth voltage: unseen aggregate current WAPE `0.0000118%`; data and current decoder pass.
 - Predicted voltage through the stiff physics decoder is unstable; direct current heads remain necessary.
 - Old-corpus issue: TriplexLine `I_scale=9.41e-10`. E7 separates scale-only `v3f` from `det2f`, which also carries the later wiring/determinacy fixes; both use floored scales.
+
+## E7 — corrected corpus gate (2026-07-12)
+
+- `det2f`: exact `det2` re-encode with current floor only; all Y features unchanged.
+- Fixed inherited flag-cache bug: cache covered 40/2,000 feeders; missing Line/TriplexLine families now come from baseline JSON and fail closed.
+- Clean committed validator: `2,000/2,000` stores PASS (`Ibus + Icomp = YV`, KCL, float64 schema).
+- GPU matrix: normalized 400/1,000/2,000; raw 400; physical-Ibus-WAPE 400; hidden-256 400.

@@ -20,3 +20,5 @@
 - `minimal_component_v3f` fixes scale conditioning only. The later `minimal_component_det2`
   fixes feeder wiring/determinacy but still has a collapsed TriplexLine scale; re-encode it exactly
   to `minimal_component_det2f`, validate, then use `det2f` for production comparisons.
+- `det2f` must floor current scales only (`alpha_y=0`): flooring stiff Y coordinates exceeded the
+  `1e-6` physics gate. Derive missing triplex flags from baseline JSON; the audit cache has only 40 feeders.
