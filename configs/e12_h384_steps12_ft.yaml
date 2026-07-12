@@ -1,0 +1,14 @@
+extends: e10_det2f_wape_h384_2000.yaml
+data:
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e12_h384_steps12_ft
+model:
+  steps: 12
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/best/checkpoint.pt
+  epochs: 20
+  lr: 0.0001
+  warmup_steps: 50
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e12_h384_steps12_ft
+wandb:
+  name: e12_h384_steps12_ft
+  tags: [det2f, hidden-384, steps-12, champion-finetune, topology-scale-2000, strict-topology-holdout, pf]
