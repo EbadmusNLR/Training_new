@@ -1,0 +1,9 @@
+extends: e21_foundation_roleheads.yaml
+loss:
+  lambda_tree_line_wape: 0.1
+  tree_pf_only: true
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e26_foundation_pfstructural
+wandb:
+  name: e26_foundation_pfstructural
+  tags: [h384, steps-12, foundation, role-heads, pf-only-structural-current]

@@ -83,7 +83,8 @@ def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
 
 
 def physical_ibus_wape_loss(
-    batch, preds, clamp: float, stores=None, min_truth_abs: float = 0.0
+    batch, preds, clamp: float, stores=None, min_truth_abs: float = 0.0,
+    graph_mask=None,
 ):
     """Differentiable aggregate Ibus WAPE in pu, never feature coordinates."""
     num = preds["node"].new_zeros(())
@@ -94,6 +95,13 @@ def physical_ibus_wape_loss(
             continue
         ni = i_offset(store)
         mask = st.msk[:, ni:]
+        if graph_mask is not None:
+            comp_batch = getattr(st, "batch", None)
+            if comp_batch is None:
+                comp_batch = torch.zeros(
+                    st.num_nodes, dtype=torch.long, device=mask.device
+                )
+            mask = mask & graph_mask[comp_batch].unsqueeze(1)
         if not mask.any():
             continue
         pred = physics.decode(preds[store][:, ni:], st.scale[:, ni:], clamp)
@@ -103,6 +111,34 @@ def physical_ibus_wape_loss(
         num = num + (pred - truth).abs()[mask].sum()
         den = den + truth.abs()[mask].sum()
     return num / den.clamp_min(1e-12)
+
+
+def pf_graph_mask(batch) -> torch.Tensor:
+    """Identify exactly posed PF masks inside a mixed-task batch."""
+    nd = batch["node"]
+    node_batch = getattr(nd, "batch", None)
+    if node_batch is None:
+        node_batch = torch.zeros(nd.num_nodes, dtype=torch.long, device=nd.msk_v.device)
+    n_graph = int(node_batch.max().item()) + 1 if node_batch.numel() else 0
+    keep = torch.ones(n_graph, dtype=torch.bool, device=node_batch.device)
+    required_v = ~nd.ground & ~nd.slack
+    bad_node = required_v & ~nd.msk_v
+    if bad_node.any():
+        keep[node_batch[bad_node].unique()] = False
+    for store in SPECS:
+        st = batch[store]
+        if st.num_nodes == 0:
+            continue
+        ny, ni = y_width(store), i_offset(store)
+        bad = st.msk[:, :ni].any(1) | (st.act[:, ni:] & ~st.msk[:, ni:]).any(1)
+        if bad.any():
+            comp_batch = getattr(st, "batch", None)
+            if comp_batch is None:
+                comp_batch = torch.zeros(
+                    st.num_nodes, dtype=torch.long, device=bad.device
+                )
+            keep[comp_batch[bad].unique()] = False
+    return keep
 
 
 def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
@@ -129,10 +165,14 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         lc.get("lambda_tree_line_wape", 0.0)
     ):
         tree_preds = decode_tree_line_currents(batch, preds, clamp)
-        tree_wape = physical_ibus_wape_loss(batch, tree_preds, clamp)
+        only_pf = pf_graph_mask(batch) if lc.get("tree_pf_only", False) else None
+        tree_wape = physical_ibus_wape_loss(
+            batch, tree_preds, clamp, graph_mask=only_pf
+        )
         tree_line_wape = physical_ibus_wape_loss(
             batch, tree_preds, clamp, ("line",),
             float(lc.get("tree_min_truth_abs", 0.0)),
+            graph_mask=only_pf,
         )
     loss = (
         float(lc.get("lambda_recon", lc.get("lambda_mask", 1.0))) * recon
