@@ -1,0 +1,9 @@
+extends: e3_scale_edge100.yaml
+model: {hidden: 256, steps: 12, dropout: 0.0}
+train:
+  batch_size: 96
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e3_scale_h256_100
+wandb:
+  name: e3_scale_h256_100
+  tags: [fractional, scale-conditioned, edge-state, h256, strict-topology-holdout, pf]
+

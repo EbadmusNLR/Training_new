@@ -1,0 +1,9 @@
+extends: e3_scale_edge100.yaml
+loss:
+  recon_weights: {voltage: 50.0, y: 1.0, icomp: 1.0, ibus: 1.0}
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e3_scale_v50_100
+wandb:
+  name: e3_scale_v50_100
+  tags: [fractional, scale-conditioned, voltage-weight-50, strict-topology-holdout, pf]
+

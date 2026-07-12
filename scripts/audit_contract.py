@@ -7,12 +7,11 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gridfm.data import build_strict_datasets
+from gridfm.config import load_config
 
 
 def main() -> int:
@@ -20,7 +19,7 @@ def main() -> int:
     ap.add_argument("--config", type=Path, required=True)
     ap.add_argument("--limit-feeders", type=int)
     args = ap.parse_args()
-    cfg = yaml.safe_load(args.config.read_text())
+    cfg = load_config(args.config)
     if args.limit_feeders is not None:
         cfg["data"]["limit_feeders"] = args.limit_feeders
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
@@ -39,4 +38,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

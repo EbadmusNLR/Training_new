@@ -1,0 +1,12 @@
+extends: e3_scale_edge100.yaml
+loss:
+  lambda_edge: 0.0
+  lambda_drop: 0.0
+  lambda_elem: 0.0
+  lambda_kcl: 0.0
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e3_scale_control100
+wandb:
+  name: e3_scale_control100
+  tags: [fractional, scale-conditioned, no-physics-control, strict-topology-holdout, pf]
+

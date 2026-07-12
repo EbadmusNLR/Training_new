@@ -9,13 +9,13 @@ import sys
 from pathlib import Path
 
 import torch
-import yaml
 from torch_geometric.loader import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gridfm.data import build_strict_datasets
+from gridfm.config import load_config
 from gridfm.legacy import physics
 from gridfm.model import EdgeStateGridFM
 
@@ -35,7 +35,7 @@ def main() -> int:
     if not args.ckpt and not args.baseline:
         ap.error("provide --ckpt or --baseline")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
-    cfg = yaml.safe_load(args.config.read_text()) if args.config else ck["cfg"]
+    cfg = load_config(args.config) if args.config else ck["cfg"]
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))

@@ -12,13 +12,13 @@ import time
 from pathlib import Path
 
 import torch
-import yaml
 from torch_geometric.loader import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gridfm.data import build_strict_datasets
+from gridfm.config import load_config
 from gridfm.legacy import physics
 from gridfm.losses import objective
 from gridfm.model import EdgeStateGridFM
@@ -112,7 +112,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()
-    cfg = yaml.safe_load(args.config.read_text())
+    cfg = load_config(args.config)
     if args.limit_feeders is not None:
         cfg["data"]["limit_feeders"] = args.limit_feeders
     if args.epochs is not None:
@@ -137,6 +137,7 @@ def main() -> int:
         "unseen": bundle.unseen_feeders, "test": bundle.test_feeders,
     }
     (out / "split_manifest.json").write_text(json.dumps(split_manifest, indent=2) + "\n")
+    import yaml
     (out / "config_used.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     model_cfg = dict(cfg["model"])
