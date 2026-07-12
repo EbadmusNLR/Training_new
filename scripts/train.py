@@ -217,13 +217,28 @@ def main() -> int:
         bundle.train.set_epoch(epoch)
         train_metrics = run_epoch(model, train_loader, cfg, device, s_kcl, opt, sched)
         seen_metrics = unseen_metrics = {}
+        task_metrics = {}
         if epoch % int(cfg["train"]["eval_every"]) == 0 or epoch == int(cfg["train"]["epochs"]):
             with torch.no_grad():
                 seen_metrics = run_epoch(model, seen_loader, cfg, device, s_kcl)
                 unseen_metrics = run_epoch(model, unseen_loader, cfg, device, s_kcl)
+                task_fields = cfg["train"].get("foundation_task_fields", {})
+                if task_fields:
+                    original_mask = bundle.unseen.mask_cfg
+                    try:
+                        for task in task_fields:
+                            bundle.unseen.mask_cfg = {
+                                **original_mask, "mixture": {task: 1.0}
+                            }
+                            task_metrics[task] = run_epoch(
+                                model, unseen_loader, cfg, device, s_kcl
+                            )
+                    finally:
+                        bundle.unseen.mask_cfg = original_mask
         rec = {
             "epoch": epoch, "lr": sched.get_last_lr()[0],
             "train": train_metrics, "seen": seen_metrics, "unseen": unseen_metrics,
+            "unseen_tasks": task_metrics,
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(rec) + "\n")
@@ -240,19 +255,28 @@ def main() -> int:
             for split in ("train", "seen", "unseen"):
                 for key, value in rec[split].items():
                     flat[f"{split}/{key}"] = value
+            for task, values in task_metrics.items():
+                for key, value in values.items():
+                    flat[f"unseen_tasks/{task}/{key}"] = value
             wb.log(flat, step=epoch)
         score_split = unseen_metrics or seen_metrics
         v = score_split.get("V_wape_pct", float("inf"))
         i = score_split.get(
             "tree_Ibus_wape_pct", score_split.get("Ibus_wape_pct", float("inf"))
         )
+        task_fields = cfg["train"].get("foundation_task_fields", {})
+        required_task_scores = [
+            task_metrics.get(task, {}).get(f"{field}_wape_pct", float("inf"))
+            for task, fields in task_fields.items()
+            for field in fields
+        ]
         selection_weights = cfg["train"].get("foundation_selection_weights", {})
         weighted = [
             (float(weight), score_split.get(f"{field}_wape_pct", float("inf")))
             for field, weight in selection_weights.items()
             if float(weight) > 0
         ]
-        foundation = (
+        foundation = max(required_task_scores) if required_task_scores else (
             sum(weight * value for weight, value in weighted)
             / sum(weight for weight, _ in weighted)
             if weighted else float("inf")

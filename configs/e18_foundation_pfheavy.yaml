@@ -1,8 +1,0 @@
-extends: e18_foundation_balanced.yaml
-mask:
-  mixture: {pf: 0.40, se: 0.20, param: 0.10, ctrl: 0.05, topo: 0.10, sysid: 0.15}
-train:
-  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e18_foundation_pfheavy
-wandb:
-  name: e18_foundation_pfheavy
-  tags: [h384, steps-12, multitask, foundation, pf-heavy, fractional-finetune]

@@ -33,7 +33,10 @@ def main() -> int:
                     help="evaluate a non-learned baseline instead of a checkpoint")
     ap.add_argument("--split", choices=("seen", "unseen", "test"), default="unseen")
     ap.add_argument(
-        "--task", choices=("pf", "se", "param", "ctrl", "topo", "sysid"),
+        "--task", choices=(
+            "pf", "se", "se_known", "param", "param_one", "injection",
+            "ctrl", "topo", "sysid",
+        ),
         help="replace the checkpoint mask mixture with one deterministic task family",
     )
     ap.add_argument("--device")

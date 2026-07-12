@@ -50,7 +50,7 @@ class EdgeStateGridFM(nn.Module):
 
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
                  condition_on_scale: bool = True, normalize_features: bool = False,
-                 aggregation: str = "mean"):
+                 aggregation: str = "mean", use_electrical_pe: bool = True):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -61,6 +61,7 @@ class EdgeStateGridFM(nn.Module):
         self.condition_on_scale = condition_on_scale
         self.normalize_features = normalize_features
         self.aggregation = aggregation
+        self.use_electrical_pe = use_electrical_pe
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -103,13 +104,20 @@ class EdgeStateGridFM(nn.Module):
         nd = batch["node"]
         dtype = next(self.node_encoder.parameters()).dtype
         vis = nd.vis_v.unsqueeze(1)
+        pe = nd.pe[:, :PE_DIM_EXT].to(dtype)
+        if not self.use_electrical_pe:
+            # The final PE coordinate is computed from true variant-0 Y.  It is
+            # valid for PF where Y is observed, but leaks targets in masked-Y
+            # foundation tasks.  Retain structural RWSE and unweighted depth.
+            pe = pe.clone()
+            pe[:, -1] = 0
         node_x = torch.cat([
             nd.v_init.to(dtype),
             nd.dv.to(dtype) * vis,
             vis.to(dtype),
             nd.ground.to(dtype).unsqueeze(1),
             nd.slack.to(dtype).unsqueeze(1),
-            nd.pe[:, :PE_DIM_EXT].to(dtype),
+            pe,
         ], dim=1)
         hn = self.node_encoder(node_x)
         hc = {}

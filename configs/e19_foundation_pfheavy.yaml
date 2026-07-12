@@ -1,0 +1,8 @@
+extends: e19_foundation_identifiable.yaml
+mask:
+  mixture: {pf: 0.50, se_known: 0.20, param_one: 0.15, injection: 0.15}
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e19_foundation_pfheavy
+wandb:
+  name: e19_foundation_pfheavy
+  tags: [h384, steps-12, identifiable-masking, foundation, leakage-free, pf-heavy]
