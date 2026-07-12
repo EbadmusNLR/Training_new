@@ -1,0 +1,11 @@
+extends: e11_tree_ft_010.yaml
+data:
+  samples_per_epoch: 34000
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e11_tree_ft_010/best_current.pt
+  epochs: 15
+  lr: 0.00001
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e13_tree_full_ft
+wandb:
+  name: e13_tree_full_ft
+  tags: [h384, differentiable-tree-current, tree-line-wape-010, full-exposure-finetune, strict-topology-holdout]
