@@ -1,0 +1,8 @@
+extends: e16_tree_large_001.yaml
+loss:
+  tree_min_truth_abs: 0.1
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e16_tree_large_010
+wandb:
+  name: e16_tree_large_010
+  tags: [h384, steps-12, structural-current, min-truth-01, fractional-finetune]

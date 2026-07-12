@@ -82,7 +82,9 @@ def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
     return total / count.clamp_min(1), drop_total / drop_count.clamp_min(1)
 
 
-def physical_ibus_wape_loss(batch, preds, clamp: float, stores=None):
+def physical_ibus_wape_loss(
+    batch, preds, clamp: float, stores=None, min_truth_abs: float = 0.0
+):
     """Differentiable aggregate Ibus WAPE in pu, never feature coordinates."""
     num = preds["node"].new_zeros(())
     den = preds["node"].new_zeros(())
@@ -96,6 +98,8 @@ def physical_ibus_wape_loss(batch, preds, clamp: float, stores=None):
             continue
         pred = physics.decode(preds[store][:, ni:], st.scale[:, ni:], clamp)
         truth = physics.decode_truth(st.x_true[:, ni:], st.scale[:, ni:])
+        if min_truth_abs > 0:
+            mask = mask & (truth.abs() >= min_truth_abs)
         num = num + (pred - truth).abs()[mask].sum()
         den = den + truth.abs()[mask].sum()
     return num / den.clamp_min(1e-12)
@@ -123,7 +127,10 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     ):
         tree_preds = decode_tree_line_currents(batch, preds, clamp)
         tree_wape = physical_ibus_wape_loss(batch, tree_preds, clamp)
-        tree_line_wape = physical_ibus_wape_loss(batch, tree_preds, clamp, ("line",))
+        tree_line_wape = physical_ibus_wape_loss(
+            batch, tree_preds, clamp, ("line",),
+            float(lc.get("tree_min_truth_abs", 0.0)),
+        )
     loss = (
         float(lc.get("lambda_recon", lc.get("lambda_mask", 1.0))) * recon
         + float(lc.get("lambda_edge", 0.0)) * edge

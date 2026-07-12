@@ -1,0 +1,9 @@
+extends: e14_steps12_tree_ft.yaml
+loss:
+  tree_min_truth_abs: 0.01
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_current.pt
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e16_tree_large_001
+wandb:
+  name: e16_tree_large_001
+  tags: [h384, steps-12, structural-current, min-truth-001, fractional-finetune]
