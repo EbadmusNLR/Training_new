@@ -1,0 +1,11 @@
+extends: e9_det2f_wape_h256_2000.yaml
+data:
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e10_det2f_wape_h256_v50_2000
+loss:
+  recon_weights: {voltage: 50.0, y: 1.0, icomp: 1.0, ibus: 1.0}
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e10_det2f_wape_h256_v50_2000
+wandb:
+  name: e10_det2f_wape_h256_v50_2000
+  tags: [det2-wiring, current-floor, physical-current-wape, hidden-256, voltage-50, topology-scale-2000, strict-topology-holdout, pf]
+
