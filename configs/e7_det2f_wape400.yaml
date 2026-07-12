@@ -1,0 +1,9 @@
+extends: e7_det2f_norm400.yaml
+loss:
+  lambda_ibus_wape: 0.1
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_wape400
+wandb:
+  name: e7_det2f_wape400
+  tags: [det2-wiring, current-floor, physical-current-wape, topology-scale-400, strict-topology-holdout, pf]
+

@@ -1,0 +1,10 @@
+extends: e7_det2f_norm400.yaml
+model:
+  hidden: 256
+train:
+  batch_size: 96
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_h256_400
+wandb:
+  name: e7_det2f_h256_400
+  tags: [det2-wiring, current-floor, hidden-256, topology-scale-400, strict-topology-holdout, pf]
+

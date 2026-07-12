@@ -1,0 +1,12 @@
+extends: e7_det2f_norm1000.yaml
+data:
+  limit_feeders: 2000
+  samples_per_epoch: 34000
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e7_det2f_2000
+train:
+  epochs: 40
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_norm2000
+wandb:
+  name: e7_det2f_norm2000
+  tags: [det2-wiring, current-floor, feature-normalized, topology-scale-2000, strict-topology-holdout, pf]
+

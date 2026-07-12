@@ -1,0 +1,10 @@
+extends: e3_scale_edge400.yaml
+data:
+  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e7_det2f_raw_400
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_raw400
+wandb:
+  name: e7_det2f_raw400
+  tags: [det2-wiring, current-floor, raw-features, topology-scale-400, strict-topology-holdout, pf]
+
