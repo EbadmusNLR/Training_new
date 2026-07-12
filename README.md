@@ -22,10 +22,11 @@ evaluation live here.
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/audit_contract.py --config configs/pf_fraction.yaml
-python scripts/train.py --config configs/pf_fraction.yaml --epochs 2 --device cpu
-python scripts/evaluate.py --config configs/pf_fraction.yaml --ckpt runs/pf_fraction/best_voltage.pt
+mkdir -p logs
+sbatch smoke.sbatch
 ```
+
+Full fractional run: `sbatch run.sbatch`.
 
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out

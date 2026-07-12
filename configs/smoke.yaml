@@ -1,0 +1,42 @@
+data:
+  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_ifields
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/smoke
+  feeder_offset: 0
+  limit_feeders: 20
+  cast_float32: false
+  train_frac: 0.7
+  val_frac: 0.15
+  train_variants: 4
+  eval_variants: 2
+  samples_per_epoch: 64
+  num_workers: 2
+mask:
+  mixture: {pf: 1.0}
+  p_voltage: 1.0
+  p_current: 1.0
+  p_icomp: 0.0
+  p_admittance: 0.0
+  p_terminal: 0.0
+  p_component: 0.0
+model: {hidden: 64, steps: 3, dropout: 0.0}
+loss:
+  feat_clamp: 20.0
+  lambda_mask: 1.0
+  lambda_edge: 0.25
+  lambda_drop: 0.02
+  lambda_elem: 0.000002
+  lambda_kcl: 0.000001
+  drop_floor: 0.0001
+train:
+  seed: 42
+  epochs: 2
+  batch_size: 16
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_steps: 1
+  eval_every: 1
+  amp: bf16
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/smoke
+wandb: {enabled: false}
+
