@@ -30,7 +30,7 @@ if [[ ! -f "$det2f/feature_scaler.json" ]]; then
   cd "$HERE"
   "$PYTHON_BIN" scripts/reencode_corpus.py \
     --src "$src" --out "$det2f" \
-    --flags "$src/_audit_cache/line_triplex.pt" --workers "$workers" \
+    --flags "$src/_audit_cache/line_triplex.pt" --alpha-y 0 --workers "$workers" \
     2>&1 | tee "$HERE/allocation_logs/e7/det2f_reencode.log"
 fi
 

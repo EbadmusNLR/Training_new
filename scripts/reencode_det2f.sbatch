@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=128G
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=det2f-%j.out
 
 set -euo pipefail
@@ -15,6 +15,7 @@ python scripts/reencode_corpus.py \
   --src /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2 \
   --out /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \
   --flags /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2/_audit_cache/line_triplex.pt \
+  --alpha-y 0 \
   --workers 32
 python scripts/validation.py scenario \
   --search-root /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \

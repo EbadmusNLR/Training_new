@@ -110,6 +110,14 @@ def reencode_feeder(feeder_name: str) -> str:
     eps = FEAT_EPS
 
     meta = torch.load(src / "static.pt", map_location="cpu", weights_only=False)
+    if flags is None:
+        json_path = _WORKER["src"] / "json" / feeder_name / "master.json"
+        if not json_path.is_file():
+            raise FileNotFoundError(
+                f"missing Line/TriplexLine metadata for {feeder_name}: {json_path}"
+            )
+        payload = json.loads(json_path.read_text())
+        flags = [bool(row.get("is_triplex_line", False)) for row in payload.get("Line", [])]
     source_dyn = np.load(src / "dynamic.npy", allow_pickle=False)
     source_dtype = source_dyn.dtype
     # Do the invertible coordinate change in float64, then preserve the corpus
@@ -118,7 +126,11 @@ def reencode_feeder(feeder_name: str) -> str:
     skel = meta["skeleton"]
 
     def fams_for(store_key: str, n: int) -> list[str]:
-        if store_key == "line" and flags is not None:
+        if store_key == "line":
+            if len(flags) != n:
+                raise ValueError(
+                    f"{feeder_name}: line-family flags {len(flags)} != line rows {n}"
+                )
             return ["TriplexLine" if bool(f) else "Line" for f in flags]
         return [ {"line": "Line"}.get(store_key, SPECS[store_key]["json_key"]) ] * n
 
