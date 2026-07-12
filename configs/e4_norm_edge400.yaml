@@ -1,0 +1,12 @@
+extends: e4_norm_edge100.yaml
+data:
+  limit_feeders: 400
+  samples_per_epoch: 6400
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e4_400
+train:
+  epochs: 100
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e4_norm_edge400
+wandb:
+  name: e4_norm_edge400
+  tags: [feature-normalized, scale-up, edge-state, strict-topology-holdout, pf]
+

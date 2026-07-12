@@ -1,0 +1,9 @@
+extends: e4_norm_edge200.yaml
+loss:
+  recon_weights: {voltage: 50.0, y: 1.0, icomp: 1.0, ibus: 1.0}
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e4_norm_v50_200
+wandb:
+  name: e4_norm_v50_200
+  tags: [feature-normalized, voltage-weight-50, topology-scale, strict-topology-holdout, pf]
+
