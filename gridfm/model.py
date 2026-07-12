@@ -326,5 +326,9 @@ def load_compatible_state(model: nn.Module, state: dict) -> None:
         "task_encoder.",
     )
     bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
-    if bad_missing or unexpected:
-        raise RuntimeError(f"checkpoint mismatch: missing={bad_missing}, unexpected={unexpected}")
+    allowed_obsolete = ("icomp_current_skip.",)
+    bad_unexpected = [key for key in unexpected if not key.startswith(allowed_obsolete)]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"checkpoint mismatch: missing={bad_missing}, unexpected={bad_unexpected}"
+        )
