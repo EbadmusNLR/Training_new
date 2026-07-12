@@ -1,0 +1,14 @@
+extends: e7_det2f_wape2000.yaml
+loss:
+  lambda_elem: 0.001
+  lambda_kcl: 0.001
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_wape2000/best_current.pt
+  epochs: 20
+  lr: 0.00005
+  warmup_steps: 0
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e10_det2f_physics_ft2000
+wandb:
+  name: e10_det2f_physics_ft2000
+  tags: [det2-wiring, current-floor, physical-current-wape, strong-element-kcl, finetune, topology-scale-2000, strict-topology-holdout, pf]
+
