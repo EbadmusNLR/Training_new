@@ -12,5 +12,6 @@ slurm-*.out
 eval-*.out
 syntax-*.out
 mask-gate-*.out
+tests-*.out
 *.pt
 *.npy
