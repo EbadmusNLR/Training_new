@@ -198,7 +198,9 @@ def main() -> int:
     scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
     s_kcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
 
-    start, best_v, best_i = 1, float("inf"), float("inf")
+    start, best_v, best_i, best_foundation = (
+        1, float("inf"), float("inf"), float("inf")
+    )
     last_path = out / "last.pt"
     if args.resume and last_path.is_file():
         ck = torch.load(last_path, map_location=device, weights_only=False)
@@ -207,6 +209,7 @@ def main() -> int:
         sched.load_state_dict(ck["scheduler"])
         start = int(ck["epoch"]) + 1
         best_v, best_i = float(ck["best_v"]), float(ck["best_i"])
+        best_foundation = float(ck.get("best_foundation", float("inf")))
 
     wb = init_wandb(cfg, out)
     log_path = out / "log.jsonl"
@@ -243,10 +246,22 @@ def main() -> int:
         i = score_split.get(
             "tree_Ibus_wape_pct", score_split.get("Ibus_wape_pct", float("inf"))
         )
+        selection_weights = cfg["train"].get("foundation_selection_weights", {})
+        weighted = [
+            (float(weight), score_split.get(f"{field}_wape_pct", float("inf")))
+            for field, weight in selection_weights.items()
+            if float(weight) > 0
+        ]
+        foundation = (
+            sum(weight * value for weight, value in weighted)
+            / sum(weight for weight, _ in weighted)
+            if weighted else float("inf")
+        )
         state = {
             "model": model.state_dict(), "optimizer": opt.state_dict(),
             "scheduler": sched.state_dict(), "epoch": epoch,
-            "best_v": min(best_v, v), "best_i": min(best_i, i), "cfg": cfg,
+            "best_v": min(best_v, v), "best_i": min(best_i, i),
+            "best_foundation": min(best_foundation, foundation), "cfg": cfg,
         }
         torch.save(state, last_path)
         if v < best_v:
@@ -255,6 +270,9 @@ def main() -> int:
         if i < best_i:
             best_i = i
             torch.save(state, out / "best_current.pt")
+        if foundation < best_foundation:
+            best_foundation = foundation
+            torch.save(state, out / "best_foundation.pt")
     if wb is not None:
         wb.finish()
     return 0

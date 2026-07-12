@@ -32,6 +32,10 @@ def main() -> int:
     ap.add_argument("--baseline", choices=("v_init",),
                     help="evaluate a non-learned baseline instead of a checkpoint")
     ap.add_argument("--split", choices=("seen", "unseen", "test"), default="unseen")
+    ap.add_argument(
+        "--task", choices=("pf", "se", "param", "ctrl", "topo", "sysid"),
+        help="replace the checkpoint mask mixture with one deterministic task family",
+    )
     ap.add_argument("--device")
     ap.add_argument("--kcl-vsource", action="store_true")
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
@@ -51,6 +55,8 @@ def main() -> int:
     if ensemble_cks and ck is None:
         ap.error("--ensemble-ckpt requires --ckpt")
     cfg = load_config(args.config) if args.config else ck["cfg"]
+    if args.task:
+        cfg["mask"]["mixture"] = {args.task: 1.0}
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -138,6 +144,7 @@ def main() -> int:
         "checkpoint": str(args.ckpt) if args.ckpt else None,
         "ensemble_checkpoints": [str(path) for path in args.ensemble_ckpt],
         "baseline": args.baseline, "split": args.split,
+        "task": args.task,
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
         "tree_line": args.tree_line,

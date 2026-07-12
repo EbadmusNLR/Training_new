@@ -1,0 +1,22 @@
+extends: e14_steps12_tree_ft.yaml
+mask:
+  mixture: {pf: 0.25, se: 0.20, param: 0.15, ctrl: 0.10, topo: 0.10, sysid: 0.20}
+  p_voltage: 0.30
+  p_current: 0.15
+  p_icomp: 0.15
+  p_admittance: 0.15
+  p_terminal: 0.10
+  p_component: 0.05
+loss:
+  lambda_tree_line_wape: 0.0
+  tree_min_truth_abs: 0.0
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_current.pt
+  epochs: 20
+  lr: 0.00003
+  eval_every: 5
+  foundation_selection_weights: {V: 2.0, Ibus: 1.0, Icomp: 1.0, Y: 1.0}
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e18_foundation_balanced
+wandb:
+  name: e18_foundation_balanced
+  tags: [h384, steps-12, multitask, foundation, fractional-finetune]
