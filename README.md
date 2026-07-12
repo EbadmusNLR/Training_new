@@ -26,18 +26,28 @@ mkdir -p logs
 sbatch smoke.sbatch
 ```
 
-Full fractional run: `sbatch run.sbatch`.
+Full fractional run: `sbatch run.sbatch`. The production corpus is
+`minimal_component_det2f`; its exact-current re-encoding and clean-validator evidence are
+recorded in `experiments.md`.
 
-For an already-open GPU allocation, run the complete corrected-corpus promotion gate from
-the compute-node shell:
+Select a final checkpoint only from unseen-topology reports. Each report must have been
+produced with `--tree-line --kcl-vsource`:
 
 ```bash
-cd /kfs2/projects/gogpt/Ebadmus/Training_new
-MAX_PARALLEL=5 bash scripts/run_e7_in_allocation.sh
+python scripts/select_champion.py \
+  --report runs/<candidate-a>/unseen_tree.json \
+  --report runs/<candidate-b>/unseen_tree.json \
+  --output runs/final_selection.json
 ```
 
-It creates and validates `minimal_component_det2f`, runs the matched v3f/det2f ablations,
-selects only from unseen-topology validation metrics, and evaluates the winner once on test.
+Only after that command writes the selection receipt may the sealed test split be opened:
+
+```bash
+sbatch --export=ALL,SELECTION=runs/final_selection.json scripts/evaluate_final.sbatch
+```
+
+The selector rejects non-unseen or non-structural-current reports. The final evaluator
+refuses to overwrite an existing test report unless `FORCE=1` is explicitly supplied.
 
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out
