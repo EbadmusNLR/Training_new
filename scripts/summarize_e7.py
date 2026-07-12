@@ -9,8 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs"
-DET2F = ("e7_det2f_norm400", "e7_det2f_norm1000")
-ALL = ("e7_v3f_norm400", "e7_v3f_raw400", "e7_v3f_norm1000", *DET2F)
+CANDIDATES = (
+    "e7_det2f_norm400", "e7_det2f_norm1000", "e7_det2f_norm2000",
+    "e7_det2f_wape400", "e7_det2f_wape1000", "e7_det2f_wape2000",
+    "e7_det2f_h256_400", "e7_det2f_h256_1000", "e7_det2f_h256_2000",
+)
 
 
 def read(name: str, filename: str) -> dict | None:
@@ -25,9 +28,9 @@ def score(row: dict) -> float:
 
 
 def winner() -> str:
-    rows = [(name, read(name, "unseen_source_kcl.json")) for name in DET2F]
+    rows = [(name, read(name, "unseen_source_kcl.json")) for name in CANDIDATES]
     complete = [(name, row) for name, row in rows if row is not None]
-    if len(complete) != len(DET2F):
+    if len(complete) != len(CANDIDATES):
         missing = [name for name, row in rows if row is None]
         raise SystemExit(f"missing det2f unseen evaluations: {missing}")
     return min(complete, key=lambda item: score(item[1]))[0]
@@ -42,7 +45,7 @@ def main() -> int:
         print(selected)
         return 0
     print("run,unseen_V_WAPE,unseen_Ibus_WAPE,score")
-    for name in ALL:
+    for name in CANDIDATES:
         row = read(name, "unseen_source_kcl.json")
         if row:
             print(f"{name},{row['V_wape_pct']:.6f},{row['Ibus_wape_pct']:.6f},{score(row):.6f}")
@@ -51,9 +54,12 @@ def main() -> int:
     if test:
         print(f"test_V_WAPE,{test['V_wape_pct']:.6f}")
         print(f"test_Ibus_WAPE,{test['Ibus_wape_pct']:.6f}")
+    direct = read(selected, "test_direct.json")
+    if direct:
+        print(f"test_direct_V_WAPE,{direct['V_wape_pct']:.6f}")
+        print(f"test_direct_Ibus_WAPE,{direct['Ibus_wape_pct']:.6f}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
