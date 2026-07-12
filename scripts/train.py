@@ -165,9 +165,19 @@ def main() -> int:
         init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
         load_compatible_state(model, init["model"])
         print(f"initialized model from {cfg['train']['init_ckpt']}", flush=True)
-    print(f"model parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
+    if cfg["train"].get("freeze_except_field_heads", False):
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in model.field_head.parameters():
+            parameter.requires_grad_(True)
+        print("froze backbone and voltage heads; training field heads only", flush=True)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"model parameters: {total_params:,}; trainable: {trainable_params:,}", flush=True
+    )
     opt = torch.optim.AdamW(
-        model.parameters(), lr=float(cfg["train"]["lr"]),
+        (p for p in model.parameters() if p.requires_grad), lr=float(cfg["train"]["lr"]),
         weight_decay=float(cfg["train"].get("weight_decay", 0.0)),
     )
     batch_size = int(cfg["train"]["batch_size"])
