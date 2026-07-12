@@ -46,9 +46,14 @@ def main() -> int:
         model.eval()
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
-    batches = DataLoader(dataset, batch_size=int(cfg["train"]["batch_size"]), shuffle=False,
-                         num_workers=int(cfg["data"].get("num_workers", 0)))
+    workers = int(cfg["data"].get("num_workers", 0))
+    batches = DataLoader(
+        dataset, batch_size=int(cfg["train"]["batch_size"]), shuffle=False,
+        num_workers=workers, multiprocessing_context="fork" if workers else None,
+    )
     clamp = float(cfg["loss"]["feat_clamp"])
+    scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
+    skcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
     with torch.no_grad():
         for batch in batches:
             batch = batch.to(device)
@@ -63,8 +68,6 @@ def main() -> int:
             for key, value in physics.percentage_error_sums(batch, preds, clamp).items():
                 sums[key] = sums.get(key, 0.0) + value
             xbar, vr, vi = physics.completed(batch, preds)
-            scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
-            skcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
             _, _, pm = physics.physics_losses(batch, xbar, vr, vi, clamp, skcl)
             for key, value in pm.items():
                 metric_rows.setdefault(key, []).append(float(value))
