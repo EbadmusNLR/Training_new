@@ -51,7 +51,8 @@ class EdgeStateGridFM(nn.Module):
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
                  condition_on_scale: bool = True, normalize_features: bool = False,
                  aggregation: str = "mean", use_electrical_pe: bool = True,
-                 directional_sweeps: bool = False, role_residual_heads: bool = False):
+                 directional_sweeps: bool = False, role_residual_heads: bool = False,
+                 icomp_current_skip: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -65,6 +66,7 @@ class EdgeStateGridFM(nn.Module):
         self.use_electrical_pe = use_electrical_pe
         self.directional_sweeps = directional_sweeps
         self.role_residual_heads_enabled = role_residual_heads
+        self.icomp_current_skip_enabled = icomp_current_skip
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -100,6 +102,7 @@ class EdgeStateGridFM(nn.Module):
             s: MLP(hidden, store_width(s), hidden, dropout, zero_last=True) for s in SPECS
         })
         self.role_residual_heads = nn.ModuleDict()
+        self.icomp_current_skip = nn.ParameterDict()
         for store in SPECS:
             ny, ni, width = y_width(store), i_offset(store), store_width(store)
             heads = {"y": MLP(hidden, ny, hidden, dropout, zero_last=True)}
@@ -107,6 +110,8 @@ class EdgeStateGridFM(nn.Module):
                 heads["icomp"] = MLP(hidden, ni - ny, hidden, dropout, zero_last=True)
             heads["ibus"] = MLP(hidden, width - ni, hidden, dropout, zero_last=True)
             self.role_residual_heads[store] = nn.ModuleDict(heads)
+            if SPECS[store].terms == 1 and ni > ny and width - ni == ni - ny:
+                self.icomp_current_skip[store] = nn.Parameter(torch.zeros(ni - ny))
 
     def set_feature_stats(self, stats: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
         for store, (mean, std) in stats.items():
@@ -277,6 +282,19 @@ class EdgeStateGridFM(nn.Module):
                     pieces.append(roles["icomp"](hc[store]))
                 pieces.append(roles["ibus"](hc[store]))
                 head = head + torch.cat(pieces, dim=1)
+            if self.icomp_current_skip_enabled and store in self.icomp_current_skip:
+                st = batch[store]
+                ny, ni = y_width(store), i_offset(store)
+                # Icomp and terminal Ibus use the same family scale and packed
+                # real/imag ordering for these stores, so oddness of asinh
+                # makes -Icomp exact in feature coordinates.  A learned zero-
+                # initialized strength preserves old checkpoints and lets the
+                # head specialize on the smaller YV residual.
+                strength = torch.tanh(self.icomp_current_skip[store]).to(head.dtype)
+                skip = -st.x_true[:, ny:ni].to(head.dtype) * st.vis[:, ny:ni].to(head.dtype)
+                head = torch.cat([
+                    head[:, :ni], head[:, ni:] + strength.unsqueeze(0) * skip
+                ], dim=1)
             std = self.feature_stats[store].std.to(head.dtype)
             preds[store] = head * std if self.normalize_features else head
             field_std[store] = std
@@ -292,7 +310,8 @@ def load_compatible_state(model: nn.Module, state: dict) -> None:
     """Load pre-normalization checkpoints while rejecting unrelated mismatch."""
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = (
-        "feature_stats.", "directional_update.", "role_residual_heads."
+        "feature_stats.", "directional_update.", "role_residual_heads.",
+        "icomp_current_skip.",
     )
     bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
     if bad_missing or unexpected:
