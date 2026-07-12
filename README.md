@@ -48,7 +48,16 @@ sbatch --export=ALL,SELECTION=runs/final_selection.json scripts/evaluate_final.s
 
 The selector rejects non-unseen or non-structural-current reports. The final evaluator
 refuses to overwrite an existing test report unless `FORCE=1` is explicitly supplied.
+After it completes, package the verified checkpoint and reports with
+`python scripts/promote.py --selection runs/final_selection.json --output runs/best`.
 
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out
 feeders using split-level WAPE percentages.
+
+## Promoted result
+
+The selected H384 checkpoint uses the solver-free tree-current decoder. Its final WAPE is
+`0.570% V / 1.368% Ibus` on held operating points, `1.767% / 6.732%` on unseen-topology
+validation, and `2.124% / 6.888%` on the sealed unseen-topology test split. The selection
+receipt and promoted files are under `runs/best`.

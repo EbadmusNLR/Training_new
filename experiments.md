@@ -44,9 +44,14 @@
 |---|---:|---:|---|
 | mean H128, 2,000 | 1.832% / 8.673% | 2.904% / 28.213% | topology scale breaks old current floor |
 | WAPE H128, 2,000 | 2.001% / 6.084% | 3.011% / 24.261% | physical current objective helps |
-| WAPE H256 + tree current | 0.845% / 1.633% | 2.021% / 6.851% | current champion; test still sealed |
+| WAPE H256 + tree current | 0.845% / 1.633% | 2.021% / 6.851% | first strong structural result |
+| WAPE H256, 12 steps + tree | n.a. | 1.864% / 6.808% | deeper propagation helps voltage |
+| WAPE H384 + tree | 0.570% / 1.368% | 1.767% / 6.732% | selected on unseen validation |
 
 - Tree current reconstructs paired line series flow by subtree KCL; it never reads voltage or invokes a PF/linear solve.
-- Unseen family WAPE: line `6.711%`, transformer `5.691%`, load `4.522%`, Vsource `7.066%`.
+- Selected unseen family WAPE: line `6.582%`, transformer `3.678%`, load `3.345%`, Vsource `7.108%`.
 - Oracle tree-current WAPE: `0.00000538%`; decoded-current contract is effectively exact.
 - Mean local aggregation beats naive sum/local-sum; explicit structural accumulation belongs in the current decoder.
+- H384 test, opened after hash-pinned selection: `2.124% V / 6.888% Ibus`; line
+  `6.988%`, transformer `4.209%`, load `4.682%`, Vsource `6.655%`, KCL `2.13e-5 pu`.
+- Late-checkpoint averaging was worse (`1.771% / 6.932%` unseen) and rejected.

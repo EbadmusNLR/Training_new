@@ -13,8 +13,7 @@
 - Compute rule remains hard: PyG/corpus/training gates run through Slurm. The first submission
   attempt was blocked by the agent sandbox's Slurm stream-socket restriction, not a code error.
 - `asinh` is invertible and not the physics bug. The bad conditioning came from a collapsed
-  TriplexLine P95 current scale (`9.41e-10`) in `minimal_component_ifields`; use the validated,
-  exactly re-encoded `minimal_component_v3f` (`4.05e-6` floor) for E7 onward.
+  TriplexLine P95 current scale (`9.41e-10`) in `minimal_component_ifields`.
 - Current oracle with truth voltage is exact (`1.18e-5%` WAPE). Unseen line current, not loads or
   transformers, is the remaining generalization bottleneck; increasing feeder coverage helps most.
 - `minimal_component_v3f` fixes scale conditioning only. The later `minimal_component_det2`
@@ -22,6 +21,7 @@
   to `minimal_component_det2f`, validate, then use `det2f` for production comparisons.
 - `det2f` must floor current scales only (`alpha_y=0`): flooring stiff Y coordinates exceeded the
   `1e-6` physics gate. Derive missing triplex flags from baseline JSON; the audit cache has only 40 feeders.
-- Current solution: train direct device currents with physical WAPE and H256 on all 2,000 feeders,
-  then reconstruct radial line series current by subtree KCL. This is solver-free and gives seen
-  `0.845% V / 1.633% Ibus`, unseen `2.021% / 6.851%`; test remains sealed until final selection.
+- Current solution: train direct device currents with physical WAPE and H384 on all 2,000 feeders,
+  then reconstruct radial line series current by subtree KCL. It is solver-free and gives seen
+  `0.570% V / 1.368% Ibus`, unseen validation `1.767% / 6.732%`, and sealed test
+  `2.124% / 6.888%`. The selected checkpoint is hash-pinned by `runs/final_selection.json`.
