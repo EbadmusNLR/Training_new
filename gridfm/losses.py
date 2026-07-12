@@ -7,7 +7,10 @@ from .legacy import SPECS, i_offset, physics, y_width
 from .tree_current import decode_tree_line_currents
 
 
-def balanced_reconstruction_loss(batch, preds, weights: dict, field_std: dict | None = None):
+def balanced_reconstruction_loss(
+    batch, preds, weights: dict, field_std: dict | None = None,
+    balance_stores: bool = False,
+):
     """Normalize each physical field independently before weighting.
 
     A single entry-count average lets hundreds of component columns drown out
@@ -17,6 +20,7 @@ def balanced_reconstruction_loss(batch, preds, weights: dict, field_std: dict | 
     dev = preds["node"].device
     sums = {k: torch.zeros((), device=dev) for k in ("voltage", "y", "icomp", "ibus")}
     counts = {k: torch.zeros((), device=dev) for k in sums}
+    store_parts = {k: [] for k in ("y", "icomp", "ibus")}
     nd = batch["node"]
     mv = nd.msk_v.unsqueeze(1)
     sums["voltage"] += ((preds["node"] - nd.dv.to(preds["node"].dtype)).pow(2) * mv).sum()
@@ -34,9 +38,17 @@ def balanced_reconstruction_loss(batch, preds, weights: dict, field_std: dict | 
             ("y", slice(0, ny)), ("icomp", slice(ny, ni)), ("ibus", slice(ni, None))
         ):
             mask = st.msk[:, cols]
-            sums[name] += (err2[:, cols] * mask).sum()
-            counts[name] += mask.sum()
+            value_sum = (err2[:, cols] * mask).sum()
+            value_count = mask.sum()
+            sums[name] += value_sum
+            counts[name] += value_count
+            if balance_stores and bool(value_count > 0):
+                store_parts[name].append(value_sum / value_count)
     parts = {k: sums[k] / counts[k].clamp_min(1) for k in sums}
+    if balance_stores:
+        for name, values in store_parts.items():
+            if values:
+                parts[name] = torch.stack(values).mean()
     total = sum(float(weights.get(k, 0.0)) * value for k, value in parts.items())
     return total, parts
 
@@ -148,7 +160,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     recon, recon_parts = balanced_reconstruction_loss(
         batch, preds, cfg["loss"].get(
             "recon_weights", {"voltage": 1.0, "y": 1.0, "icomp": 1.0, "ibus": 1.0}
-        ), aux.get("field_std")
+        ), aux.get("field_std"), bool(cfg["loss"].get("balance_stores", False))
     )
     x_bar, vr, vi = physics.completed(batch, preds)
     elem, kcl, pmetrics = physics.physics_losses(batch, x_bar, vr, vi, clamp, s_kcl)
