@@ -38,6 +38,8 @@ def main() -> int:
                     help="reconstruct paired radial line-series currents from KCL")
     ap.add_argument("--hybrid-device", action="store_true",
                     help="decode non-stiff device currents from local complex physics")
+    ap.add_argument("--physics-line-shunt", action="store_true",
+                    help="supply physics line common mode before structural series decoding")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:
@@ -83,6 +85,8 @@ def main() -> int:
             preds = physics.clamp_structural_zeros(batch, preds)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
+            if args.physics_line_shunt:
+                preds = decode_hybrid_device_currents(batch, preds, clamp, ("line",))
             if args.tree_line:
                 preds = decode_tree_line_currents(batch, preds, clamp)
             if args.kcl_project:
@@ -102,6 +106,7 @@ def main() -> int:
         "kcl_project": args.kcl_project,
         "tree_line": args.tree_line,
         "hybrid_device": args.hybrid_device,
+        "physics_line_shunt": args.physics_line_shunt,
     }
     for key in {k[:-4] for k in sums if k.endswith("_num")}:
         den = sums.get(f"{key}_den", 0.0)
