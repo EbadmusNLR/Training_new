@@ -8,9 +8,7 @@ import torch
 from .legacy import FC, SPECS, i_offset, physics
 
 
-def decode_tree_line_currents(
-    batch, preds, clamp: float, *, line_current_unclamped: bool = False
-):
+def decode_tree_line_currents(batch, preds, clamp: float):
     """Reconstruct line series currents by subtree current accumulation.
 
     Learned non-line terminal currents and each line's learned shunt/common-mode
@@ -46,15 +44,10 @@ def decode_tree_line_currents(
 
     st = batch["line"]
     ni = i_offset("line")
-    if line_current_unclamped:
-        cur = physics.decode_truth(
-            xbar["line"][:, ni:].double(), st.scale[:, ni:].double()
-        )
-    else:
-        cur = physics.decode_completed(
-            xbar["line"][:, ni:].double(), st.scale[:, ni:].double(),
-            st.msk[:, ni:], clamp,
-        )
+    cur = physics.decode_completed(
+        xbar["line"][:, ni:].double(), st.scale[:, ni:].double(),
+        st.msk[:, ni:], clamp,
+    )
     es = batch[("line", "conn", "node")]
     comp_cpu, node_cpu, slot_cpu = (
         v.detach().cpu() for v in (es.edge_index[0], es.edge_index[1], es.slot)
