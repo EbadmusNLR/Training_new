@@ -1,7 +1,8 @@
 data:
   root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_ifields
   cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e1_onefeeder
-  feeder_offset: 51
+  # t1_0055: delta load + one-phase line; PF inputs vary through visible Icomp.
+  feeder_offset: 54
   limit_feeders: 1
   cast_float32: false
   train_frac: 1.0
@@ -38,10 +39,9 @@ train:
   warmup_steps: 20
   eval_every: 25
   amp: bf16
-  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e1_voltage_only
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e1_voltage_only_line_load
 wandb:
   enabled: true
   project: Training_new_GridFM
-  name: e1_voltage_only
+  name: e1_voltage_only_line_load
   tags: [capacity-gate, voltage-only, edge-state, pf]
-
