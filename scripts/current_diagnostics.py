@@ -19,6 +19,51 @@ from gridfm.legacy import SPECS, i_offset, physics, store_width
 from gridfm.model import EdgeStateGridFM, load_compatible_state
 
 
+def decode_edge_currents(batch, preds, aux: dict, clamp: float):
+    """Decode Ibus from each component's terminal-voltage proposals.
+
+    The recurrent model keeps one state per component-terminal incidence. This
+    diagnostic preserves those distinct local voltage estimates instead of
+    averaging them into one bus head before applying the stiff YV operator.
+    """
+    x_bar, _, _ = physics.completed(batch, preds)
+    nd = batch["node"]
+    out = dict(preds)
+    for store, spec in SPECS.items():
+        st = batch[store]
+        if st.num_nodes == 0:
+            continue
+        ny, ni = physics.y_width(store), i_offset(store)
+        y_pu = physics.decode_completed(
+            x_bar[store][:, :ny], st.scale[:, :ny], st.msk[:, :ny], clamp
+        )
+        es = batch[(store, "conn", "node")]
+        comp, node, slot = es.edge_index[0], es.edge_index[1], es.slot
+        proposal = aux["edge_dv"][store].to(nd.v_init.dtype)
+        solved = nd.dv[node]
+        dv = torch.where(nd.vis_v[node].unsqueeze(1), solved, proposal)
+        voltage = nd.v_init[node] + dv
+        width = spec.terms * physics.FC
+        vr = voltage.new_zeros(st.num_nodes, width)
+        vi = voltage.new_zeros(st.num_nodes, width)
+        vr[comp, slot], vi[comp, slot] = voltage[:, 0], voltage[:, 1]
+        ir, ii = physics._element_currents(store, y_pu, vr, vi)
+        col_r = physics._slot_to_col(store, ir.device)
+        ibus = ir.new_zeros(st.num_nodes, 2 * width)
+        ibus[:, col_r], ibus[:, col_r + physics.FC] = ir, ii
+        if spec.icomp:
+            ic = physics.decode_completed(
+                x_bar[store][:, ny:ni], st.scale[:, ny:ni], st.msk[:, ny:ni], clamp
+            )
+            ibus[:, col_r] -= ic[:, :spec.icomp]
+            ibus[:, col_r + physics.FC] -= ic[:, spec.icomp:]
+        encoded = torch.asinh(ibus / (st.scale[:, ni:] + physics.EPS))
+        p = out[store].clone()
+        p[:, ni:] = encoded * st.act[:, ni:].to(encoded.dtype)
+        out[store] = p
+    return out
+
+
 def add(dst: dict[str, float], src: dict[str, float]) -> None:
     for key, value in src.items():
         dst[key] = dst.get(key, 0.0) + float(value)
@@ -57,7 +102,8 @@ def main() -> int:
     clamp = float(cfg["loss"]["feat_clamp"])
 
     modes = {name: {} for name in (
-        "direct", "direct_kcl", "physics_pred_v", "physics_pred_v_kcl", "physics_truth_v"
+        "direct", "direct_kcl", "physics_pred_v", "physics_pred_v_kcl",
+        "physics_edge_v", "physics_edge_v_kcl", "physics_truth_v",
     )}
     family = {s: {
         "entries": 0, "pu_abs_sum": 0.0, "feat_abs_sum": 0.0,
@@ -67,17 +113,20 @@ def main() -> int:
     with torch.no_grad():
         for idx, (fi, _) in enumerate(dataset.items):
             batch = Batch.from_data_list([dataset[idx]]).to(device)
-            raw = model(batch)
+            raw, aux = model(batch, return_aux=True)
             direct = physics.clamp_structural_zeros(batch, raw)
             direct_kcl = physics.kcl_decode_vsource(batch, direct, clamp)
             predv = physics.decode_currents(batch, direct, clamp)
             predv_kcl = physics.kcl_decode_vsource(batch, predv, clamp)
+            edgev = decode_edge_currents(batch, direct, aux, clamp)
+            edgev_kcl = physics.kcl_decode_vsource(batch, edgev, clamp)
             truth = {"node": batch["node"].dv}
             truth.update({s: batch[s].x_true for s in SPECS})
             truthv = physics.decode_currents(batch, truth, clamp)
             variants = {
                 "direct": direct, "direct_kcl": direct_kcl,
                 "physics_pred_v": predv, "physics_pred_v_kcl": predv_kcl,
+                "physics_edge_v": edgev, "physics_edge_v_kcl": edgev_kcl,
                 "physics_truth_v": truthv,
             }
             per = {}
