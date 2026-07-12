@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 cache/
 runs/
+allocation_logs/
 wandb/
 logs/
 slurm-*.out
