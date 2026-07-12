@@ -66,7 +66,7 @@ def run_epoch(model, batches, cfg, device, s_kcl, optimizer=None, scheduler=None
     training = optimizer is not None
     model.train(training)
     logs: dict[str, list[float]] = {}
-    amp = device.type == "cuda" and cfg["train"].get("amp") == "bf16"
+    amp = training and device.type == "cuda" and cfg["train"].get("amp") == "bf16"
     wape_sums: dict[str, float] = {}
     for batch in batches:
         batch = batch.to(device, non_blocking=True)
