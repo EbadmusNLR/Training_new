@@ -46,6 +46,8 @@ def main() -> int:
                     help="reconstruct paired radial line-series currents from KCL")
     ap.add_argument("--hybrid-device", action="store_true",
                     help="decode non-stiff device currents from local complex physics")
+    ap.add_argument("--init-current", action="store_true",
+                    help="evaluate local I=Y*V_init-Icomp before structural current decoding")
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:
@@ -130,6 +132,10 @@ def main() -> int:
                     for k, v in preds.items()
                 }
             preds = physics.clamp_structural_zeros(batch, preds)
+            if args.init_current:
+                init_preds = dict(preds)
+                init_preds["node"] = torch.zeros_like(preds["node"])
+                preds = physics.decode_currents(batch, init_preds, clamp)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
             if args.tree_line:
@@ -170,6 +176,7 @@ def main() -> int:
         "kcl_project": args.kcl_project,
         "tree_line": args.tree_line,
         "hybrid_device": args.hybrid_device,
+        "init_current": args.init_current,
     }
     for key in {k[:-4] for k in sums if k.endswith("_num")}:
         den = sums.get(f"{key}_den", 0.0)
