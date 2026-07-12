@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from gridfm.data import build_strict_datasets
 from gridfm.config import load_config
-from gridfm.legacy import physics
+from gridfm.legacy import physics, store_width
 from gridfm.model import EdgeStateGridFM
 
 
@@ -43,6 +43,9 @@ def main() -> int:
     if ck is not None:
         model_cfg = dict(cfg["model"])
         model_dtype = model_cfg.pop("dtype", "float32")
+        if "condition_on_scale" not in model_cfg:
+            in_features = ck["model"]["comp_encoder.line.0.weight"].shape[1]
+            model_cfg["condition_on_scale"] = in_features == 4 * store_width("line")
         model = EdgeStateGridFM(**model_cfg).to(device)
         if model_dtype == "float64":
             model = model.double()

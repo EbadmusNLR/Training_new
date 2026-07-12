@@ -39,14 +39,17 @@ class MLP(nn.Sequential):
 class EdgeStateGridFM(nn.Module):
     """Recurrent heterogeneous component-terminal operator learner."""
 
-    def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0):
+    def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
+                 condition_on_scale: bool = True):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
+        self.condition_on_scale = condition_on_scale
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
         self.comp_encoder = nn.ModuleDict({
-            s: MLP(4 * store_width(s), hidden, hidden, dropout) for s in SPECS
+            s: MLP((4 if condition_on_scale else 3) * store_width(s), hidden, hidden, dropout)
+            for s in SPECS
         })
         self.slot_embedding = nn.ModuleDict({
             s: nn.Embedding(n_slots(s), hidden // 4) for s in SPECS
@@ -96,9 +99,10 @@ class EdgeStateGridFM(nn.Module):
             # Omitting it made unseen components' current feature targets
             # ambiguous even when their physical parameters were visible.
             log_scale = torch.log10(st.scale.to(dtype).clamp_min(1e-12)).clamp(-12, 12) / 12
-            x = torch.cat([
-                st.x_true.to(dtype) * visible, visible, st.act.to(dtype), log_scale
-            ], dim=1)
+            parts = [st.x_true.to(dtype) * visible, visible, st.act.to(dtype)]
+            if self.condition_on_scale:
+                parts.append(log_scale)
+            x = torch.cat(parts, dim=1)
             hc[store] = self.comp_encoder[store](x)
         return hn, hc
 
