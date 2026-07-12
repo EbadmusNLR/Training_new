@@ -136,6 +136,10 @@ def main() -> int:
     (out / "config_used.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     model = EdgeStateGridFM(**cfg["model"]).to(device)
+    if cfg["train"].get("init_ckpt"):
+        init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
+        model.load_state_dict(init["model"])
+        print(f"initialized model from {cfg['train']['init_ckpt']}", flush=True)
     print(f"model parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     opt = torch.optim.AdamW(
         model.parameters(), lr=float(cfg["train"]["lr"]),
@@ -221,4 +225,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
