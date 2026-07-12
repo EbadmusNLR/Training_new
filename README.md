@@ -60,4 +60,5 @@ feeders using split-level WAPE percentages.
 The selected H384 checkpoint uses the solver-free tree-current decoder. Its final WAPE is
 `0.570% V / 1.368% Ibus` on held operating points, `1.767% / 6.732%` on unseen-topology
 validation, and `2.124% / 6.888%` on the sealed unseen-topology test split. The selection
-receipt and promoted files are under `runs/best`.
+receipt and promoted files are under `runs/best`; the checkpoint SHA-256 is
+`dfe90e058e325987614bba44a421b18bbdb283703edc77b255ebabcb01d1b566`.
