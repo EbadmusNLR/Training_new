@@ -28,6 +28,7 @@ def main() -> int:
     ap.add_argument("--config", type=Path,
                     help="dataset/config override; checkpoint config is authoritative by default")
     ap.add_argument("--ckpt", type=Path)
+    ap.add_argument("--ensemble-ckpt", type=Path, action="append", default=[])
     ap.add_argument("--baseline", choices=("v_init",),
                     help="evaluate a non-learned baseline instead of a checkpoint")
     ap.add_argument("--split", choices=("seen", "unseen", "test"), default="unseen")
@@ -45,11 +46,18 @@ def main() -> int:
     if not args.ckpt and not args.baseline:
         ap.error("provide --ckpt or --baseline")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
+    ensemble_cks = [
+        torch.load(path, map_location="cpu", weights_only=False)
+        for path in args.ensemble_ckpt
+    ]
+    if ensemble_cks and ck is None:
+        ap.error("--ensemble-ckpt requires --ckpt")
     cfg = load_config(args.config) if args.config else ck["cfg"]
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = None
+    models = []
     if ck is not None:
         model_cfg = dict(cfg["model"])
         model_dtype = model_cfg.pop("dtype", "float32")
@@ -61,6 +69,21 @@ def main() -> int:
             model = model.double()
         load_compatible_state(model, ck["model"])
         model.eval()
+        models.append(model)
+        for other in ensemble_cks:
+            other_cfg = dict(other["cfg"]["model"])
+            other_dtype = other_cfg.pop("dtype", "float32")
+            if "condition_on_scale" not in other_cfg:
+                other_in = other["model"]["comp_encoder.line.0.weight"].shape[1]
+                other_cfg["condition_on_scale"] = other_in == 4 * store_width("line")
+            if other_cfg != model_cfg or other_dtype != model_dtype:
+                raise SystemExit("ensemble checkpoints must use the same model architecture")
+            member = EdgeStateGridFM(**other_cfg).to(device)
+            if other_dtype == "float64":
+                member = member.double()
+            load_compatible_state(member, other["model"])
+            member.eval()
+            models.append(member)
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
     workers = int(cfg["data"].get("num_workers", 0))
@@ -78,9 +101,25 @@ def main() -> int:
                 preds = {"node": torch.zeros_like(batch["node"].dv)}
                 preds.update({s: torch.zeros_like(batch[s].x_true) for s in physics.SPECS})
             else:
+                members = [member(batch) for member in models]
+                preds = {"node": torch.stack([row["node"] for row in members]).mean(0)}
+                for store in physics.SPECS:
+                    st = batch[store]
+                    ni = physics.i_offset(store)
+                    value = torch.stack([row[store] for row in members]).mean(0)
+                    if len(members) > 1 and st.num_nodes:
+                        currents = [
+                            physics.decode(row[store][:, ni:], st.scale[:, ni:], clamp)
+                            for row in members
+                        ]
+                        mean_current = torch.stack(currents).mean(0)
+                        value[:, ni:] = torch.asinh(
+                            mean_current / (st.scale[:, ni:] + physics.EPS)
+                        )
+                    preds[store] = value
                 preds = {
                     k: v.float() if v.dtype in (torch.float16, torch.bfloat16) else v
-                    for k, v in model(batch).items()
+                    for k, v in preds.items()
                 }
             preds = physics.clamp_structural_zeros(batch, preds)
             if args.hybrid_device:
@@ -104,6 +143,7 @@ def main() -> int:
                 metric_rows.setdefault(key, []).append(float(value))
     report = {
         "checkpoint": str(args.ckpt) if args.ckpt else None,
+        "ensemble_checkpoints": [str(path) for path in args.ensemble_ckpt],
         "baseline": args.baseline, "split": args.split,
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
