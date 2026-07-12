@@ -1,0 +1,8 @@
+extends: e21_foundation_roleheads.yaml
+model:
+  task_conditioning: true
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e25_foundation_taskconditioned
+wandb:
+  name: e25_foundation_taskconditioned
+  tags: [h384, steps-12, foundation, identifiable-masking, role-heads, task-conditioning]

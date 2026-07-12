@@ -52,7 +52,7 @@ class EdgeStateGridFM(nn.Module):
                  condition_on_scale: bool = True, normalize_features: bool = False,
                  aggregation: str = "mean", use_electrical_pe: bool = True,
                  directional_sweeps: bool = False, role_residual_heads: bool = False,
-                 icomp_current_skip: bool = False):
+                 icomp_current_skip: bool = False, task_conditioning: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -67,6 +67,7 @@ class EdgeStateGridFM(nn.Module):
         self.directional_sweeps = directional_sweeps
         self.role_residual_heads_enabled = role_residual_heads
         self.icomp_current_skip_enabled = icomp_current_skip
+        self.task_conditioning = task_conditioning
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -87,6 +88,7 @@ class EdgeStateGridFM(nn.Module):
         self.node_gru = nn.GRUCell(2 * hidden, hidden)
         self.comp_gru = nn.ModuleDict({s: nn.GRUCell(2 * hidden, hidden) for s in SPECS})
         self.global_gru = nn.GRUCell(hidden, hidden)
+        self.task_encoder = MLP(4, hidden, hidden, dropout, zero_last=True)
         self.node_norm = nn.LayerNorm(hidden)
         self.comp_norm = nn.ModuleDict({s: nn.LayerNorm(hidden) for s in SPECS})
 
@@ -169,6 +171,33 @@ class EdgeStateGridFM(nn.Module):
         n_graph = int(node_batch.max().item()) + 1 if node_batch.numel() else 0
         global_reduce = "sum" if self.aggregation == "sum" else "mean"
         hg = _pool(hn, node_batch, n_graph, global_reduce)
+        if self.task_conditioning:
+            # Global missingness rates identify the requested operation without
+            # exposing target values: V, Y, Icomp, and Ibus masked/active ratios.
+            num = hn.new_zeros(n_graph, 4)
+            den = hn.new_zeros(n_graph, 4)
+            num[:, 0].index_add_(
+                0, node_batch, nd.msk_v.to(hn.dtype)
+            )
+            den[:, 0].index_add_(
+                0, node_batch, (~nd.ground).to(hn.dtype)
+            )
+            for store in SPECS:
+                st = batch[store]
+                if st.num_nodes == 0:
+                    continue
+                cb = getattr(st, "batch", None)
+                if cb is None:
+                    cb = torch.zeros(st.num_nodes, dtype=torch.long, device=hn.device)
+                ny, ni = y_width(store), i_offset(store)
+                for col, cols in enumerate((slice(0, ny), slice(ny, ni), slice(ni, None)), 1):
+                    num[:, col].index_add_(
+                        0, cb, st.msk[:, cols].sum(1).to(hn.dtype)
+                    )
+                    den[:, col].index_add_(
+                        0, cb, st.act[:, cols].sum(1).to(hn.dtype)
+                    )
+            hg = hg + self.task_encoder(num / den.clamp_min(1))
         edge_state = {}
 
         for _ in range(self.steps):
@@ -311,7 +340,7 @@ def load_compatible_state(model: nn.Module, state: dict) -> None:
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = (
         "feature_stats.", "directional_update.", "role_residual_heads.",
-        "icomp_current_skip.",
+        "icomp_current_skip.", "task_encoder.",
     )
     bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
     if bad_missing or unexpected:
