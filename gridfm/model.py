@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .legacy import PE_DIM_EXT, SPECS, n_slots, store_width
+from .legacy import PE_DIM_EXT, SPECS, i_offset, n_slots, store_width, y_width
 
 
 def _pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int, reduce: str) -> torch.Tensor:
@@ -51,7 +51,7 @@ class EdgeStateGridFM(nn.Module):
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
                  condition_on_scale: bool = True, normalize_features: bool = False,
                  aggregation: str = "mean", use_electrical_pe: bool = True,
-                 directional_sweeps: bool = False):
+                 directional_sweeps: bool = False, role_residual_heads: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -64,6 +64,7 @@ class EdgeStateGridFM(nn.Module):
         self.aggregation = aggregation
         self.use_electrical_pe = use_electrical_pe
         self.directional_sweeps = directional_sweeps
+        self.role_residual_heads_enabled = role_residual_heads
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -98,6 +99,14 @@ class EdgeStateGridFM(nn.Module):
         self.field_head = nn.ModuleDict({
             s: MLP(hidden, store_width(s), hidden, dropout, zero_last=True) for s in SPECS
         })
+        self.role_residual_heads = nn.ModuleDict()
+        for store in SPECS:
+            ny, ni, width = y_width(store), i_offset(store), store_width(store)
+            heads = {"y": MLP(hidden, ny, hidden, dropout, zero_last=True)}
+            if ni > ny:
+                heads["icomp"] = MLP(hidden, ni - ny, hidden, dropout, zero_last=True)
+            heads["ibus"] = MLP(hidden, width - ni, hidden, dropout, zero_last=True)
+            self.role_residual_heads[store] = nn.ModuleDict(heads)
 
     def set_feature_stats(self, stats: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
         for store, (mean, std) in stats.items():
@@ -261,6 +270,13 @@ class EdgeStateGridFM(nn.Module):
         field_std = {}
         for store in SPECS:
             head = self.field_head[store](hc[store])
+            if self.role_residual_heads_enabled:
+                roles = self.role_residual_heads[store]
+                pieces = [roles["y"](hc[store])]
+                if "icomp" in roles:
+                    pieces.append(roles["icomp"](hc[store]))
+                pieces.append(roles["ibus"](hc[store]))
+                head = head + torch.cat(pieces, dim=1)
             std = self.feature_stats[store].std.to(head.dtype)
             preds[store] = head * std if self.normalize_features else head
             field_std[store] = std
@@ -275,7 +291,9 @@ class EdgeStateGridFM(nn.Module):
 def load_compatible_state(model: nn.Module, state: dict) -> None:
     """Load pre-normalization checkpoints while rejecting unrelated mismatch."""
     missing, unexpected = model.load_state_dict(state, strict=False)
-    allowed_missing = ("feature_stats.", "directional_update.")
+    allowed_missing = (
+        "feature_stats.", "directional_update.", "role_residual_heads."
+    )
     bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
     if bad_missing or unexpected:
         raise RuntimeError(f"checkpoint mismatch: missing={bad_missing}, unexpected={unexpected}")

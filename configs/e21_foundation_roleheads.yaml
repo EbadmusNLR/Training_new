@@ -1,0 +1,8 @@
+extends: e19_foundation_identifiable.yaml
+model:
+  role_residual_heads: true
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e21_foundation_roleheads
+wandb:
+  name: e21_foundation_roleheads
+  tags: [h384, steps-12, foundation, identifiable-masking, role-heads]
