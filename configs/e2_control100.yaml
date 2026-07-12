@@ -21,7 +21,8 @@ mask:
 model: {hidden: 128, steps: 8, dropout: 0.0}
 loss:
   feat_clamp: 20.0
-  lambda_mask: 1.0
+  lambda_recon: 1.0
+  recon_weights: {voltage: 10.0, y: 1.0, icomp: 1.0, ibus: 1.0}
   lambda_edge: 0.0
   lambda_drop: 0.0
   lambda_elem: 0.0
@@ -43,4 +44,3 @@ wandb:
   project: Training_new_GridFM
   name: e2_control100
   tags: [fractional, no-physics-control, strict-topology-holdout, pf]
-

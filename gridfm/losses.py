@@ -3,7 +3,38 @@ from __future__ import annotations
 
 import torch
 
-from .legacy import SPECS, physics
+from .legacy import SPECS, i_offset, physics, y_width
+
+
+def balanced_reconstruction_loss(batch, preds, weights: dict):
+    """Normalize each physical field independently before weighting.
+
+    A single entry-count average lets hundreds of component columns drown out
+    the few bus-voltage targets. Field balancing makes the task definition
+    explicit and remains stable as topology size/component mix changes.
+    """
+    dev = preds["node"].device
+    sums = {k: torch.zeros((), device=dev) for k in ("voltage", "y", "icomp", "ibus")}
+    counts = {k: torch.zeros((), device=dev) for k in sums}
+    nd = batch["node"]
+    mv = nd.msk_v.unsqueeze(1)
+    sums["voltage"] += ((preds["node"] - nd.dv.float()).pow(2) * mv).sum()
+    counts["voltage"] += 2 * mv.sum()
+    for store in SPECS:
+        st = batch[store]
+        if st.num_nodes == 0:
+            continue
+        ny, ni = y_width(store), i_offset(store)
+        err2 = (preds[store] - st.x_true.float()).pow(2)
+        for name, cols in (
+            ("y", slice(0, ny)), ("icomp", slice(ny, ni)), ("ibus", slice(ni, None))
+        ):
+            mask = st.msk[:, cols]
+            sums[name] += (err2[:, cols] * mask).sum()
+            counts[name] += mask.sum()
+    parts = {k: sums[k] / counts[k].clamp_min(1) for k in sums}
+    total = sum(float(weights.get(k, 0.0)) * value for k, value in parts.items())
+    return total, parts
 
 
 def edge_voltage_loss(batch, aux: dict, drop_floor: float = 1e-4):
@@ -51,22 +82,27 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     clamp = float(cfg["loss"]["feat_clamp"])
     preds = physics.clamp_structural_zeros(batch, raw_preds)
     mask_loss, metrics = physics.mask_loss_and_metrics(batch, preds, clamp, raw_preds=raw_preds)
+    recon, recon_parts = balanced_reconstruction_loss(
+        batch, preds, cfg["loss"].get(
+            "recon_weights", {"voltage": 1.0, "y": 1.0, "icomp": 1.0, "ibus": 1.0}
+        )
+    )
     x_bar, vr, vi = physics.completed(batch, preds)
     elem, kcl, pmetrics = physics.physics_losses(batch, x_bar, vr, vi, clamp, s_kcl)
     edge, drop = edge_voltage_loss(batch, aux, float(cfg["loss"].get("drop_floor", 1e-4)))
     lc = cfg["loss"]
     loss = (
-        float(lc.get("lambda_mask", 1.0)) * mask_loss
+        float(lc.get("lambda_recon", lc.get("lambda_mask", 1.0))) * recon
         + float(lc.get("lambda_edge", 0.0)) * edge
         + float(lc.get("lambda_drop", 0.0)) * drop
         + float(lc.get("lambda_elem", 0.0)) * elem
         + float(lc.get("lambda_kcl", 0.0)) * kcl
     )
     logs = {
-        "loss": loss.item(), "loss_mask": mask_loss.item(),
+        "loss": loss.item(), "loss_mask": mask_loss.item(), "loss_recon": recon.item(),
+        **{f"loss_{k}": value.item() for k, value in recon_parts.items()},
         "loss_edge": edge.item(), "loss_drop": drop.item(),
         "loss_elem": elem.item(), "loss_kcl": kcl.item(),
         **metrics, **pmetrics,
     }
     return loss, preds, logs
-
