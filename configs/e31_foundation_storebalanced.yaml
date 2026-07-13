@@ -1,0 +1,17 @@
+extends: e21_foundation_roleheads.yaml
+loss:
+  balance_stores: 1.0
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e21_foundation_roleheads/best_foundation.pt
+  epochs: 10
+  lr: 0.00001
+  eval_every: 5
+  foundation_task_fields:
+    pf: [V, Ibus, Ibus_line, Ibus_transformer, Ibus_reactor, Ibus_load, Ibus_vsource]
+    se_known: [V, Ibus, Ibus_line, Ibus_transformer, Ibus_reactor, Ibus_load, Ibus_vsource]
+    param_one: [Y, Y_line, Y_transformer, Y_reactor, Y_capacitor, Y_load, Y_generator, Y_pvsystem, Y_storage, Y_vsource]
+    injection: [Icomp, Icomp_load, Icomp_generator, Icomp_pvsystem, Icomp_storage, Icomp_vsource]
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e31_foundation_storebalanced
+wandb:
+  name: e31_foundation_storebalanced
+  tags: [h384, steps-12, foundation, role-heads, store-balanced]

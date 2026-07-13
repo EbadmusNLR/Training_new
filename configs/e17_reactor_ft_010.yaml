@@ -1,0 +1,9 @@
+extends: e14_steps12_tree_ft.yaml
+loss:
+  lambda_reactor_wape: 0.1
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e14_steps12_tree_ft/best_current.pt
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e17_reactor_ft_010
+wandb:
+  name: e17_reactor_ft_010
+  tags: [h384, steps-12, structural-current, reactor-wape-010, fractional-finetune]

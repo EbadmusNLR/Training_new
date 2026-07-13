@@ -22,6 +22,37 @@ from gridfm.config import load_config
 from gridfm.legacy import physics
 from gridfm.losses import objective
 from gridfm.model import EdgeStateGridFM, load_compatible_state
+from gridfm.tree_current import decode_tree_line_currents
+
+
+def foundation_selection_score(task_metrics: dict) -> float:
+    """Score aggregate tasks and scale-normalized component tails, fail closed."""
+    required = (
+        ("pf", "V_wape_pct"), ("pf", "Ibus_wape_pct"),
+        ("se_known", "V_wape_pct"), ("se_known", "Ibus_wape_pct"),
+        ("param_one", "Y_wape_pct"), ("injection", "Icomp_wape_pct"),
+    )
+    values = [
+        task_metrics.get(task, {}).get(key, float("inf"))
+        for task, key in required
+    ]
+    # Raw family WAPE is undefined when its physical truth denominator is zero
+    # (notably storage Y). Family-scale WAPE remains meaningful there.
+    for task, role in (("param_one", "_Y"), ("injection", "_Icomp")):
+        values.extend(
+            float(value)
+            for key, value in task_metrics.get(task, {}).items()
+            if key.startswith("field_")
+            and role in key
+            and key.endswith("_scale_wape_pct")
+        )
+    for task in ("random_safe", "random"):
+        if task in task_metrics:
+            values.extend(
+                task_metrics[task].get(f"{field}_wape_pct", float("inf"))
+                for field in ("V", "Y", "Icomp", "Ibus")
+            )
+    return max(values) if values else float("inf")
 
 
 def loader(dataset, batch: int, workers: int, shuffle: bool, samples: int | None = None):
@@ -65,7 +96,7 @@ def run_epoch(model, batches, cfg, device, s_kcl, optimizer=None, scheduler=None
     training = optimizer is not None
     model.train(training)
     logs: dict[str, list[float]] = {}
-    amp = device.type == "cuda" and cfg["train"].get("amp") == "bf16"
+    amp = training and device.type == "cuda" and cfg["train"].get("amp") == "bf16"
     wape_sums: dict[str, float] = {}
     for batch in batches:
         batch = batch.to(device, non_blocking=True)
@@ -90,10 +121,19 @@ def run_epoch(model, batches, cfg, device, s_kcl, optimizer=None, scheduler=None
         for key, value in row.items():
             logs.setdefault(key, []).append(float(value))
         if not training:
-            for key, value in physics.percentage_error_sums(
-                batch, preds, float(cfg["loss"]["feat_clamp"])
-            ).items():
-                wape_sums[key] = wape_sums.get(key, 0.0) + value
+            clamp = float(cfg["loss"]["feat_clamp"])
+            variants = {"": preds}
+            if float(cfg["loss"].get("lambda_tree_wape", 0.0)) or float(
+                cfg["loss"].get("lambda_tree_line_wape", 0.0)
+            ):
+                tree = decode_tree_line_currents(batch, preds, clamp)
+                variants["tree_"] = physics.kcl_decode_vsource(batch, tree, clamp)
+            for prefix, variant in variants.items():
+                for key, value in physics.percentage_error_sums(
+                    batch, variant, clamp
+                ).items():
+                    name = prefix + key
+                    wape_sums[name] = wape_sums.get(name, 0.0) + value
     out = {key: statistics.fmean(values) for key, values in logs.items()}
     if not training:
         for key in {k[:-4] for k in wape_sums if k.endswith("_num")}:
@@ -155,9 +195,19 @@ def main() -> int:
         init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
         load_compatible_state(model, init["model"])
         print(f"initialized model from {cfg['train']['init_ckpt']}", flush=True)
-    print(f"model parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
+    if cfg["train"].get("freeze_except_field_heads", False):
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in model.field_head.parameters():
+            parameter.requires_grad_(True)
+        print("froze backbone and voltage heads; training field heads only", flush=True)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"model parameters: {total_params:,}; trainable: {trainable_params:,}", flush=True
+    )
     opt = torch.optim.AdamW(
-        model.parameters(), lr=float(cfg["train"]["lr"]),
+        (p for p in model.parameters() if p.requires_grad), lr=float(cfg["train"]["lr"]),
         weight_decay=float(cfg["train"].get("weight_decay", 0.0)),
     )
     batch_size = int(cfg["train"]["batch_size"])
@@ -178,7 +228,9 @@ def main() -> int:
     scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
     s_kcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
 
-    start, best_v, best_i = 1, float("inf"), float("inf")
+    start, best_v, best_i, best_foundation = (
+        1, float("inf"), float("inf"), float("inf")
+    )
     last_path = out / "last.pt"
     if args.resume and last_path.is_file():
         ck = torch.load(last_path, map_location=device, weights_only=False)
@@ -187,6 +239,7 @@ def main() -> int:
         sched.load_state_dict(ck["scheduler"])
         start = int(ck["epoch"]) + 1
         best_v, best_i = float(ck["best_v"]), float(ck["best_i"])
+        best_foundation = float(ck.get("best_foundation", float("inf")))
 
     wb = init_wandb(cfg, out)
     log_path = out / "log.jsonl"
@@ -194,22 +247,37 @@ def main() -> int:
         bundle.train.set_epoch(epoch)
         train_metrics = run_epoch(model, train_loader, cfg, device, s_kcl, opt, sched)
         seen_metrics = unseen_metrics = {}
+        task_metrics = {}
         if epoch % int(cfg["train"]["eval_every"]) == 0 or epoch == int(cfg["train"]["epochs"]):
             with torch.no_grad():
                 seen_metrics = run_epoch(model, seen_loader, cfg, device, s_kcl)
                 unseen_metrics = run_epoch(model, unseen_loader, cfg, device, s_kcl)
+                task_fields = cfg["train"].get("foundation_task_fields", {})
+                if task_fields:
+                    original_mask = bundle.unseen.mask_cfg
+                    try:
+                        for task in task_fields:
+                            bundle.unseen.mask_cfg = {
+                                **original_mask, "mixture": {task: 1.0}
+                            }
+                            task_metrics[task] = run_epoch(
+                                model, unseen_loader, cfg, device, s_kcl
+                            )
+                    finally:
+                        bundle.unseen.mask_cfg = original_mask
         rec = {
             "epoch": epoch, "lr": sched.get_last_lr()[0],
             "train": train_metrics, "seen": seen_metrics, "unseen": unseen_metrics,
+            "unseen_tasks": task_metrics,
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(
             f"epoch {epoch:03d} train={train_metrics.get('loss', float('nan')):.4e} "
             f"seen V/I={seen_metrics.get('V_wape_pct', float('nan')):.4f}%/"
-            f"{seen_metrics.get('Ibus_wape_pct', float('nan')):.3f}% "
+            f"{seen_metrics.get('tree_Ibus_wape_pct', seen_metrics.get('Ibus_wape_pct', float('nan'))):.3f}% "
             f"unseen V/I={unseen_metrics.get('V_wape_pct', float('nan')):.4f}%/"
-            f"{unseen_metrics.get('Ibus_wape_pct', float('nan')):.3f}%",
+            f"{unseen_metrics.get('tree_Ibus_wape_pct', unseen_metrics.get('Ibus_wape_pct', float('nan'))):.3f}%",
             flush=True,
         )
         if wb is not None:
@@ -217,14 +285,32 @@ def main() -> int:
             for split in ("train", "seen", "unseen"):
                 for key, value in rec[split].items():
                     flat[f"{split}/{key}"] = value
+            for task, values in task_metrics.items():
+                for key, value in values.items():
+                    flat[f"unseen_tasks/{task}/{key}"] = value
             wb.log(flat, step=epoch)
         score_split = unseen_metrics or seen_metrics
         v = score_split.get("V_wape_pct", float("inf"))
-        i = score_split.get("Ibus_wape_pct", float("inf"))
+        i = score_split.get(
+            "tree_Ibus_wape_pct", score_split.get("Ibus_wape_pct", float("inf"))
+        )
+        task_fields = cfg["train"].get("foundation_task_fields", {})
+        selection_weights = cfg["train"].get("foundation_selection_weights", {})
+        weighted = [
+            (float(weight), score_split.get(f"{field}_wape_pct", float("inf")))
+            for field, weight in selection_weights.items()
+            if float(weight) > 0
+        ]
+        foundation = foundation_selection_score(task_metrics) if task_fields else (
+            sum(weight * value for weight, value in weighted)
+            / sum(weight for weight, _ in weighted)
+            if weighted else float("inf")
+        )
         state = {
             "model": model.state_dict(), "optimizer": opt.state_dict(),
             "scheduler": sched.state_dict(), "epoch": epoch,
-            "best_v": min(best_v, v), "best_i": min(best_i, i), "cfg": cfg,
+            "best_v": min(best_v, v), "best_i": min(best_i, i),
+            "best_foundation": min(best_foundation, foundation), "cfg": cfg,
         }
         torch.save(state, last_path)
         if v < best_v:
@@ -233,6 +319,9 @@ def main() -> int:
         if i < best_i:
             best_i = i
             torch.save(state, out / "best_current.pt")
+        if foundation < best_foundation:
+            best_foundation = foundation
+            torch.save(state, out / "best_foundation.pt")
     if wb is not None:
         wb.finish()
     return 0

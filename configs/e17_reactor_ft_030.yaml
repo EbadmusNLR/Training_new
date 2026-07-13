@@ -1,0 +1,8 @@
+extends: e17_reactor_ft_010.yaml
+loss:
+  lambda_reactor_wape: 0.3
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e17_reactor_ft_030
+wandb:
+  name: e17_reactor_ft_030
+  tags: [h384, steps-12, structural-current, reactor-wape-030, fractional-finetune]

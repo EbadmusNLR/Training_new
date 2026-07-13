@@ -1,0 +1,8 @@
+extends: e29_foundation_random_full.yaml
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e29_foundation_random_full/best_foundation.pt
+  lr: 0.0000025
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e36_foundation_random_continue
+wandb:
+  name: e36_foundation_random_continue
+  tags: [h384, steps-12, foundation, role-heads, paired-random, full-exposure, continuation]

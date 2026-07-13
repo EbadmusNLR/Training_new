@@ -30,35 +30,41 @@ Full fractional run: `sbatch run.sbatch`. The production corpus is
 `minimal_component_det2f`; its exact-current re-encoding and clean-validator evidence are
 recorded in `experiments.md`.
 
-Select a final checkpoint only from unseen-topology reports. Each report must have been
-produced with `--tree-line --kcl-vsource`:
+Evaluate every identifiable task plus the explicit all-field stress mask, then select only
+from unseen-topology scorecards:
 
 ```bash
-python scripts/select_champion.py \
-  --report runs/<candidate-a>/unseen_tree.json \
-  --report runs/<candidate-b>/unseen_tree.json \
-  --output runs/final_selection.json
+sbatch --export=ALL,RUN_DIR=runs/<candidate>,CKPT=runs/<candidate>/best_foundation.pt \
+  scripts/evaluate_foundation.sbatch
+python scripts/select_foundation.py \
+  --scorecard runs/<candidate-a>/task_reports_unseen/scorecard.json \
+  --scorecard runs/<candidate-b>/task_reports_unseen/scorecard.json \
+  --output runs/foundation_selection.json
 ```
 
-Only after that command writes the selection receipt may the sealed test split be opened:
+Only after that command writes the selection receipt may the fixed held-out test be read.
+`random_safe` randomly samples identifiable PF/SE/Y/Icomp tasks; `random` is a deliberately
+underdetermined simultaneous-mask stress test.
 
 ```bash
-sbatch --export=ALL,SELECTION=runs/final_selection.json scripts/evaluate_final.sbatch
+sbatch --export=ALL,RUN_DIR=runs/<selected>,CKPT=runs/<selected>/best_foundation.pt,\
+SPLIT=seen,OUTPUT_DIR=runs/<selected>/task_reports_seen scripts/evaluate_foundation.sbatch
+sbatch --export=ALL,RUN_DIR=runs/<selected>,CKPT=runs/<selected>/best_foundation.pt,\
+SPLIT=test,OUTPUT_DIR=runs/<selected>/task_reports_test scripts/evaluate_foundation.sbatch
 ```
 
-The selector rejects non-unseen or non-structural-current reports. The final evaluator
-refuses to overwrite an existing test report unless `FORCE=1` is explicitly supplied.
-After it completes, package the verified checkpoint and reports with
-`python scripts/promote.py --selection runs/final_selection.json --output runs/best`.
+The selector rejects non-unseen reports, and evaluators refuse to overwrite reports unless
+`FORCE=1` is explicit. Package the hash-verified checkpoint with
+`scripts/promote_foundation.py` after both final splits complete.
 
 Nontrivial training must run on an allocated compute node through Slurm. Every promoted
 checkpoint must report both held operating points on known feeders and entirely held-out
 feeders using split-level WAPE percentages.
 
-## Promoted result
+## Selected foundation result
 
-The selected H384 checkpoint uses the solver-free tree-current decoder. Its final WAPE is
-`0.570% V / 1.368% Ibus` on held operating points, `1.767% / 6.732%` on unseen-topology
-validation, and `2.124% / 6.888%` on the sealed unseen-topology test split. The selection
-receipt and promoted files are under `runs/best`; the checkpoint SHA-256 is
-`dfe90e058e325987614bba44a421b18bbdb283703edc77b255ebabcb01d1b566`.
+E51 is selected on unseen feeders. It reaches PF `1.691% V / 9.753% Ibus` direct
+(`6.557%` structural), known-injection SE `1.876% / 10.713%`, Y `0.843%`, and Icomp
+`0.479%`. Worst scale-normalized Y/Icomp fields are `2.628% / 1.200%`. The safe random
+mixture is `1.745% / 9.899% / 0.832% / 0.490%` for V/Ibus/Y/Icomp. It does not pass the
+1% all-task gate; the scorecard records every failure rather than promoting a false claim.

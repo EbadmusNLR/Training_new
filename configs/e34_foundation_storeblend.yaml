@@ -1,0 +1,15 @@
+extends: e27_foundation_role_full.yaml
+loss:
+  balance_stores: 0.25
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e27_foundation_role_full/best_foundation.pt
+  lr: 0.000005
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e34_foundation_storeblend
+  foundation_task_fields:
+    pf: [V, Ibus, Ibus_line, Ibus_transformer, Ibus_reactor, Ibus_load, Ibus_vsource]
+    se_known: [V, Ibus, Ibus_line, Ibus_transformer, Ibus_reactor, Ibus_load, Ibus_vsource]
+    param_one: [Y, Y_line, Y_transformer, Y_reactor, Y_capacitor, Y_load, Y_generator, Y_pvsystem, Y_storage, Y_vsource]
+    injection: [Icomp, Icomp_load, Icomp_generator, Icomp_pvsystem, Icomp_storage, Icomp_vsource]
+wandb:
+  name: e34_foundation_storeblend
+  tags: [h384, steps-12, foundation, role-heads, full-exposure, store-blend]

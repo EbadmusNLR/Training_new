@@ -1,0 +1,11 @@
+extends: e28_foundation_random_ft.yaml
+data:
+  samples_per_epoch: 34000
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e28_foundation_random_ft/best_foundation.pt
+  epochs: 10
+  lr: 0.000005
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e29_foundation_random_full
+wandb:
+  name: e29_foundation_random_full
+  tags: [h384, steps-12, foundation, role-heads, paired-random, full-exposure]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .legacy import PE_DIM_EXT, SPECS, n_slots, store_width
+from .legacy import PE_DIM_EXT, SPECS, i_offset, n_slots, store_width, y_width
 
 
 def _pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int, reduce: str) -> torch.Tensor:
@@ -50,7 +50,9 @@ class EdgeStateGridFM(nn.Module):
 
     def __init__(self, hidden: int = 256, steps: int = 12, dropout: float = 0.0,
                  condition_on_scale: bool = True, normalize_features: bool = False,
-                 aggregation: str = "mean"):
+                 aggregation: str = "mean", use_electrical_pe: bool = True,
+                 directional_sweeps: bool = False, role_residual_heads: bool = False,
+                 task_conditioning: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -61,6 +63,10 @@ class EdgeStateGridFM(nn.Module):
         self.condition_on_scale = condition_on_scale
         self.normalize_features = normalize_features
         self.aggregation = aggregation
+        self.use_electrical_pe = use_electrical_pe
+        self.directional_sweeps = directional_sweeps
+        self.role_residual_heads_enabled = role_residual_heads
+        self.task_conditioning = task_conditioning
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -75,9 +81,13 @@ class EdgeStateGridFM(nn.Module):
         self.edge_update = nn.ModuleDict({
             s: MLP(edge_in, hidden, hidden, dropout) for s in SPECS
         })
+        # Zero initialization makes old checkpoints exactly equivalent until a
+        # directional fine-tune learns leaf-to-root and root-to-leaf messages.
+        self.directional_update = MLP(2 * hidden, hidden, hidden, dropout, zero_last=True)
         self.node_gru = nn.GRUCell(2 * hidden, hidden)
         self.comp_gru = nn.ModuleDict({s: nn.GRUCell(2 * hidden, hidden) for s in SPECS})
         self.global_gru = nn.GRUCell(hidden, hidden)
+        self.task_encoder = MLP(4, hidden, hidden, dropout, zero_last=True)
         self.node_norm = nn.LayerNorm(hidden)
         self.comp_norm = nn.ModuleDict({s: nn.LayerNorm(hidden) for s in SPECS})
 
@@ -92,6 +102,14 @@ class EdgeStateGridFM(nn.Module):
         self.field_head = nn.ModuleDict({
             s: MLP(hidden, store_width(s), hidden, dropout, zero_last=True) for s in SPECS
         })
+        self.role_residual_heads = nn.ModuleDict()
+        for store in SPECS:
+            ny, ni, width = y_width(store), i_offset(store), store_width(store)
+            heads = {"y": MLP(hidden, ny, hidden, dropout, zero_last=True)}
+            if ni > ny:
+                heads["icomp"] = MLP(hidden, ni - ny, hidden, dropout, zero_last=True)
+            heads["ibus"] = MLP(hidden, width - ni, hidden, dropout, zero_last=True)
+            self.role_residual_heads[store] = nn.ModuleDict(heads)
 
     def set_feature_stats(self, stats: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
         for store, (mean, std) in stats.items():
@@ -103,13 +121,20 @@ class EdgeStateGridFM(nn.Module):
         nd = batch["node"]
         dtype = next(self.node_encoder.parameters()).dtype
         vis = nd.vis_v.unsqueeze(1)
+        pe = nd.pe[:, :PE_DIM_EXT].to(dtype)
+        if not self.use_electrical_pe:
+            # The final PE coordinate is computed from true variant-0 Y.  It is
+            # valid for PF where Y is observed, but leaks targets in masked-Y
+            # foundation tasks.  Retain structural RWSE and unweighted depth.
+            pe = pe.clone()
+            pe[:, -1] = 0
         node_x = torch.cat([
             nd.v_init.to(dtype),
             nd.dv.to(dtype) * vis,
             vis.to(dtype),
             nd.ground.to(dtype).unsqueeze(1),
             nd.slack.to(dtype).unsqueeze(1),
-            nd.pe[:, :PE_DIM_EXT].to(dtype),
+            pe,
         ], dim=1)
         hn = self.node_encoder(node_x)
         hc = {}
@@ -142,11 +167,40 @@ class EdgeStateGridFM(nn.Module):
         n_graph = int(node_batch.max().item()) + 1 if node_batch.numel() else 0
         global_reduce = "sum" if self.aggregation == "sum" else "mean"
         hg = _pool(hn, node_batch, n_graph, global_reduce)
+        if self.task_conditioning:
+            # Global missingness rates identify the requested operation without
+            # exposing target values: V, Y, Icomp, and Ibus masked/active ratios.
+            num = hn.new_zeros(n_graph, 4)
+            den = hn.new_zeros(n_graph, 4)
+            num[:, 0].index_add_(
+                0, node_batch, nd.msk_v.to(hn.dtype)
+            )
+            den[:, 0].index_add_(
+                0, node_batch, (~nd.ground).to(hn.dtype)
+            )
+            for store in SPECS:
+                st = batch[store]
+                if st.num_nodes == 0:
+                    continue
+                cb = getattr(st, "batch", None)
+                if cb is None:
+                    cb = torch.zeros(st.num_nodes, dtype=torch.long, device=hn.device)
+                ny, ni = y_width(store), i_offset(store)
+                for col, cols in enumerate((slice(0, ny), slice(ny, ni), slice(ni, None)), 1):
+                    num[:, col].index_add_(
+                        0, cb, st.msk[:, cols].sum(1).to(hn.dtype)
+                    )
+                    den[:, col].index_add_(
+                        0, cb, st.act[:, cols].sum(1).to(hn.dtype)
+                    )
+            hg = hg + self.task_encoder(num / den.clamp_min(1))
         edge_state = {}
 
         for _ in range(self.steps):
             node_msg = hn.new_zeros(hn.shape)
             node_degree = hn.new_zeros(hn.shape[0], 1)
+            up_msg = hn.new_zeros(hn.shape)
+            down_msg = hn.new_zeros(hn.shape)
             comp_msg = {}
             for store in SPECS:
                 es = batch[(store, "conn", "node")]
@@ -171,8 +225,47 @@ class EdgeStateGridFM(nn.Module):
                 cd.index_add_(0, comp, edge.new_ones(edge.shape[0], 1))
                 comp_msg[store] = cm if self.aggregation == "sum" else cm / cd.clamp_min(1)
 
+                if self.directional_sweeps and SPECS[store].terms > 1:
+                    # For each multi-terminal component, aggregate latent
+                    # evidence on the deeper side toward the source and source-
+                    # side context toward descendants.  Exact (unclipped) BFS
+                    # depth is structural only and never uses solved targets.
+                    depth = getattr(nd, "depth_raw", nd.depth).to(edge.dtype)
+                    edge_depth = depth[node]
+                    n_comp = hc[store].shape[0]
+                    min_depth = edge_depth.new_full((n_comp,), float("inf"))
+                    min_depth.scatter_reduce_(
+                        0, comp, edge_depth, reduce="amin", include_self=True
+                    )
+                    shallow = edge_depth <= min_depth[comp] + 1e-6
+                    deep = ~shallow
+                    shallow_sum = edge.new_zeros(n_comp, self.hidden)
+                    shallow_count = edge.new_zeros(n_comp, 1)
+                    deep_sum = edge.new_zeros(n_comp, self.hidden)
+                    deep_count = edge.new_zeros(n_comp, 1)
+                    if shallow.any():
+                        shallow_sum.index_add_(0, comp[shallow], edge[shallow])
+                        shallow_count.index_add_(
+                            0, comp[shallow], edge.new_ones(int(shallow.sum()), 1)
+                        )
+                    if deep.any():
+                        deep_sum.index_add_(0, comp[deep], edge[deep])
+                        deep_count.index_add_(
+                            0, comp[deep], edge.new_ones(int(deep.sum()), 1)
+                        )
+                    shallow_mean = shallow_sum / shallow_count.clamp_min(1)
+                    deep_mean = deep_sum / deep_count.clamp_min(1)
+                    if shallow.any():
+                        up_msg.index_add_(0, node[shallow], deep_mean[comp[shallow]])
+                    if deep.any():
+                        down_msg.index_add_(0, node[deep], shallow_mean[comp[deep]])
+
             if self.aggregation == "mean":
                 node_msg = node_msg / node_degree.clamp_min(1)
+            if self.directional_sweeps:
+                node_msg = node_msg + self.directional_update(
+                    torch.cat([up_msg, down_msg], dim=1)
+                )
             hg = self.global_gru(_pool(hn, node_batch, n_graph, global_reduce), hg)
             hn = self.node_norm(self.node_gru(torch.cat([node_msg, hg[node_batch]], 1), hn))
             for store in SPECS:
@@ -207,6 +300,13 @@ class EdgeStateGridFM(nn.Module):
         field_std = {}
         for store in SPECS:
             head = self.field_head[store](hc[store])
+            if self.role_residual_heads_enabled:
+                roles = self.role_residual_heads[store]
+                pieces = [roles["y"](hc[store])]
+                if "icomp" in roles:
+                    pieces.append(roles["icomp"](hc[store]))
+                pieces.append(roles["ibus"](hc[store]))
+                head = head + torch.cat(pieces, dim=1)
             std = self.feature_stats[store].std.to(head.dtype)
             preds[store] = head * std if self.normalize_features else head
             field_std[store] = std
@@ -221,6 +321,14 @@ class EdgeStateGridFM(nn.Module):
 def load_compatible_state(model: nn.Module, state: dict) -> None:
     """Load pre-normalization checkpoints while rejecting unrelated mismatch."""
     missing, unexpected = model.load_state_dict(state, strict=False)
-    bad_missing = [key for key in missing if not key.startswith("feature_stats.")]
-    if bad_missing or unexpected:
-        raise RuntimeError(f"checkpoint mismatch: missing={bad_missing}, unexpected={unexpected}")
+    allowed_missing = (
+        "feature_stats.", "directional_update.", "role_residual_heads.",
+        "task_encoder.",
+    )
+    bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
+    allowed_obsolete = ("icomp_current_skip.",)
+    bad_unexpected = [key for key in unexpected if not key.startswith(allowed_obsolete)]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"checkpoint mismatch: missing={bad_missing}, unexpected={bad_unexpected}"
+        )

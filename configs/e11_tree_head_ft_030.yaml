@@ -1,0 +1,8 @@
+extends: e11_tree_head_ft_010.yaml
+loss:
+  lambda_tree_line_wape: 0.3
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e11_tree_head_ft_030
+wandb:
+  name: e11_tree_head_ft_030
+  tags: [h384, differentiable-tree-current, tree-line-wape-030, field-head-only, fractional-finetune]

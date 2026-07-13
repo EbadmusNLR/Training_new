@@ -1,0 +1,11 @@
+extends: e10_det2f_wape_h384_2000.yaml
+data:
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e12_h512_2000
+model:
+  hidden: 512
+train:
+  batch_size: 48
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e12_h512_2000
+wandb:
+  name: e12_h512_2000
+  tags: [det2f, hidden-512, steps-8, topology-scale-2000, strict-topology-holdout, pf]

@@ -9,5 +9,9 @@ allocation_logs/
 wandb/
 logs/
 slurm-*.out
+eval-*.out
+syntax-*.out
+mask-gate-*.out
+tests-*.out
 *.pt
 *.npy

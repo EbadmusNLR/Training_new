@@ -1,0 +1,7 @@
+extends: e51_foundation_xfmr010.yaml
+loss:
+  lambda_transformer_wape: 0.3
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e52_foundation_xfmr030
+wandb:
+  name: e52_foundation_xfmr030

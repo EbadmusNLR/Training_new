@@ -1,0 +1,12 @@
+extends: e21_foundation_roleheads.yaml
+data:
+  samples_per_epoch: 34000
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e21_foundation_roleheads/best_foundation.pt
+  epochs: 10
+  lr: 0.00001
+  eval_every: 5
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e27_foundation_role_full
+wandb:
+  name: e27_foundation_role_full
+  tags: [h384, steps-12, foundation, role-heads, full-exposure]

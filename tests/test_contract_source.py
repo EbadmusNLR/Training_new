@@ -27,6 +27,24 @@ class ContractSourceTest(unittest.TestCase):
         self.assertNotIn(".dv", text)
         self.assertNotIn("opendss", text)
         self.assertIn("subtree", text)
+        self.assertIn("0.5j", text)
+
+    def test_hybrid_current_decoder_is_local_and_solver_free(self):
+        text = (Path(__file__).parents[1] / "gridfm" / "hybrid_current.py").read_text().lower()
+        self.assertNotIn("linalg", text)
+        self.assertNotIn("opendss", text)
+        self.assertIn("decode_currents", text)
+        self.assertNotIn('"line"', text.split("safe_physics_stores", 1)[1].split(")", 1)[0])
+
+    def test_voltage_refinement_is_local_and_solver_free(self):
+        text = (
+            Path(__file__).parents[1] / "gridfm" / "voltage_refinement.py"
+        ).read_text().lower()
+        self.assertNotIn("torch.linalg", text)
+        self.assertNotIn("opendss", text)
+        self.assertNotIn("exact_pf_solve", text)
+        self.assertIn("index_add_", text)
+        self.assertIn("same_node", text)
 
 
 if __name__ == "__main__":

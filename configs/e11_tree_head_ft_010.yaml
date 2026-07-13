@@ -1,0 +1,8 @@
+extends: e11_tree_ft_010.yaml
+train:
+  freeze_except_field_heads: true
+  lr: 0.0001
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e11_tree_head_ft_010
+wandb:
+  name: e11_tree_head_ft_010
+  tags: [h384, differentiable-tree-current, tree-line-wape-010, field-head-only, fractional-finetune]

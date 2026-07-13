@@ -1,0 +1,8 @@
+extends: e34_foundation_storeblend.yaml
+loss:
+  balance_stores: 1.0
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e40_foundation_storebalanced_full
+wandb:
+  name: e40_foundation_storebalanced_full
+  tags: [h384, steps-12, foundation, role-heads, full-exposure, store-balanced-full]
