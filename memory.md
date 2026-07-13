@@ -37,3 +37,4 @@
 - Keep `random_safe` distinct from simultaneous all-field `random`: the former samples only identifiable PF/SE/one-Y/Icomp tasks; the latter is an explicitly underdetermined stress test.
 - Voltage WAPE does not certify current. Stiff line `Ys*dV` amplifies tiny drop/precision errors; use local physics only for non-stiff devices, tree KCL for series line flow, and exact `jYh(V1+V2)/2` for line common mode.
 - Foundation checkpoint selection uses aggregate PF/SE/Y/Icomp plus worst scale-normalized Y/Icomp fields. Raw family WAPE with zero truth denominator is diagnostic-only.
+- Promoted E51 is `runs/foundation_best` (SHA-256 `1c9a97b9183e0527c42439e8d052135bdaef83d3e9598f7ab35961b5a821ee17`). Fixed-test structural-hybrid PF is `2.106% V / 6.535% Ibus`; Y/Icomp are `0.918% / 0.481%`.

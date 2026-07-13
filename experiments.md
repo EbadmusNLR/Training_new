@@ -81,3 +81,5 @@
 - Local Jacobi reduces V to `1.563%` at 32 steps but cannot make stiff-Y current safe. Hybrid device physics + tree KCL gives E32 `6.371%` Ibus; exact `jY_h(V1+V2)/2` shunt decoding is correct but only a small gain.
 - Current error is not a near-zero metric artifact: >`0.1 pu` truth supplies `88.6%` of its numerator. Transformer/reactor and accumulated branch flow are the remaining learned bottleneck.
 - Checkpoint selection now fails closed on aggregate tasks plus worst family-scale fields; zero-denominator raw storage-Y WAPE no longer prevents checkpoint creation.
+- E51 final: seen PF `0.702% / 1.644%` structural; unseen `1.691% / 6.510%` best structural-hybrid; fixed test `2.106% / 6.535%`. Test Y/Icomp are `0.918% / 0.481%`; safe-random V/I/Y/Icomp are `2.140% / 9.619% / 0.939% / 0.462%`.
+- Promoted artifact: `runs/foundation_best`, SHA-256 `1c9a97b9183e0527c42439e8d052135bdaef83d3e9598f7ab35961b5a821ee17`.

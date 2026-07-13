@@ -68,3 +68,7 @@ E51 is selected on unseen feeders. It reaches PF `1.691% V / 9.753% Ibus` direct
 `0.479%`. Worst scale-normalized Y/Icomp fields are `2.628% / 1.200%`. The safe random
 mixture is `1.745% / 9.899% / 0.832% / 0.490%` for V/Ibus/Y/Icomp. It does not pass the
 1% all-task gate; the scorecard records every failure rather than promoting a false claim.
+On the fixed held-out test it reaches `2.106% V / 6.535% Ibus` with the stable hybrid
+branch-current policy, Y `0.918%`, and Icomp `0.481%`. The packaged artifact is
+`runs/foundation_best`; checkpoint SHA-256 is
+`1c9a97b9183e0527c42439e8d052135bdaef83d3e9598f7ab35961b5a821ee17`.
