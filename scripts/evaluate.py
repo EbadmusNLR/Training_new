@@ -37,7 +37,7 @@ def main() -> int:
     ap.add_argument(
         "--task", choices=(
             "pf", "se", "se_known", "param", "param_one", "injection",
-            "random", "ctrl", "topo", "sysid",
+            "random_safe", "random", "ctrl", "topo", "sysid",
         ),
         help="replace the checkpoint mask mixture with one deterministic task family",
     )

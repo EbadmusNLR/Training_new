@@ -39,6 +39,7 @@ def main() -> int:
     param = load(root / "param_one.json")
     injection = load(root / "injection.json")
     random = load(root / "random.json")
+    random_safe = load(root / "random_safe.json")
     checks = {
         "pf_voltage": float(pf["V_wape_pct"]),
         "pf_current_direct": float(pf["Ibus_wape_pct"]),
@@ -53,6 +54,10 @@ def main() -> int:
         "random_current": float(random["Ibus_wape_pct"]),
         "random_Y": float(random["Y_wape_pct"]),
         "random_Icomp": float(random["Icomp_wape_pct"]),
+        "random_safe_voltage": float(random_safe["V_wape_pct"]),
+        "random_safe_current": float(random_safe["Ibus_wape_pct"]),
+        "random_safe_Y": float(random_safe["Y_wape_pct"]),
+        "random_safe_Icomp": float(random_safe["Icomp_wape_pct"]),
     }
     threshold = float(args.threshold_pct)
     payload = {

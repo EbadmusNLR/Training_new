@@ -65,6 +65,24 @@ def main() -> int:
     assert inj["Icomp"] > 0 and inj["V"] == inj["Y"] == inj["Ibus"] == 0
     assert all(rows["random"][role] > 0 for role in ("V", "Y", "Icomp", "Ibus"))
 
+    # random_safe spans all roles across samples but never jointly hides an
+    # underdetermined combination inside one operating snapshot.
+    bundle.train.mask_cfg = {
+        **bundle.train.mask_cfg, "mixture": {"random_safe": 1.0}
+    }
+    bundle.train.set_epoch(0)
+    safe_union = {role: 0 for role in ("V", "Y", "Icomp", "Ibus")}
+    for index in range(min(64, len(bundle.train))):
+        data = bundle.train[index]
+        assert_boundary(data)
+        counts = role_counts(data)
+        active = {role for role, count in counts.items() if count > 0}
+        assert active in ({"V", "Ibus"}, {"Y"}, {"Icomp"})
+        for role, count in counts.items():
+            safe_union[role] += count
+    assert all(safe_union[role] > 0 for role in safe_union)
+    rows["random_safe_union"] = safe_union
+
     # param_one must select exactly one active triangular position in every
     # non-empty component row and pair all stored real/imaginary Y fields.
     pdata = sample_for(bundle, "param_one")

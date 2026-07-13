@@ -17,7 +17,7 @@ SPLIT="${SPLIT:-unseen}"
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_DIR/task_reports_$SPLIT}"
 mkdir -p "$OUTPUT_DIR"
 
-outputs=(pf.json pf_tree.json se_known.json param_one.json injection.json random.json)
+outputs=(pf.json pf_tree.json se_known.json param_one.json injection.json random_safe.json random.json)
 if [[ "${FORCE:-0}" != 1 ]]; then
   for name in "${outputs[@]}"; do
     if [[ -e "$OUTPUT_DIR/$name" ]]; then
@@ -41,6 +41,7 @@ run_task pf
 run_task se_known
 run_task param_one
 run_task injection
+run_task random_safe
 run_task random
 
 if [[ "$SPLIT" == unseen ]]; then

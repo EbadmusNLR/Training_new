@@ -46,11 +46,12 @@ def foundation_selection_score(task_metrics: dict) -> float:
             and role in key
             and key.endswith("_scale_wape_pct")
         )
-    if "random" in task_metrics:
-        values.extend(
-            task_metrics["random"].get(f"{field}_wape_pct", float("inf"))
-            for field in ("V", "Y", "Icomp", "Ibus")
-        )
+    for task in ("random_safe", "random"):
+        if task in task_metrics:
+            values.extend(
+                task_metrics[task].get(f"{field}_wape_pct", float("inf"))
+                for field in ("V", "Y", "Icomp", "Ibus")
+            )
     return max(values) if values else float("inf")
 
 
