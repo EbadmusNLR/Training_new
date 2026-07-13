@@ -1,0 +1,8 @@
+extends: e32_foundation_full_continue.yaml
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e32_foundation_full_continue/best_foundation.pt
+  lr: 0.0000025
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e37_foundation_full_long
+wandb:
+  name: e37_foundation_full_long
+  tags: [h384, steps-12, foundation, identifiable-masking, full-exposure, long-continuation]
