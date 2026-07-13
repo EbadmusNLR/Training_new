@@ -33,3 +33,7 @@
   voltage. Train it after identifiable pretraining; starting with all random tasks caused severe interference.
 - WAPE is not dominated by tiny currents: truth above `0.1 pu` accounts for `88.6%` of unseen error.
 - A reactor is not a simple paired line edge: reactor-first subtree decoding worsened Ibus to `10.43%`.
+- The broad unseen-topology winner is E51: PF `1.691% / 9.753%` direct, SE `1.876% / 10.713%`, Y `0.843%`, Icomp `0.479%`; worst Y/Icomp family-scale fields are `2.628% / 1.200%` before external finalization.
+- Keep `random_safe` distinct from simultaneous all-field `random`: the former samples only identifiable PF/SE/one-Y/Icomp tasks; the latter is an explicitly underdetermined stress test.
+- Voltage WAPE does not certify current. Stiff line `Ys*dV` amplifies tiny drop/precision errors; use local physics only for non-stiff devices, tree KCL for series line flow, and exact `jYh(V1+V2)/2` for line common mode.
+- Foundation checkpoint selection uses aggregate PF/SE/Y/Icomp plus worst scale-normalized Y/Icomp fields. Raw family WAPE with zero truth denominator is diagnostic-only.

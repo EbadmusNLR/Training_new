@@ -65,3 +65,19 @@
 - Leakage-free tasks are PF, known-injection SE, one-entry Y completion, Icomp completion, and paired random masking. Mask gate PASS; selection uses worst required task-field WAPE.
 - Clean E19 unseen @20: PF `1.790% / 9.889%`, SE `2.048% / 11.178%`, Y `1.494%`, Icomp `2.550%` (direct heads).
 - Role heads E21 @20: Y `1.252%`, Icomp `1.998%`; PF/SE current remains the bottleneck. Full-exposure, task-conditioned, structural-PF, directional, and staged-random continuations are active.
+
+## E29-E56 — broad foundation selection (2026-07-12)
+
+| Run | PF V / I direct | SE V / I | Y / Icomp | Worst Y / Icomp scale | Verdict |
+|---|---:|---:|---:|---:|---|
+| E32 aggregate | 1.708% / 9.683% | 1.902% / 10.669% | 0.840% / 0.742% | 4.101% / 1.695% | current specialist |
+| E40 store-balanced | 1.694% / 9.782% | 1.892% / 10.823% | 0.857% / 0.487% | 2.776% / 1.246% | broad baseline |
+| E51 transformer 0.1 | 1.691% / 9.753% | 1.876% / 10.713% | 0.843% / 0.479% | 2.628% / 1.200% | broad winner |
+
+- Canonical identifiable random on E40: V `1.751%`, Ibus `9.946%`, Y `0.843%`, Icomp `0.494%`.
+- Simultaneous all-field stress is underdetermined: E40 `9.396% / 44.982% / 15.210% / 14.909%`; 5-10% stress training improves it but harms core tasks.
+- Weight soups, task conditioning, directional sweeps, H512, reactor losses, and stronger transformer weight `0.3` were rejected.
+- Exact dense PF ceiling gives `0.021%` V but line `Y_s(V1-V2)` remains numerically ill-conditioned on singular/fallback cases; V WAPE alone does not certify current.
+- Local Jacobi reduces V to `1.563%` at 32 steps but cannot make stiff-Y current safe. Hybrid device physics + tree KCL gives E32 `6.371%` Ibus; exact `jY_h(V1+V2)/2` shunt decoding is correct but only a small gain.
+- Current error is not a near-zero metric artifact: >`0.1 pu` truth supplies `88.6%` of its numerator. Transformer/reactor and accumulated branch flow are the remaining learned bottleneck.
+- Checkpoint selection now fails closed on aggregate tasks plus worst family-scale fields; zero-denominator raw storage-Y WAPE no longer prevents checkpoint creation.
