@@ -25,6 +25,35 @@ from gridfm.model import EdgeStateGridFM, load_compatible_state
 from gridfm.tree_current import decode_tree_line_currents
 
 
+def foundation_selection_score(task_metrics: dict) -> float:
+    """Score aggregate tasks and scale-normalized component tails, fail closed."""
+    required = (
+        ("pf", "V_wape_pct"), ("pf", "Ibus_wape_pct"),
+        ("se_known", "V_wape_pct"), ("se_known", "Ibus_wape_pct"),
+        ("param_one", "Y_wape_pct"), ("injection", "Icomp_wape_pct"),
+    )
+    values = [
+        task_metrics.get(task, {}).get(key, float("inf"))
+        for task, key in required
+    ]
+    # Raw family WAPE is undefined when its physical truth denominator is zero
+    # (notably storage Y). Family-scale WAPE remains meaningful there.
+    for task, role in (("param_one", "_Y"), ("injection", "_Icomp")):
+        values.extend(
+            float(value)
+            for key, value in task_metrics.get(task, {}).items()
+            if key.startswith("field_")
+            and role in key
+            and key.endswith("_scale_wape_pct")
+        )
+    if "random" in task_metrics:
+        values.extend(
+            task_metrics["random"].get(f"{field}_wape_pct", float("inf"))
+            for field in ("V", "Y", "Icomp", "Ibus")
+        )
+    return max(values) if values else float("inf")
+
+
 def loader(dataset, batch: int, workers: int, shuffle: bool, samples: int | None = None):
     sampler = None
     if shuffle and samples is not None and samples < len(dataset):
@@ -265,18 +294,13 @@ def main() -> int:
             "tree_Ibus_wape_pct", score_split.get("Ibus_wape_pct", float("inf"))
         )
         task_fields = cfg["train"].get("foundation_task_fields", {})
-        required_task_scores = [
-            task_metrics.get(task, {}).get(f"{field}_wape_pct", float("inf"))
-            for task, fields in task_fields.items()
-            for field in fields
-        ]
         selection_weights = cfg["train"].get("foundation_selection_weights", {})
         weighted = [
             (float(weight), score_split.get(f"{field}_wape_pct", float("inf")))
             for field, weight in selection_weights.items()
             if float(weight) > 0
         ]
-        foundation = max(required_task_scores) if required_task_scores else (
+        foundation = foundation_selection_score(task_metrics) if task_fields else (
             sum(weight * value for weight, value in weighted)
             / sum(weight for weight, _ in weighted)
             if weighted else float("inf")
