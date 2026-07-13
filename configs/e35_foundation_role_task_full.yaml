@@ -1,0 +1,8 @@
+extends: e30_foundation_task_full.yaml
+train:
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e27_foundation_role_full/best_foundation.pt
+  lr: 0.000005
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e35_foundation_role_task_full
+wandb:
+  name: e35_foundation_role_task_full
+  tags: [h384, steps-12, foundation, role-heads, task-conditioning, role-init, full-exposure]
