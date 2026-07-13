@@ -34,6 +34,9 @@ def copy_reports(source: Path, target: Path, split: str) -> None:
     scorecard = source / "scorecard.json"
     if split == "unseen" and scorecard.is_file():
         shutil.copy2(scorecard, target / scorecard.name)
+    optional = source / "pf_hybrid_yh.json"
+    if optional.is_file():
+        shutil.copy2(optional, target / optional.name)
 
 
 def main() -> int:
