@@ -83,3 +83,118 @@
 - Checkpoint selection now fails closed on aggregate tasks plus worst family-scale fields; zero-denominator raw storage-Y WAPE no longer prevents checkpoint creation.
 - E51 final: seen PF `0.702% / 1.644%` structural; unseen `1.691% / 6.510%` best structural-hybrid; fixed test `2.106% / 6.535%`. Test Y/Icomp are `0.918% / 0.481%`; safe-random V/I/Y/Icomp are `2.140% / 9.619% / 0.939% / 0.462%`.
 - Promoted artifact: `runs/foundation_best`, SHA-256 `1c9a97b9183e0527c42439e8d052135bdaef83d3e9598f7ab35961b5a821ee17`.
+
+## D-attrib — the 6.5% unseen current wall is REACTOR current (2026-07-12)
+
+New diagnostics on the promoted checkpoint (`scripts/attrib_current.py`,
+`test_decode.py`, `v_sensitivity.py`, `probe_react.py`, `series_structure.py`),
+unseen PF. See memory `dgfm-current-error-is-reactor`.
+
+- **The decode is already solved.** `hybrid(shunt incl. reactor Y·V) + tree_line
+  + kcl_vsource` gives aggregate Ibus **0.16% at truth V**, and **0.175% at model
+  V when reactor currents are set to truth**. So currents are a well-conditioned
+  physics function of V; no better decode exists for E51 as-is.
+- **Reactor is the single lever.** Attribution: truth reactor current takes line
+  7.7%→0.22% and aggregate 8.0%→2.4%; truth V alone does NOT help line, nor does
+  truth shunt. Zeroing reactor → line/vsource 94% (both are KCL-reconstructed
+  FROM reactor injections). Reactors are significant carriers: truth sum|I| line
+  3.5 / reactor 0.94 / load 0.35; mean|I| reactor ~4× line.
+- **Reactor current is stiff Y·V** (exact at truth V, amp ~5×): learned head
+  7.4% beats Y·V-from-model-V 12.5%. Folding reactor into tree_line as a paired
+  series edge is WRONG (12.4%): reactor truth is ~17× its downstream load, so it
+  is a shunt/series reactance current, not a downstream-KCL quantity.
+- **Current ≈ 2.7·V** (v_sensitivity, physics decode, Gaussian V noise): line
+  2.6×, reactor 4.8×. <1% aggregate ⇒ V<~0.37%. Reactor-adjacent nodes have
+  V WAPE 1.34% vs 0.90% elsewhere (low-|V| buses, mean |V| 0.76).
+- **E51 has no `lambda_reactor_wape`** — reactor is under-supervised (only the
+  balanced recon + aggregate ibus_wape where it is a small magnitude fraction).
+
+### R-probes — both refute fine-tuning fixes (2026-07-12)
+- **R1** `configs/r1_reactor_wape.yaml` (E51 + reactor 0.3 + line 0.2 direct-head
+  current WAPE, 15 ep): reactor 7.15%→6.95%, line 10.4%→10.3%, V 1.70%→1.67%.
+  **NULL.** The reactor head is not supervision-limited; it is at a stiff
+  V1−V2 wall (it cannot output Y·(V1−V2) more precisely than the model's
+  internal voltage supports).
+- **R2** `configs/r2_reactor_physics.yaml` (physics reactor-consistency:
+  minimize WAPE(Y_reactor·V_pred, truth reactor), weight 0.3): train loss ~1000,
+  V **degraded** 1.70%→3.25%. The stiff Y·V gradient dominates under grad-clip
+  and wrecks global voltage. **DESTABILIZES.** (Loss knobs
+  `lambda_reactor_physics_wape` / `lambda_line_physics_wape` added to losses.py,
+  guarded, default 0.)
+
+### KCL-residual feedback (learned iterative solver) — honest V fix
+Added a Donon/PowerFlowNet-style learned iterative solver: each recurrent step
+computes the exact nodal KCL residual of the current V estimate (observed
+Y/Icomp + predicted V, no solve) and feeds it back (`gridfm/kcl_feedback.py`,
+`model.kcl_feedback`, zero-init so a checkpoint reproduces exactly). Directly
+attacks the root cause (V), can break the seen ceiling by enforcing physics at
+inference. Smoke: zero-init reproduces base exactly; gradient flows from E51.
+- **KCL1** (feedback, fine-tune E51, lr 3e-5): DIVERGES — feedback compounds
+  over 12 steps, unseen V 1.7%→24% by ep3. Added `node_norm` re-normalization
+  after the feedback to bound it.
+- **KCL1b** (feedback, FROZEN backbone + re-norm, train only feedback+V-heads,
+  lr 8e-5): stable early but V degrades to 6.3% (ep3) then train loss climbs
+  0.23→0.86 — the trainable node_head relearns under feedback and loses E51's
+  accuracy. Does not beat E51.
+- Lesson: E51 is a delicate optimum; the iterative solver must be trained
+  FROM SCRATCH so the whole model co-adapts. Launched `configs/kcl_scratch.yaml`
+  (from scratch, kcl_feedback, 70 ep, lr 4e-4) as job 15108869 — the honest best
+  shot; a single run is unlikely to beat E51's many-experiment tuning, but tests
+  whether the iterative-solver inductive bias lowers the V generalization floor.
+
+## PIVOT to real SMART-DS data + task-agnostic iterative solver (2026-07-13)
+
+Decisive finding: **reactors are a minimal_component ARTIFACT** — real SMART-DS
+feeders (`training_data/smartds1000/*/static.pt`) have node types line/capacitor/
+load/pvsystem/storage/transformer/vsource and NO reactor (gso12 manifest lists
+`reactor.*` as missing_required_keys; dss_data_v1 reactors are unit-test feeders).
+So the minimal_component 6.5% wall is largely synthetic; the real path is training
+on SMART-DS, where current is voltage-bounded and the transformer (many/feeder,
+stiff) is the element to watch. (dss_data does contain reactors, so the model
+still handles them — but they don't gate the SMART-DS foundation goal.)
+
+**Task-agnostic learned iterative solver** (`gridfm/kcl_feedback.py`,
+`model.kcl_feedback`), per user directive "maintain estimates of every hidden var,
+compute residuals from completed current estimates, iterate": each recurrent step
+computes the nodal KCL residual of the COMPLETED terminal-current estimates
+(observed-where-visible, predicted-where-masked) — Σ Ibus, O(1)/well-conditioned
+AND differentiable (dr/dIbus=1, no detach) — and feeds it back so the net refines
+its hidden state toward physical consistency, whatever variable is masked
+(PF/SE/param/injection). First attempt used the stiff Y·V residual (V-only, needed
+detach, NaN'd from scratch); the completed-current form is the correct one.
+Smoke-validated stable from scratch.
+
+**Real-data pipeline (all validated end-to-end on the pilot corpus):**
+- Data gen: `make_training_pt.py` needs `.venv` (opendssdirect); pilot-built 40
+  feeders into valid stores.
+- Schema: real vsource omits the Icomp block (no Norton compensation = zero) —
+  `DG_FM_Training/data.py resolve()` now zero-fills missing optional fields
+  (backward-compatible; complete corpora unaffected).
+- **PE performance fix** (the blocker): the FeederCache PE was dense O(n²/n³)
+  (co-incidence matmul, RWSE P^k, n-iteration Bellman-Ford) — fine for ~100-node
+  minimal_component, impossible for 5k-8k-node SMART-DS. Added a size-guarded
+  sparse path (scipy csgraph shortest paths + sparse RWSE) that MATCHES the dense
+  PE to 9e-8 on small feeders and builds a 5183-node feeder in 2.3s; results are
+  cached per-topology to `pe_cache_v1.pt` (0.01s reload). Small feeders keep the
+  exact dense code → E51 reproducibility untouched.
+- End-to-end smoke on real feeders: dataset build 72.5s, iterative-solver forward/
+  backward on 5k-node graphs (no OOM), eval/decode all work.
+
+**Corpus build + training (running):** full `SMART-DS_1000` build (job 15116719,
+64 workers, restarted with prebuilt `--scaler`/`--ranges` to skip the ~40-min
+serial fit) → 30000 variants; SMART-DS training (job 15117139, `configs/
+smartds_kcl.yaml`, H256 kcl_feedback, normalize_features off) auto-launches via
+`afterok` dependency. Watch: unseen V and whether current tracks V (no reactor
+artifact). See memory [[dgfm-iterative-solver-design]], [[dgfm-current-error-is-reactor]].
+
+## (minimal_component) Conclusion — superseded by the SMART-DS pivot above
+The unseen current wall is **not** fixable by fine-tuning the E51 model. It is a
+**voltage-generalization** problem gated by reactor stiffness: current ≈ 2.7·V,
+so <1% current needs unseen V < ~0.37% (E51 is 1.7%; seen is 0.7% — the
+seen→unseen gap is the barrier). Neither supervising the reactor head (R1) nor
+forcing V through reactor physics (R2) moves it. The remaining levers are
+fundamental: (a) more training-topology diversity (prior note: "topology
+coverage is strongest current lever"), (b) a better-generalizing architecture
+(e.g. residual-feedback / learned-iterative-solver for V), or (c) recognizing
+these stiff reactors as a minimal_component artifact and validating the pipeline
+(exact at truth reactor: 0.175%) on realistic dss/SMART-DS data.

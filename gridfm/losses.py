@@ -180,6 +180,25 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         transformer_wape = physical_ibus_wape_loss(
             batch, preds, clamp, ("transformer",)
         )
+    # Physics-consistency current WAPE: decode Ibus = Y·V - Icomp (through the
+    # element physics) for stiff families and match TRUTH.  Unlike the free-head
+    # WAPE above, the only trainable path is the node voltage, so this trains V
+    # to be accurate in the direction the stiff reactor/line current depends on
+    # (attacks the reactor-node voltage stiffness that caps the current, see
+    # experiments.md D-attrib).  Y is observed in PF/SE so its gradient is zero.
+    react_phys_wape = preds["node"].new_zeros(())
+    line_phys_wape = preds["node"].new_zeros(())
+    phys_stores = []
+    if float(cfg["loss"].get("lambda_reactor_physics_wape", 0.0)):
+        phys_stores.append("reactor")
+    if float(cfg["loss"].get("lambda_line_physics_wape", 0.0)):
+        phys_stores.append("line")
+    if phys_stores:
+        dc = physics.decode_currents(batch, preds, clamp)
+        if "reactor" in phys_stores:
+            react_phys_wape = physical_ibus_wape_loss(batch, dc, clamp, ("reactor",))
+        if "line" in phys_stores:
+            line_phys_wape = physical_ibus_wape_loss(batch, dc, clamp, ("line",))
     tree_wape = preds["node"].new_zeros(())
     tree_line_wape = preds["node"].new_zeros(())
     if float(lc.get("lambda_tree_wape", 0.0)) or float(
@@ -207,6 +226,8 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         + float(lc.get("lambda_transformer_wape", 0.0)) * transformer_wape
         + float(lc.get("lambda_tree_wape", 0.0)) * tree_wape
         + float(lc.get("lambda_tree_line_wape", 0.0)) * tree_line_wape
+        + float(lc.get("lambda_reactor_physics_wape", 0.0)) * react_phys_wape
+        + float(lc.get("lambda_line_physics_wape", 0.0)) * line_phys_wape
     )
     logs = {
         "loss": loss.item(), "loss_mask": mask_loss.item(), "loss_recon": recon.item(),
@@ -219,6 +240,8 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         "loss_transformer_wape": transformer_wape.item(),
         "loss_tree_wape": tree_wape.item(),
         "loss_tree_line_wape": tree_line_wape.item(),
+        "loss_reactor_physics_wape": react_phys_wape.item(),
+        "loss_line_physics_wape": line_phys_wape.item(),
         **metrics, **pmetrics,
     }
     return loss, preds, logs

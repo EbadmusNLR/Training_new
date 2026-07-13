@@ -21,7 +21,7 @@ from gridfm.model import EdgeStateGridFM, load_compatible_state
 from gridfm.current_projection import project_kcl
 from gridfm.hybrid_current import decode_hybrid_device_currents
 from gridfm.losses import pf_graph_mask
-from gridfm.tree_current import decode_tree_line_currents
+from gridfm.tree_current import decode_tree_line_currents, decode_tree_series_currents, PAIRED_SERIES
 from gridfm.voltage_refinement import refine_pf_voltages
 
 
@@ -46,6 +46,8 @@ def main() -> int:
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
     ap.add_argument("--tree-line", action="store_true",
                     help="reconstruct paired radial line-series currents from KCL")
+    ap.add_argument("--tree-series", action="store_true",
+                    help="reconstruct paired line+reactor series currents jointly from KCL")
     ap.add_argument(
         "--tree-physics-shunt", action="store_true",
         help="with --tree-line, compute the well-conditioned jYh line common mode",
@@ -77,8 +79,8 @@ def main() -> int:
         ap.error("--voltage-refine-steps requires --task pf")
     if args.exact_pf_ceiling and args.voltage_refine_steps:
         ap.error("exact ceiling and local voltage refinement are separate diagnostics")
-    if args.tree_physics_shunt and not args.tree_line:
-        ap.error("--tree-physics-shunt requires --tree-line")
+    if args.tree_physics_shunt and not (args.tree_line or args.tree_series):
+        ap.error("--tree-physics-shunt requires --tree-line or --tree-series")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
     ensemble_cks = [
         torch.load(path, map_location="cpu", weights_only=False)
@@ -144,6 +146,9 @@ def main() -> int:
     clamp = float(cfg["loss"]["feat_clamp"])
     scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
     skcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
+    for member in models:
+        if getattr(member, "kcl_feedback_enabled", False):
+            member.s_kcl = member.s_kcl.new_tensor(float(skcl))
     with torch.no_grad():
         for batch in batches:
             batch = batch.to(device)
@@ -189,7 +194,12 @@ def main() -> int:
                 preds = physics.decode_currents(batch, preds, clamp)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
-            if args.tree_line:
+            if args.tree_series:
+                preds = decode_tree_series_currents(
+                    batch, preds, clamp, series_stores=PAIRED_SERIES,
+                    physics_shunt=args.tree_physics_shunt,
+                )
+            elif args.tree_line:
                 preds = decode_tree_line_currents(
                     batch, preds, clamp, physics_shunt=args.tree_physics_shunt
                 )

@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from .legacy import PE_DIM_EXT, SPECS, i_offset, n_slots, store_width, y_width
+from .kcl_feedback import nodal_current_residual
 
 
 def _pool(x: torch.Tensor, batch: torch.Tensor, n_graph: int, reduce: str) -> torch.Tensor:
@@ -52,7 +53,7 @@ class EdgeStateGridFM(nn.Module):
                  condition_on_scale: bool = True, normalize_features: bool = False,
                  aggregation: str = "mean", use_electrical_pe: bool = True,
                  directional_sweeps: bool = False, role_residual_heads: bool = False,
-                 task_conditioning: bool = False):
+                 task_conditioning: bool = False, kcl_feedback: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -67,6 +68,10 @@ class EdgeStateGridFM(nn.Module):
         self.directional_sweeps = directional_sweeps
         self.role_residual_heads_enabled = role_residual_heads
         self.task_conditioning = task_conditioning
+        self.kcl_feedback_enabled = kcl_feedback
+        # pu scale that normalizes the fed-back KCL residual; set from the corpus
+        # current scaler by train.py/evaluate.py. asinh keeps it O(1).
+        self.register_buffer("s_kcl", torch.tensor(1.0), persistent=False)
         self.feature_stats = nn.ModuleDict({s: FeatureStats(store_width(s)) for s in SPECS})
         node_in = 2 + 2 + 1 + 1 + 1 + PE_DIM_EXT
         self.node_encoder = MLP(node_in, hidden, hidden, dropout)
@@ -85,6 +90,9 @@ class EdgeStateGridFM(nn.Module):
         # directional fine-tune learns leaf-to-root and root-to-leaf messages.
         self.directional_update = MLP(2 * hidden, hidden, hidden, dropout, zero_last=True)
         self.node_gru = nn.GRUCell(2 * hidden, hidden)
+        # KCL-residual feedback: zero-initialized so a checkpoint without it is
+        # reproduced exactly until the feedback path is trained (safe fine-tune).
+        self.kcl_feedback_mlp = MLP(2, hidden, hidden, dropout, zero_last=True)
         self.comp_gru = nn.ModuleDict({s: nn.GRUCell(2 * hidden, hidden) for s in SPECS})
         self.global_gru = nn.GRUCell(hidden, hidden)
         self.task_encoder = MLP(4, hidden, hidden, dropout, zero_last=True)
@@ -157,6 +165,20 @@ class EdgeStateGridFM(nn.Module):
             x = torch.cat(parts, dim=1)
             hc[store] = self.comp_encoder[store](x)
         return hn, hc
+
+    def _field_pred(self, store: str, hc_store: torch.Tensor) -> torch.Tensor:
+        """Full store prediction vector from its hidden state (heads + std)."""
+        head = self.field_head[store](hc_store)
+        if self.role_residual_heads_enabled:
+            roles = self.role_residual_heads[store]
+            pieces = [roles["y"](hc_store)]
+            if "icomp" in roles:
+                pieces.append(roles["icomp"](hc_store))
+            pieces.append(roles["ibus"](hc_store))
+            head = head + torch.cat(pieces, dim=1)
+        if self.normalize_features:
+            head = head * self.feature_stats[store].std.to(head.dtype)
+        return head
 
     def forward(self, batch, return_aux: bool = False):
         hn, hc = self._encode(batch)
@@ -268,6 +290,19 @@ class EdgeStateGridFM(nn.Module):
                 )
             hg = self.global_gru(_pool(hn, node_batch, n_graph, global_reduce), hg)
             hn = self.node_norm(self.node_gru(torch.cat([node_msg, hg[node_batch]], 1), hn))
+            if self.kcl_feedback_enabled:
+                # Learned iterative solver (foundation, task-agnostic): compute
+                # the nodal KCL residual of the COMPLETED terminal-current
+                # estimates (observed-where-visible, predicted-where-masked) and
+                # feed it back so the network refines its hidden state toward a
+                # physically consistent solution — whatever variable is masked.
+                # Σ Ibus is O(1)/well-conditioned AND differentiable (dr/dIbus=1),
+                # so no detach; physics stays fp32. Re-normalize to bound compounding.
+                ibus_feat = {s: self._field_pred(s, hc[s])[:, i_offset(s):].float()
+                             for s in SPECS if batch[s].num_nodes}
+                res = nodal_current_residual(batch, ibus_feat)
+                res = torch.asinh(res / (self.s_kcl.float() + 1e-12))
+                hn = self.node_norm(hn + self.kcl_feedback_mlp(res.to(hn.dtype)))
             for store in SPECS:
                 st = batch[store]
                 if st.num_nodes == 0:
@@ -299,17 +334,8 @@ class EdgeStateGridFM(nn.Module):
         preds = {"node": node_dv}
         field_std = {}
         for store in SPECS:
-            head = self.field_head[store](hc[store])
-            if self.role_residual_heads_enabled:
-                roles = self.role_residual_heads[store]
-                pieces = [roles["y"](hc[store])]
-                if "icomp" in roles:
-                    pieces.append(roles["icomp"](hc[store]))
-                pieces.append(roles["ibus"](hc[store]))
-                head = head + torch.cat(pieces, dim=1)
-            std = self.feature_stats[store].std.to(head.dtype)
-            preds[store] = head * std if self.normalize_features else head
-            field_std[store] = std
+            preds[store] = self._field_pred(store, hc[store])
+            field_std[store] = self.feature_stats[store].std.to(preds[store].dtype)
         if return_aux:
             return preds, {
                 "edge_dv": edge_dv, "node_base": node_base, "gate": gate,
@@ -323,7 +349,7 @@ def load_compatible_state(model: nn.Module, state: dict) -> None:
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = (
         "feature_stats.", "directional_update.", "role_residual_heads.",
-        "task_encoder.",
+        "task_encoder.", "kcl_feedback_mlp.", "s_kcl",
     )
     bad_missing = [key for key in missing if not key.startswith(allowed_missing)]
     allowed_obsolete = ("icomp_current_skip.",)

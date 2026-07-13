@@ -201,6 +201,21 @@ def main() -> int:
         for parameter in model.field_head.parameters():
             parameter.requires_grad_(True)
         print("froze backbone and voltage heads; training field heads only", flush=True)
+    if cfg["train"].get("freeze_except_feedback", False):
+        # Train only the KCL-residual feedback path and the voltage-producing
+        # heads.  The converged backbone is a delicate optimum that diverges when
+        # perturbed by the stiff physics signal (R2/KCL1); freezing it lets the
+        # feedback learn to correct voltage without destabilizing the model.
+        trainable = (
+            model.kcl_feedback_mlp, model.node_head, model.node_edge_gate,
+            model.edge_dv_head, model.node_norm,
+        )
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for module in trainable:
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+        print("froze backbone; training KCL feedback + voltage heads only", flush=True)
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(
@@ -227,6 +242,8 @@ def main() -> int:
     )
     scaler = json.loads((Path(cfg["data"]["root"]) / "feature_scaler.json").read_text())
     s_kcl = statistics.median(v["I_scale"] for v in scaler["current"].values())
+    if getattr(model, "kcl_feedback_enabled", False):
+        model.s_kcl = model.s_kcl.new_tensor(float(s_kcl))
 
     start, best_v, best_i, best_foundation = (
         1, float("inf"), float("inf"), float("inf")

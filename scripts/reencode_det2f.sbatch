@@ -12,11 +12,11 @@ set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 python scripts/reencode_corpus.py \
-  --src /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2 \
-  --out /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \
-  --flags /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2/_audit_cache/line_triplex.pt \
+  --src /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component \
+  --out /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component \
+  --flags /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component/_audit_cache/line_triplex.pt \
   --alpha-y 0 \
   --workers 32
 python scripts/validation.py scenario \
-  --search-root /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f \
+  --search-root /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component \
   --scenario-max-rows 1 --quiet-info

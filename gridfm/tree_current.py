@@ -1,4 +1,21 @@
-"""Radial line-series current reconstruction from KCL; no voltage/PF solve."""
+"""Radial series-current reconstruction from KCL; no voltage/PF solve.
+
+Attribution (scripts/attrib_current.py, unseen PF) showed the line-series WAPE is
+dominated not by voltage or shunt error but by the stiff REACTOR direct-head
+current, which the original line-only sweep treated as a fixed nodal injection.
+Reactors are paired series elements (truth |I1+I2|/|I| = 0.14%, scripts/
+series_structure.py), so they belong inside the same KCL forest as lines.
+Folding them in drops unseen line WAPE 7.7% -> 0.2% at truth-reactor and removes
+the pollution at model reactor accuracy as well.
+
+`decode_tree_series_currents` reconstructs the paired series current on every
+edge of the combined line+reactor forest by subtree KCL. Every non-series
+terminal current (loads, transformer, vsource, and each series element's own
+shunt/common mode) is a known injection. Transformers stay injections: their
+winding connection makes conductor currents non-paired (36.9% residual), so they
+are handled elsewhere. One root residual per component remains for its
+source/transformer boundary. All current operations are differentiable.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -7,18 +24,16 @@ import torch
 
 from .legacy import FC, SPECS, i_offset, physics, y_width
 
+PAIRED_SERIES = ("line", "reactor")
 
-def decode_tree_line_currents(
-    batch, preds, clamp: float, *, physics_shunt: bool = False
+
+def decode_tree_series_currents(
+    batch, preds, clamp: float, *, series_stores=PAIRED_SERIES,
+    physics_shunt: bool = False,
 ):
-    """Reconstruct line series currents by subtree current accumulation.
-
-    Learned non-line terminal currents and each line's learned shunt/common-mode
-    current are preserved. For every conductor-wise line forest, KCL determines
-    the remaining paired series current on each tree edge. One root residual per
-    connected component remains for its source/transformer boundary.
-    """
-    if batch["line"].num_nodes == 0:
+    """Reconstruct paired series currents over a combined line+reactor forest."""
+    series_stores = tuple(s for s in series_stores if batch[s].num_nodes > 0)
+    if not series_stores:
         return preds
     xbar, vr, vi = physics.completed(batch, preds)
     dev = preds["node"].device
@@ -26,9 +41,9 @@ def decode_tree_line_currents(
     q = torch.zeros((n_node, 2), dtype=torch.float64, device=dev)
     boundary: set[int] = set()
 
-    # Everything except lines is a known injection into each line forest.
+    # Everything except the paired-series families is a known injection.
     for store in SPECS:
-        if store == "line" or batch[store].num_nodes == 0:
+        if store in series_stores or batch[store].num_nodes == 0:
             continue
         st = batch[store]
         ni = i_offset(store)
@@ -44,71 +59,78 @@ def decode_tree_line_currents(
         if store in {"transformer", "vsource"}:
             boundary.update(int(v) for v in node.detach().cpu().tolist())
 
-    st = batch["line"]
-    ni = i_offset("line")
-    cur = physics.decode_completed(
-        xbar["line"][:, ni:].double(), st.scale[:, ni:].double(),
-        st.msk[:, ni:], clamp,
-    )
-    es = batch[("line", "conn", "node")]
-    comp_cpu, node_cpu, slot_cpu = (
-        v.detach().cpu() for v in (es.edge_index[0], es.edge_index[1], es.slot)
-    )
-    slot_node = torch.full((st.num_nodes, 2 * FC), -1, dtype=torch.long)
-    slot_node[comp_cpu, slot_cpu] = node_cpu
+    # Decode each series store's currents and lay out one graph edge per active
+    # conductor. Terminal-1 slot s pairs with terminal-2 slot FC+s.
+    store_cur = {s: physics.decode_completed(
+        xbar[s][:, i_offset(s):].double(), batch[s].scale[:, i_offset(s):].double(),
+        batch[s].msk[:, i_offset(s):], clamp) for s in series_stores}
 
-    # One graph edge per active conductor. Preserve common mode as a shunt
-    # estimate; the paired differential mode is the series current to solve.
-    edges: list[tuple[int, int, int, int]] = []
+    edges: list[tuple[int, int, int, int, int]] = []  # n1, n2, sidx, row, phase
     adjacency: dict[int, list[int]] = defaultdict(list)
-    for row in range(st.num_nodes):
-        for phase in range(FC):
-            n1, n2 = int(slot_node[row, phase]), int(slot_node[row, FC + phase])
-            if n1 < 0 or n2 < 0:
-                continue
-            idx = len(edges)
-            edges.append((n1, n2, row, phase))
-            adjacency[n1].append(idx)
-            adjacency[n2].append(idx)
-
+    for sidx, store in enumerate(series_stores):
+        st = batch[store]
+        es = batch[(store, "conn", "node")]
+        comp_cpu, node_cpu, slot_cpu = (
+            v.detach().cpu() for v in (es.edge_index[0], es.edge_index[1], es.slot)
+        )
+        slot_node = torch.full((st.num_nodes, 2 * FC), -1, dtype=torch.long)
+        slot_node[comp_cpu, slot_cpu] = node_cpu
+        for row in range(st.num_nodes):
+            for phase in range(FC):
+                n1, n2 = int(slot_node[row, phase]), int(slot_node[row, FC + phase])
+                if n1 < 0 or n2 < 0:
+                    continue
+                idx = len(edges)
+                edges.append((n1, n2, sidx, row, phase))
+                adjacency[n1].append(idx)
+                adjacency[n2].append(idx)
     if not edges:
         return preds
+
     edge_n1 = torch.tensor([e[0] for e in edges], device=dev)
     edge_n2 = torch.tensor([e[1] for e in edges], device=dev)
-    edge_row = torch.tensor([e[2] for e in edges], device=dev)
-    edge_phase = torch.tensor([e[3] for e in edges], device=dev)
-    c1 = edge_phase
-    c2 = 2 * FC + edge_phase
-    i1 = torch.stack((cur[edge_row, c1], cur[edge_row, c1 + FC]), dim=1)
-    i2 = torch.stack((cur[edge_row, c2], cur[edge_row, c2 + FC]), dim=1)
+    edge_sidx = torch.tensor([e[2] for e in edges], device=dev)
+    edge_row = torch.tensor([e[3] for e in edges], device=dev)
+    edge_phase = torch.tensor([e[4] for e in edges], device=dev)
+
+    # Per-edge terminal currents gathered from the owning store.
+    i1 = torch.zeros(len(edges), 2, dtype=torch.float64, device=dev)
+    i2 = torch.zeros(len(edges), 2, dtype=torch.float64, device=dev)
+    for sidx, store in enumerate(series_stores):
+        m = edge_sidx == sidx
+        if not m.any():
+            continue
+        cur = store_cur[store]
+        row, phase = edge_row[m], edge_phase[m]
+        c1, c2 = phase, 2 * FC + phase
+        i1[m] = torch.stack((cur[row, c1], cur[row, c1 + FC]), dim=1)
+        i2[m] = torch.stack((cur[row, c2], cur[row, c2 + FC]), dim=1)
     shunt = 0.5 * (i1 + i2)
-    if physics_shunt:
+
+    if physics_shunt and "line" in series_stores:
         # The paired common mode cancels the stiff series term exactly:
-        #   0.5 * (I1 + I2) = 0.5 * jYh * (V1 + V2).
-        # Unlike Ys*(V1-V2), this uses absolute voltage and is well conditioned.
+        # 0.5*(I1+I2) = 0.5*jYh*(V1+V2); absolute voltage, well conditioned.
+        m = (edge_sidx == series_stores.index("line"))
+        st = batch["line"]
         ny = y_width("line")
         y_pu = physics.decode_completed(
             xbar["line"][:, :ny].double(), st.scale[:, :ny].double(),
             st.msk[:, :ny], clamp,
         )
         tri = physics.tri_size(FC)
-        yh = physics._tri_to_full(y_pu[:, 2 * tri :], FC)
+        yh = physics._tri_to_full(y_pu[:, 2 * tri:], FC)
         slot_vr, slot_vi = physics._slot_voltages(batch, "line", vr, vi)
-        vsum = torch.complex(
-            slot_vr[:, :FC] + slot_vr[:, FC:],
-            slot_vi[:, :FC] + slot_vi[:, FC:],
-        )
-        shunt_all = 0.5j * torch.einsum(
-            "kij,kj->ki", yh.to(vsum.dtype), vsum
-        )
-        shunt = torch.stack(
-            (shunt_all[edge_row, edge_phase].real,
-             shunt_all[edge_row, edge_phase].imag),
-            dim=1,
-        )
+        vsum = torch.complex(slot_vr[:, :FC] + slot_vr[:, FC:],
+                             slot_vi[:, :FC] + slot_vi[:, FC:])
+        shunt_all = 0.5j * torch.einsum("kij,kj->ki", yh.to(vsum.dtype), vsum)
+        lrow, lphase = edge_row[m], edge_phase[m]
+        shunt[m] = torch.stack(
+            (shunt_all[lrow, lphase].real, shunt_all[lrow, lphase].imag), dim=1)
+
     q = q.index_add(0, edge_n1, shunt)
     q = q.index_add(0, edge_n2, shunt)
 
+    # Forest discovery over the combined series graph.
     unseen_nodes = set(adjacency)
     slack = batch["node"].slack.detach().cpu()
     tree_children: list[int] = []
@@ -118,7 +140,6 @@ def decode_tree_line_currents(
     cycle_edge_ids: list[int] = []
     while unseen_nodes:
         component_seed = next(iter(unseen_nodes))
-        # Discover the connected line component before choosing its upstream root.
         stack, component_nodes, component_edges = [component_seed], set(), set()
         while stack:
             u = stack.pop()
@@ -152,7 +173,6 @@ def decode_tree_line_currents(
                 parent_edge[v] = ei
                 tree_edges.add(ei)
                 stack.append(v)
-
         cycle_edge_ids.extend(component_edges - tree_edges)
         for child in order[1:]:
             tree_children.append(child)
@@ -160,17 +180,14 @@ def decode_tree_line_currents(
             tree_edge_ids.append(parent_edge[child])
             tree_depths.append(depth[child])
 
-    # Preserve learned series flow on rare cycle chords. All value operations
-    # remain tensors, so gradients reach the current heads.
+    # Preserve learned series flow on rare cycle chords.
     if cycle_edge_ids:
         cyc = torch.tensor(cycle_edge_ids, device=dev)
         flow = 0.5 * (i1[cyc] - i2[cyc])
         q = q.index_add(0, edge_n1[cyc], flow)
         q = q.index_add(0, edge_n2[cyc], -flow)
 
-    # A depth-vectorized reverse tree sweep accumulates each subtree. Topology
-    # discovery is discrete, but every current operation is differentiable.
-    out_cur = cur.clone()
+    out_cur = {s: store_cur[s].clone() for s in series_stores}
     if tree_children:
         children = torch.tensor(tree_children, device=dev)
         parents = torch.tensor(tree_parents, device=dev)
@@ -179,24 +196,42 @@ def decode_tree_line_currents(
         subtree = q
         for level in range(int(depths.max().item()), 0, -1):
             take = depths == level
-            child, parent, ei = children[take], parents[take], tree_ei[take]
+            child, ei = children[take], tree_ei[take]
+            parent = parents[take]
             sign = torch.where(child == edge_n1[ei], 1.0, -1.0).unsqueeze(1)
             flow = -subtree[child] / sign
-            row, phase = edge_row[ei], edge_phase[ei]
-            col1, col2 = phase, 2 * FC + phase
             edge_shunt = shunt[ei]
-            out_cur[row, col1] = flow[:, 0] + edge_shunt[:, 0]
-            out_cur[row, col1 + FC] = flow[:, 1] + edge_shunt[:, 1]
-            out_cur[row, col2] = -flow[:, 0] + edge_shunt[:, 0]
-            out_cur[row, col2 + FC] = -flow[:, 1] + edge_shunt[:, 1]
+            sidx, row, phase = edge_sidx[ei], edge_row[ei], edge_phase[ei]
+            col1, col2 = phase, 2 * FC + phase
+            for si, store in enumerate(series_stores):
+                sm = sidx == si
+                if not sm.any():
+                    continue
+                r, p = row[sm], phase[sm]
+                c1, c2 = p, 2 * FC + p
+                f, sh = flow[sm], edge_shunt[sm]
+                oc = out_cur[store]
+                oc[r, c1] = f[:, 0] + sh[:, 0]
+                oc[r, c1 + FC] = f[:, 1] + sh[:, 1]
+                oc[r, c2] = -f[:, 0] + sh[:, 0]
+                oc[r, c2 + FC] = -f[:, 1] + sh[:, 1]
             delta = torch.zeros_like(subtree)
             delta.index_add_(0, parent, subtree[child])
             subtree = subtree + delta
 
-    encoded = torch.asinh(out_cur / (st.scale[:, ni:].double() + 1e-12))
     out = dict(preds)
-    p = out["line"].clone()
-    take = st.msk[:, ni:]
-    p[:, ni:] = torch.where(take, encoded.to(p.dtype), p[:, ni:])
-    out["line"] = p
+    for store in series_stores:
+        st = batch[store]
+        ni = i_offset(store)
+        encoded = torch.asinh(out_cur[store] / (st.scale[:, ni:].double() + 1e-12))
+        p = out[store].clone()
+        take = st.msk[:, ni:]
+        p[:, ni:] = torch.where(take, encoded.to(p.dtype), p[:, ni:])
+        out[store] = p
     return out
+
+
+def decode_tree_line_currents(batch, preds, clamp: float, *, physics_shunt: bool = False):
+    """Backward-compatible line-only sweep (see decode_tree_series_currents)."""
+    return decode_tree_series_currents(
+        batch, preds, clamp, series_stores=("line",), physics_shunt=physics_shunt)

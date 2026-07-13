@@ -1,6 +1,6 @@
 extends: e6_norm_edge1000.yaml
 data:
-  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component_det2f
+  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component
   cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/e7_det2f_1000
 train:
   out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e7_det2f_norm1000
