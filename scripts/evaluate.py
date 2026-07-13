@@ -46,6 +46,10 @@ def main() -> int:
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
     ap.add_argument("--tree-line", action="store_true",
                     help="reconstruct paired radial line-series currents from KCL")
+    ap.add_argument(
+        "--tree-physics-shunt", action="store_true",
+        help="with --tree-line, compute the well-conditioned jYh line common mode",
+    )
     ap.add_argument("--hybrid-device", action="store_true",
                     help="decode non-stiff device currents from local complex physics")
     ap.add_argument(
@@ -73,6 +77,8 @@ def main() -> int:
         ap.error("--voltage-refine-steps requires --task pf")
     if args.exact_pf_ceiling and args.voltage_refine_steps:
         ap.error("exact ceiling and local voltage refinement are separate diagnostics")
+    if args.tree_physics_shunt and not args.tree_line:
+        ap.error("--tree-physics-shunt requires --tree-line")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
     ensemble_cks = [
         torch.load(path, map_location="cpu", weights_only=False)
@@ -172,7 +178,9 @@ def main() -> int:
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
             if args.tree_line:
-                preds = decode_tree_line_currents(batch, preds, clamp)
+                preds = decode_tree_line_currents(
+                    batch, preds, clamp, physics_shunt=args.tree_physics_shunt
+                )
             if args.kcl_project:
                 preds = project_kcl(batch, preds, clamp, args.kcl_project)
             if args.kcl_vsource:
@@ -213,6 +221,7 @@ def main() -> int:
         "voltage_refine_damping": args.voltage_refine_damping,
         "voltage_refine_max_step_pu": args.voltage_refine_max_step_pu,
         "tree_line": args.tree_line,
+        "tree_physics_shunt": args.tree_physics_shunt,
         "hybrid_device": args.hybrid_device,
     }
     if refinement_rows:

@@ -27,6 +27,7 @@ class ContractSourceTest(unittest.TestCase):
         self.assertNotIn(".dv", text)
         self.assertNotIn("opendss", text)
         self.assertIn("subtree", text)
+        self.assertIn("0.5j", text)
 
     def test_hybrid_current_decoder_is_local_and_solver_free(self):
         text = (Path(__file__).parents[1] / "gridfm" / "hybrid_current.py").read_text().lower()

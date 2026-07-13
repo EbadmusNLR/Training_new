@@ -5,10 +5,12 @@ from collections import defaultdict
 
 import torch
 
-from .legacy import FC, SPECS, i_offset, physics
+from .legacy import FC, SPECS, i_offset, physics, y_width
 
 
-def decode_tree_line_currents(batch, preds, clamp: float):
+def decode_tree_line_currents(
+    batch, preds, clamp: float, *, physics_shunt: bool = False
+):
     """Reconstruct line series currents by subtree current accumulation.
 
     Learned non-line terminal currents and each line's learned shunt/common-mode
@@ -18,7 +20,7 @@ def decode_tree_line_currents(batch, preds, clamp: float):
     """
     if batch["line"].num_nodes == 0:
         return preds
-    xbar, _, _ = physics.completed(batch, preds)
+    xbar, vr, vi = physics.completed(batch, preds)
     dev = preds["node"].device
     n_node = batch["node"].num_nodes
     q = torch.zeros((n_node, 2), dtype=torch.float64, device=dev)
@@ -80,6 +82,30 @@ def decode_tree_line_currents(batch, preds, clamp: float):
     i1 = torch.stack((cur[edge_row, c1], cur[edge_row, c1 + FC]), dim=1)
     i2 = torch.stack((cur[edge_row, c2], cur[edge_row, c2 + FC]), dim=1)
     shunt = 0.5 * (i1 + i2)
+    if physics_shunt:
+        # The paired common mode cancels the stiff series term exactly:
+        #   0.5 * (I1 + I2) = 0.5 * jYh * (V1 + V2).
+        # Unlike Ys*(V1-V2), this uses absolute voltage and is well conditioned.
+        ny = y_width("line")
+        y_pu = physics.decode_completed(
+            xbar["line"][:, :ny].double(), st.scale[:, :ny].double(),
+            st.msk[:, :ny], clamp,
+        )
+        tri = physics.tri_size(FC)
+        yh = physics._tri_to_full(y_pu[:, 2 * tri :], FC)
+        slot_vr, slot_vi = physics._slot_voltages(batch, "line", vr, vi)
+        vsum = torch.complex(
+            slot_vr[:, :FC] + slot_vr[:, FC:],
+            slot_vi[:, :FC] + slot_vi[:, FC:],
+        )
+        shunt_all = 0.5j * torch.einsum(
+            "kij,kj->ki", yh.to(vsum.dtype), vsum
+        )
+        shunt = torch.stack(
+            (shunt_all[edge_row, edge_phase].real,
+             shunt_all[edge_row, edge_phase].imag),
+            dim=1,
+        )
     q = q.index_add(0, edge_n1, shunt)
     q = q.index_add(0, edge_n2, shunt)
 
