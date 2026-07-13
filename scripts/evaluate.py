@@ -20,7 +20,9 @@ from gridfm.legacy import physics, store_width
 from gridfm.model import EdgeStateGridFM, load_compatible_state
 from gridfm.current_projection import project_kcl
 from gridfm.hybrid_current import decode_hybrid_device_currents
+from gridfm.losses import pf_graph_mask
 from gridfm.tree_current import decode_tree_line_currents
+from gridfm.voltage_refinement import refine_pf_voltages
 
 
 def main() -> int:
@@ -57,12 +59,20 @@ def main() -> int:
         "--physics-current", action="store_true",
         help="diagnostic only: decode Ibus=YV-Icomp after voltage completion",
     )
+    ap.add_argument("--voltage-refine-steps", type=int, default=0)
+    ap.add_argument("--voltage-refine-damping", type=float, default=0.25)
+    ap.add_argument("--voltage-refine-eps", type=float, default=1e-10)
+    ap.add_argument("--voltage-refine-max-step-pu", type=float, default=0.02)
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:
         ap.error("provide --ckpt or --baseline")
     if args.exact_pf_ceiling and args.task != "pf":
         ap.error("--exact-pf-ceiling requires --task pf")
+    if args.voltage_refine_steps and args.task != "pf":
+        ap.error("--voltage-refine-steps requires --task pf")
+    if args.exact_pf_ceiling and args.voltage_refine_steps:
+        ap.error("exact ceiling and local voltage refinement are separate diagnostics")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
     ensemble_cks = [
         torch.load(path, map_location="cpu", weights_only=False)
@@ -106,6 +116,7 @@ def main() -> int:
             models.append(member)
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
+    refinement_rows: list[dict[str, float]] = []
     feasibility = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
     workers = int(cfg["data"].get("num_workers", 0))
     batches = DataLoader(
@@ -143,6 +154,17 @@ def main() -> int:
                     for k, v in preds.items()
                 }
             preds = physics.clamp_structural_zeros(batch, preds)
+            if args.voltage_refine_steps:
+                preds, refine_metrics = refine_pf_voltages(
+                    batch, preds, clamp, pf_graph_mask(batch),
+                    steps=args.voltage_refine_steps,
+                    damping=args.voltage_refine_damping,
+                    eps=args.voltage_refine_eps,
+                    max_step_pu=args.voltage_refine_max_step_pu,
+                    return_metrics=True,
+                )
+                if refine_metrics:
+                    refinement_rows.append(refine_metrics)
             if args.exact_pf_ceiling:
                 preds = physics.exact_pf_solve(batch, preds, clamp)
             if args.physics_current:
@@ -187,9 +209,15 @@ def main() -> int:
         "kcl_project": args.kcl_project,
         "exact_pf_ceiling": args.exact_pf_ceiling,
         "physics_current": args.physics_current,
+        "voltage_refine_steps": args.voltage_refine_steps,
+        "voltage_refine_damping": args.voltage_refine_damping,
+        "voltage_refine_max_step_pu": args.voltage_refine_max_step_pu,
         "tree_line": args.tree_line,
         "hybrid_device": args.hybrid_device,
     }
+    if refinement_rows:
+        for key in refinement_rows[0]:
+            report[key] = statistics.mean(row[key] for row in refinement_rows)
     for key in {k[:-4] for k in sums if k.endswith("_num")}:
         den = sums.get(f"{key}_den", 0.0)
         if den > 0:
