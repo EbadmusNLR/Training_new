@@ -132,8 +132,11 @@ def refine_pf_voltages(
         voltage = torch.where(safe, voltage + delta, voltage)
 
     final_residual, _ = _residual_and_diagonal(batch, x_bar, voltage, clamp)
-    node_pred = preds["node"].clone()
     dv = torch.stack([voltage.real, voltage.imag], 1) - nd.v_init
+    # Keep the refined voltage in the persisted float64 coordinate.  Casting a
+    # solved voltage back to float32 before YV loses enough low bits that stiff
+    # line admittances can amplify roundoff into enormous terminal currents.
+    node_pred = preds["node"].to(dv.dtype).clone()
     node_pred[update] = dv[update].to(node_pred.dtype)
     out = {**preds, "node": node_pred}
     if not return_metrics:
