@@ -9,7 +9,7 @@ from .tree_current import decode_tree_line_currents
 
 def balanced_reconstruction_loss(
     batch, preds, weights: dict, field_std: dict | None = None,
-    balance_stores: bool = False,
+    balance_stores: float = 0.0,
 ):
     """Normalize each physical field independently before weighting.
 
@@ -42,13 +42,17 @@ def balanced_reconstruction_loss(
             value_count = mask.sum()
             sums[name] += value_sum
             counts[name] += value_count
-            if balance_stores and bool(value_count > 0):
+            if balance_stores > 0 and bool(value_count > 0):
                 store_parts[name].append(value_sum / value_count)
     parts = {k: sums[k] / counts[k].clamp_min(1) for k in sums}
-    if balance_stores:
+    if balance_stores > 0:
+        alpha = float(balance_stores)
+        if not 0 <= alpha <= 1:
+            raise ValueError("loss.balance_stores must be in [0, 1]")
         for name, values in store_parts.items():
             if values:
-                parts[name] = torch.stack(values).mean()
+                store_mean = torch.stack(values).mean()
+                parts[name] = (1 - alpha) * parts[name] + alpha * store_mean
     total = sum(float(weights.get(k, 0.0)) * value for k, value in parts.items())
     return total, parts
 
@@ -160,7 +164,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
     recon, recon_parts = balanced_reconstruction_loss(
         batch, preds, cfg["loss"].get(
             "recon_weights", {"voltage": 1.0, "y": 1.0, "icomp": 1.0, "ibus": 1.0}
-        ), aux.get("field_std"), bool(cfg["loss"].get("balance_stores", False))
+        ), aux.get("field_std"), float(cfg["loss"].get("balance_stores", 0.0))
     )
     x_bar, vr, vi = physics.completed(batch, preds)
     elem, kcl, pmetrics = physics.physics_losses(batch, x_bar, vr, vi, clamp, s_kcl)
