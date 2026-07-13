@@ -89,6 +89,18 @@ def main() -> int:
     cfg = load_config(args.config) if args.config else ck["cfg"]
     if args.task:
         cfg["mask"]["mixture"] = {args.task: 1.0}
+        if args.task == "random":
+            # Evaluation uses one canonical paired all-field mask.  Otherwise a
+            # checkpoint trained only on identifiable tasks carries zero Y and
+            # Icomp probabilities and a purported random report scores V/I only.
+            cfg["mask"].update({
+                "p_voltage": 0.30,
+                "p_current": 0.15,
+                "p_icomp": 0.15,
+                "p_admittance": 0.10,
+                "p_terminal": 0.05,
+                "p_component": 0.0,
+            })
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
