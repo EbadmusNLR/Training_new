@@ -46,10 +46,23 @@ def main() -> int:
                     help="reconstruct paired radial line-series currents from KCL")
     ap.add_argument("--hybrid-device", action="store_true",
                     help="decode non-stiff device currents from local complex physics")
+    ap.add_argument(
+        "--exact-pf-ceiling", action="store_true",
+        help=(
+            "diagnostic only: apply the validated dense KCL solve when Y and Icomp "
+            "are fully observed; this is not a learned-model result"
+        ),
+    )
+    ap.add_argument(
+        "--physics-current", action="store_true",
+        help="diagnostic only: decode Ibus=YV-Icomp after voltage completion",
+    )
     ap.add_argument("--output", type=Path)
     args = ap.parse_args()
     if not args.ckpt and not args.baseline:
         ap.error("provide --ckpt or --baseline")
+    if args.exact_pf_ceiling and args.task != "pf":
+        ap.error("--exact-pf-ceiling requires --task pf")
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False) if args.ckpt else None
     ensemble_cks = [
         torch.load(path, map_location="cpu", weights_only=False)
@@ -130,6 +143,10 @@ def main() -> int:
                     for k, v in preds.items()
                 }
             preds = physics.clamp_structural_zeros(batch, preds)
+            if args.exact_pf_ceiling:
+                preds = physics.exact_pf_solve(batch, preds, clamp)
+            if args.physics_current:
+                preds = physics.decode_currents(batch, preds, clamp)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
             if args.tree_line:
@@ -168,6 +185,8 @@ def main() -> int:
         "task": args.task,
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
+        "exact_pf_ceiling": args.exact_pf_ceiling,
+        "physics_current": args.physics_current,
         "tree_line": args.tree_line,
         "hybrid_device": args.hybrid_device,
     }
