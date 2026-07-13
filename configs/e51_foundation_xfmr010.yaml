@@ -1,0 +1,11 @@
+extends: e40_foundation_storebalanced_full.yaml
+loss:
+  lambda_transformer_wape: 0.1
+train:
+  epochs: 5
+  lr: 2.5e-6
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e51_foundation_xfmr010
+  init_ckpt: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e40_foundation_storebalanced_full/last.pt
+wandb:
+  name: e51_foundation_xfmr010
+  tags: [h384, steps-12, foundation, transformer-current]
