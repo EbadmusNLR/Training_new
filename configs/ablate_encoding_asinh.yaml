@@ -1,0 +1,46 @@
+---
+# Ablation: asinh encoding (baseline)
+data:
+  root: /kfs2/projects/gogpt/Ebadmus/training_data/minimal_component
+  limit_feeders: 200
+  train_variants: 20
+  eval_variants: 10
+  train_frac: 0.8
+  val_frac: 0.1
+
+model:
+  hidden: 256
+  steps: 8
+  dropout: 0.0
+  normalize_features: true
+
+mask:
+  mixture:
+    pf: 1.0
+
+loss:
+  lambda_recon: 1.0
+  lambda_ibus_wape: 0.1
+  recon_weights:
+    voltage: 10.0
+    ibus: 1.0
+    y: 1.0
+    icomp: 1.0
+
+train:
+  seed: 42
+  epochs: 5
+  batch_size: 64
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_steps: 100
+  eval_every: 1
+  amp: bf16
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/ablate_encoding_asinh
+
+wandb:
+  enabled: true
+  project: GridFM_Ablation
+  name: encoding_asinh
+  tags: [ablation, encoding, asinh, 200-feeders, 5-epochs]
