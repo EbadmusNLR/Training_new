@@ -1,0 +1,13 @@
+extends: e55_foundation_random005.yaml
+mask:
+  mixture:
+    pf: 0.32
+    se_known: 0.23
+    param_one: 0.175
+    injection: 0.175
+    random: 0.10
+train:
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/e56_foundation_random010
+wandb:
+  name: e56_foundation_random010
+  tags: [h384, steps-12, foundation, paired-random-010]
