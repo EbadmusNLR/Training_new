@@ -38,6 +38,7 @@ def main() -> int:
     se = load(root / "se_known.json")
     param = load(root / "param_one.json")
     injection = load(root / "injection.json")
+    random = load(root / "random.json")
     checks = {
         "pf_voltage": float(pf["V_wape_pct"]),
         "pf_current_direct": float(pf["Ibus_wape_pct"]),
@@ -48,6 +49,10 @@ def main() -> int:
         "injection_Icomp": float(injection["Icomp_wape_pct"]),
         "worst_Y_scale_field": worst_scale(param, "Y")["pct"],
         "worst_Icomp_scale_field": worst_scale(injection, "Icomp")["pct"],
+        "random_voltage": float(random["V_wape_pct"]),
+        "random_current": float(random["Ibus_wape_pct"]),
+        "random_Y": float(random["Y_wape_pct"]),
+        "random_Icomp": float(random["Icomp_wape_pct"]),
     }
     threshold = float(args.threshold_pct)
     payload = {
