@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Iterative-solver GridFM for the datakit full-matrix format.
+
+A weight-tied recurrent hetero message-passing network that maintains a latent
+state for nodes and components, and — the key ingredient — each step feeds back
+the exact nodal KCL residual of its own COMPLETED terminal-current estimates
+(observed where visible, predicted where masked; well-conditioned O(1), no stiff
+Y*V). It drives that residual to zero, i.e. a learned iterative power-system
+solver, task-agnostic over whatever is masked.
+
+Inputs are the datakit HeteroData (full-matrix Y_pu, per-terminal currents,
+Icomp, V). Currents/Y are consumed via an asinh feature view; physics (KCL) runs
+on decoded pu. See dk_physics for the full-matrix physics.
+"""
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+from .dk_physics import FC, STORES, terminal_slot, node_count
+from .dk_data import PE_DIM, I_SCALE, Y_SCALE, feat, inv_feat
+
+# Genuinely SHUNT/local families whose terminal current is a well-conditioned
+# function of bus V (I=Y@V-Icomp), so we decode from the predicted V instead of a
+# free head. SERIES elements are excluded because I~Y*(V1-V2) amplifies V error:
+# lines (~2e7x, unrecoverable) and transformers (~24x measured, 110% WAPE) both go
+# to the structural tree-current path; the vsource slack keeps a free head too.
+PHYS_DECODE = {"load", "capacitor", "pvsystem", "storage", "generator"}
+
+
+class MLP(nn.Sequential):
+    def __init__(self, din, dout, hidden, zero_last=False):
+        super().__init__(nn.Linear(din, hidden), nn.SiLU(), nn.LayerNorm(hidden), nn.Linear(hidden, dout))
+        if zero_last:
+            nn.init.zeros_(self[-1].weight); nn.init.zeros_(self[-1].bias)
+
+
+class DKSolver(nn.Module):
+    def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None):
+        super().__init__()
+        self.hidden = hidden
+        self.steps = steps
+        self.kcl_feedback = kcl_feedback
+        self.use_feat = use_feat
+        self.stores = list(STORES)
+        self.node_enc = MLP(2 + 2 + 1 + PE_DIM, hidden, hidden)  # v_init, dv*vis, vis, pe
+        self.comp_enc = nn.ModuleDict()
+        self.slot_emb = nn.ModuleDict()
+        self.edge_mlp = nn.ModuleDict()
+        self.comp_gru = nn.ModuleDict()
+        self.cur_head = nn.ModuleDict()
+        for s in self.stores:
+            _, nterm, _ = STORES[s]
+            dim = nterm * FC
+            self.comp_enc[s] = MLP(2 * dim * dim, hidden, hidden)       # feat(Yr),feat(Yi)
+            self.slot_emb[s] = nn.Embedding(dim, hidden // 4)
+            self.edge_mlp[s] = MLP(2 * hidden + hidden // 4, hidden, hidden)
+            self.comp_gru[s] = nn.GRUCell(hidden, hidden)
+            self.cur_head[s] = MLP(hidden, 2 * dim, hidden, zero_last=True)  # I_feat r,i per slot
+            # fitted global per-family scales (buffers -> saved & moved with model)
+            isc = max(float(scales["I"][s]) if scales else I_SCALE, 1e-9)
+            self.register_buffer(f"iscale_{s}", torch.tensor(isc))
+            ys = torch.ones(dim, dim, 2)
+            if scales:
+                yd = scales["Y"][s]; eye = torch.eye(dim, dtype=torch.bool)
+                ys[..., 0] = torch.where(eye, torch.tensor(float(yd["r_diag"])), torch.tensor(float(yd["r_off"])))
+                ys[..., 1] = torch.where(eye, torch.tensor(float(yd["i_diag"])), torch.tensor(float(yd["i_off"])))
+            else:
+                ys = ys * Y_SCALE
+            self.register_buffer(f"yscale_{s}", ys.clamp(min=1e-9))
+        self.node_gru = nn.GRUCell(hidden, hidden)
+        self.node_head = MLP(hidden, 2, hidden, zero_last=True)         # dv (pu)
+        self.kcl_mlp = MLP(2, hidden, hidden, zero_last=True)
+        self.register_buffer("s_kcl", torch.tensor(float(scales["kcl"]) if scales else I_SCALE))
+
+    def _iscale(self, s):
+        return getattr(self, f"iscale_{s}")
+
+    def _yscale(self, s):
+        return getattr(self, f"yscale_{s}")
+
+    def _decode_I(self, s, fr, fi):
+        sc = self._iscale(s)
+        return inv_feat(fr, sc, self.use_feat), inv_feat(fi, sc, self.use_feat)
+
+    def _edges(self, batch):
+        out = {}
+        for s in self.stores:
+            if s not in batch.node_types:
+                continue
+            _, nterm, _ = STORES[s]
+            terms = []
+            for t in range(1, nterm + 1):
+                rel = (s, f"bus{t}", "node")
+                if rel in batch.edge_types and batch[rel].edge_index.numel():
+                    ei = batch[rel].edge_index
+                    comp, node = ei[0], ei[1]
+                    col = (t - 1) * FC + terminal_slot(comp)
+                    terms.append((comp, node, col))
+                else:
+                    terms.append(None)
+            out[s] = terms
+        return out
+
+    def _phys_current(self, s, batch, terms, v):
+        """Physics-decoded terminal currents I = Y@V - Icomp from the current V
+        estimate, for well-conditioned families (loads/shunts/transformers). V
+        error maps ~linearly to current error here (unlike stiff series lines)."""
+        st = batch[s]
+        n, dim, _ = st.yr.shape
+        Vlr = v.new_zeros(n, dim); Vli = v.new_zeros(n, dim)
+        for t in terms:
+            if t is None:
+                continue
+            comp, node, col = t
+            Vlr[comp, col] = v[node, 0]
+            Vli[comp, col] = v[node, 1]
+        Ir = torch.bmm(st.yr, Vlr.unsqueeze(-1)).squeeze(-1) - torch.bmm(st.yi, Vli.unsqueeze(-1)).squeeze(-1)
+        Ii = torch.bmm(st.yr, Vli.unsqueeze(-1)).squeeze(-1) + torch.bmm(st.yi, Vlr.unsqueeze(-1)).squeeze(-1)
+        _, _, nic = STORES[s]
+        if nic:
+            w = min(nic, dim, st.icr.shape[1])
+            Ir = torch.cat([Ir[:, :w] - st.icr[:, :w], Ir[:, w:]], 1)
+            Ii = torch.cat([Ii[:, :w] - st.ici[:, :w], Ii[:, w:]], 1)
+        return Ir, Ii
+
+    def _completed_currents(self, batch, edges, hc, v):
+        """Per-store terminal currents (pu): physics-decoded from V for the
+        well-conditioned families, a free head for stiff lines / the vsource."""
+        cur = {}
+        for s, terms in edges.items():
+            if s in PHYS_DECODE:
+                cur[s] = self._phys_current(s, batch, terms, v)
+            else:
+                _, nterm, _ = STORES[s]
+                dim = nterm * FC
+                out = self.cur_head[s](hc[s])
+                cur[s] = self._decode_I(s, out[:, :dim], out[:, dim:])
+        return cur
+
+    def _kcl_residual(self, batch, edges, cur_preds):
+        n_node = node_count(batch)
+        dev = batch["node"].V_r_init_pu.device
+        rr = torch.zeros(n_node, device=dev)
+        ri = torch.zeros(n_node, device=dev)
+        for s, terms in edges.items():
+            ir, ii = cur_preds[s]
+            for t in terms:
+                if t is None:
+                    continue
+                comp, node, col = t
+                rr.index_add_(0, node, ir[comp, col])
+                ri.index_add_(0, node, ii[comp, col])
+        res = torch.stack([rr, ri], 1)
+        res[0] = 0.0  # ground
+        return res
+
+    def forward(self, batch):
+        nd = batch["node"]
+        dev = nd.V_r_init_pu.device
+        edges = self._edges(batch)
+        # node encode
+        vis = nd.vis_v.unsqueeze(1).float()
+        node_in = torch.cat([nd.v_init, nd.dv * vis, vis, nd.pe], 1)
+        hn = self.node_enc(node_in)
+        # component encode from asinh(Y)
+        hc = {}
+        for s in edges:
+            st = batch[s]
+            n = st.yr.shape[0]
+            yst = torch.stack([st.yr, st.yi], -1)              # [n,dim,dim,2]
+            yf = feat(yst, self._yscale(s), self.use_feat).reshape(n, -1)
+            hc[s] = self.comp_enc[s](yf)
+        for step in range(self.steps):
+            node_msg = torch.zeros_like(hn)
+            node_deg = torch.zeros(hn.shape[0], 1, device=dev)
+            comp_msg = {s: torch.zeros_like(hc[s]) for s in edges}
+            comp_deg = {s: torch.zeros(hc[s].shape[0], 1, device=dev) for s in edges}
+            for s, terms in edges.items():
+                for ti, t in enumerate(terms):
+                    if t is None:
+                        continue
+                    comp, node, col = t
+                    e = self.edge_mlp[s](torch.cat([hc[s][comp], hn[node], self.slot_emb[s](col)], 1))
+                    node_msg.index_add_(0, node, e)
+                    node_deg.index_add_(0, node, torch.ones(e.shape[0], 1, device=dev))
+                    comp_msg[s].index_add_(0, comp, e)
+                    comp_deg[s].index_add_(0, comp, torch.ones(e.shape[0], 1, device=dev))
+            hn = self.node_gru(node_msg / node_deg.clamp(min=1), hn)
+            for s in edges:
+                hc[s] = self.comp_gru[s](comp_msg[s] / comp_deg[s].clamp(min=1), hc[s])
+            if self.kcl_feedback:
+                v = nd.v_init + self._decode_dv(nd, hn)
+                res = self._kcl_residual(batch, edges, self._completed_currents(batch, edges, hc, v))
+                hn = hn + self.kcl_mlp(torch.asinh(res / self.s_kcl))
+        dvp = self.node_head(hn)
+        v = nd.v_init + self._decode_dv(nd, hn, dvp)
+        cur = self._completed_currents(batch, edges, hc, v)
+        return dvp, cur
+
+    def _decode_dv(self, nd, hn, dvp=None):
+        """V estimate delta: predicted where masked, pinned to truth where the
+        voltage is observed (slack/ground in pf) so physics decode is anchored."""
+        if dvp is None:
+            dvp = self.node_head(hn)
+        return torch.where(nd.vis_v.unsqueeze(1), nd.dv, dvp)
