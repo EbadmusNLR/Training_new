@@ -180,12 +180,33 @@ def build_tree_plan(data):
     slack_set = {i for i, v in enumerate(slack) if v}
     inj = {s: _inj_index(data, s) for s in list(SHUNT_STORES) + list(SERIES_STORES)
            if s in data.node_types and store_size(data, s) > 0}
-    return {
-        "unified": _tree_from_edges(_series_edges(data, SERIES_STORES), slack_set),
-        "line": _tree_from_edges(_series_edges(data, (SERIES,)), slack_set),
-        "inj": inj,
-        "n_node": node_count(data),
-    }
+    uni = _tree_from_edges(_series_edges(data, SERIES_STORES), slack_set)
+    line = _tree_from_edges(_series_edges(data, (SERIES,)), slack_set)
+    n = node_count(data)
+    # OPEN series conductors: terminal-slots NOT written by either tree sweep
+    # (vsource ground edges, transformer/line cycle-chords). Resolved afterward by
+    # nodal-KCL closure. Precompute their (comp,col,node) and per-node open count.
+    written = set()
+    for tr in (uni, line):
+        for sid, c, ca, cb in zip(tr["sid"].tolist(), tr["comp"].tolist(),
+                                  tr["cola"].tolist(), tr["colb"].tolist()):
+            written.add((sid, c, ca)); written.add((sid, c, cb))
+    opens = {}
+    node_open = torch.zeros(n, dtype=torch.long)
+    for s in SERIES_STORES:
+        if s not in inj:
+            continue
+        comp, col, node = inj[s]
+        sid = _SID[s]
+        keep = torch.tensor([(sid, int(c), int(cl)) not in written and int(nd) != 0
+                             for c, cl, nd in zip(comp.tolist(), col.tolist(), node.tolist())],
+                            dtype=torch.bool)
+        if keep.any():
+            oc, ocol, onode = comp[keep], col[keep], node[keep]
+            opens[s] = (oc, ocol, onode)
+            node_open.index_add_(0, onode, torch.ones_like(onode))
+    return {"unified": uni, "line": line, "inj": inj, "n_node": n,
+            "open": opens, "node_open": node_open}
 
 
 def _subtree_sum(q, tree):
@@ -242,6 +263,36 @@ def reconstruct_vectorized(plan, cur):
             only=("transformer", "vsource", "reactor"))
     q_line = q_shunt + build_q(("transformer", "vsource", "reactor"), out)
     _assign(_subtree_sum(q_line, plan["line"]), plan["line"], out, only=(SERIES,))
+    return _kcl_close(out, plan, dtype, dev)
+
+
+def _kcl_close(out, plan, dtype, dev, iters=8):
+    """Fill the series conductors the tree sweeps left open (vsource root,
+    transformer/line cycle-chords) by nodal KCL: each open conductor is (usually)
+    the lone unknown at its terminal node, so I = -(residual of everything else
+    there). Jacobi iteration handles the few coupled cases. Differentiable."""
+    opens = plan.get("open") or {}
+    if not opens:
+        return out
+    n = plan["n_node"]
+    cnt = plan["node_open"].to(dev).clamp(min=1).to(dtype).unsqueeze(1)
+    gmask = torch.ones(n, 1, dtype=dtype, device=dev); gmask[0] = 0.0   # ground has no KCL
+    for _ in range(iters):
+        r = torch.zeros(n, 2, dtype=dtype, device=dev)
+        for s, (comp, col, node) in plan["inj"].items():
+            if s not in out:
+                continue
+            Ir, Ii = out[s]
+            r = r.index_add(0, node, torch.stack([Ir[comp, col], Ii[comp, col]], 1))
+        r = r * gmask
+        for s, (comp, col, node) in opens.items():
+            if s not in out or comp.numel() == 0:
+                continue
+            share = r[node] / cnt[node]
+            Ir, Ii = out[s]
+            Ir = Ir.index_put((comp, col), Ir[comp, col] - share[:, 0])
+            Ii = Ii.index_put((comp, col), Ii[comp, col] - share[:, 1])
+            out[s] = (Ir, Ii)
     return out
 
 

@@ -23,21 +23,16 @@ def zero_series(cur):
     return c
 
 
-print("--- unwritten-column analysis (per-feeder, zero-init like the model) ---")
+print("--- WAPE vs stored, zero-init + KCL closure (per-feeder) ---")
+agg = {}
 for i, (p, c) in enumerate(zip(plans, curs)):
     rec = reconstruct_vectorized(p, zero_series(c))
     for s in ("line", "transformer", "vsource"):
         if s not in rec:
             continue
         Rr, Ri = rec[s]; Tr, Ti = c[s]
-        written = (Rr.abs() + Ri.abs()) > 1e-12          # [n, dim]
-        tot = (Tr.abs() + Ti.abs())                      # stored magnitude
-        unwritten = tot * (~written)
-        frac = float(unwritten.sum() / (tot.sum() + 1e-12))
-        per_col = [(k, round(float(unwritten[:, k].sum()), 3)) for k in range(tot.shape[1])
-                   if float(unwritten[:, k].sum()) > 1e-6]
-        totcol = [(k, round(float(tot[:, k].sum()), 3)) for k in range(tot.shape[1])
-                  if float(tot[:, k].sum()) > 1e-6]
-        print(f"  feeder{i} {s:11s} unwritten_frac={frac:.2f}")
-        print(f"      unwritten-by-col={per_col}")
-        print(f"      total-by-col    ={totcol}")
+        a = agg.setdefault(s, [0.0, 0.0])
+        a[0] += float((Rr - Tr).abs().sum() + (Ri - Ti).abs().sum())
+        a[1] += float(Tr.abs().sum() + Ti.abs().sum() + 1e-12)
+for s, (nu, de) in agg.items():
+    print(f"  {s:12s} WAPE = {nu/de:.3e}")
