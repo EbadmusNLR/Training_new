@@ -8,13 +8,13 @@ import time
 from pathlib import Path
 
 import torch
-from torch_geometric.loader import DataLoader
+from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gridfm.dk_data import (DKFeeder, DKDataset, discover_feeders, split_feeders,
-                            fit_scales, feat)
+                            fit_scales, feat, make_dk_collate)
 from gridfm.dk_model import DKSolver
 from gridfm.dk_physics import STORES, FC, terminal_slot, node_count
 
@@ -119,17 +119,19 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     spe = min(args.samples_per_epoch, len(train_ds))
     sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe)
-    train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
+    tr_collate = make_dk_collate(train_ds.feeders)
+    un_collate = make_dk_collate(unseen_ds.feeders)
+    train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, collate_fn=tr_collate,
                           num_workers=args.workers, multiprocessing_context="fork" if args.workers else None)
-    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, num_workers=args.workers,
+    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, num_workers=args.workers, collate_fn=un_collate,
                            multiprocessing_context="fork" if args.workers else None)
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
         model.train(); agg = {}
         te = time.time()
-        for batch in train_dl:
-            batch = batch.to(dev)
+        for batch, plan in train_dl:
+            batch = batch.to(dev); batch.tree_plan = plan
             dv, cur = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_kcl=0.0 if args.no_kcl else 0.1)
             opt.zero_grad(); loss.backward()
@@ -141,8 +143,8 @@ def main():
         # eval
         model.eval(); ea = {}
         with torch.no_grad():
-            for batch in unseen_dl:
-                batch = batch.to(dev)
+            for batch, plan in unseen_dl:
+                batch = batch.to(dev); batch.tree_plan = plan
                 dv, cur = model(batch)
                 _, m = losses(batch, dv, cur, scales, use_feat)
                 for k, v in m.items():

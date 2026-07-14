@@ -19,6 +19,7 @@ from torch import nn
 
 from .dk_physics import FC, STORES, terminal_slot, node_count
 from .dk_data import PE_DIM, I_SCALE, Y_SCALE, feat, inv_feat
+from .dk_tree import SERIES_STORES, plan_to, reconstruct_vectorized
 
 # Genuinely SHUNT/local families whose terminal current is a well-conditioned
 # function of bus V (I=Y@V-Icomp), so we decode from the predicted V instead of a
@@ -125,18 +126,21 @@ class DKSolver(nn.Module):
         return Ir, Ii
 
     def _completed_currents(self, batch, edges, hc, v):
-        """Per-store terminal currents (pu): physics-decoded from V for the
-        well-conditioned families, a free head for stiff lines / the vsource."""
+        """All terminal currents (pu): SHUNT families physics-decoded from V
+        (well-conditioned), SERIES families (line/transformer/vsource) filled by
+        the differentiable KCL subtree reconstruction over those shunts. No Y*V
+        for stiff series, no free head. See dk_tree.reconstruct_vectorized."""
         cur = {}
         for s, terms in edges.items():
             if s in PHYS_DECODE:
                 cur[s] = self._phys_current(s, batch, terms, v)
-            else:
-                _, nterm, _ = STORES[s]
-                dim = nterm * FC
-                out = self.cur_head[s](hc[s])
-                cur[s] = self._decode_I(s, out[:, :dim], out[:, dim:])
-        return cur
+        for s in SERIES_STORES:
+            if s in edges:
+                st = batch[s]; n, dim, _ = st.yr.shape
+                z = v.new_zeros(n, dim)
+                cur[s] = (z, z.clone())           # placeholder; reconstruction fills it
+        plan = plan_to(batch.tree_plan, v.device)
+        return reconstruct_vectorized(plan, cur)
 
     def _kcl_residual(self, batch, edges, cur_preds):
         n_node = node_count(batch)
@@ -189,10 +193,10 @@ class DKSolver(nn.Module):
             hn = self.node_gru(node_msg / node_deg.clamp(min=1), hn)
             for s in edges:
                 hc[s] = self.comp_gru[s](comp_msg[s] / comp_deg[s].clamp(min=1), hc[s])
-            if self.kcl_feedback:
-                v = nd.v_init + self._decode_dv(nd, hn)
-                res = self._kcl_residual(batch, edges, self._completed_currents(batch, edges, hc, v))
-                hn = hn + self.kcl_mlp(torch.asinh(res / self.s_kcl))
+        # currents are exact functions of V now (physics-decode shunts + KCL tree
+        # reconstruction, which enforces nodal balance structurally), so there is
+        # no residual to feed back: the model is a pure V-predictor and the MP
+        # depth is the iterative refinement. Reconstruct once at the end.
         dvp = self.node_head(hn)
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
         cur = self._completed_currents(batch, edges, hc, v)

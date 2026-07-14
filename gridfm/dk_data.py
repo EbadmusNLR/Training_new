@@ -85,6 +85,10 @@ class DKFeeder:
         self.ground[0] = True
         self.pe = self._pe(base, deg)
         self._pe_cached = self.pe
+        # precompute the KCL tree-current plan once per topology (like the PE)
+        base["node"].slack = self.slack
+        from .dk_tree import build_tree_plan
+        self.plan = build_tree_plan(base)
 
     def _slack_mask(self, base) -> torch.Tensor:
         m = torch.zeros(self.n_node, dtype=torch.bool)
@@ -268,6 +272,7 @@ class DKDataset(torch.utils.data.Dataset):
         fi, variant = self.items[idx]
         feeder = self.feeders[fi]
         data = feeder.sample(variant)
+        data.feeder_id = torch.tensor([fi])          # for the collate to fetch the plan
         nd = data["node"]
         # node fields
         vinit = torch.stack([nd.V_r_init_pu, nd.V_i_init_pu], 1)
@@ -299,3 +304,22 @@ class DKDataset(torch.utils.data.Dataset):
                 st.icr = torch.zeros(n, FC); st.ici = torch.zeros(n, FC)
         TASKS[self.task](data)
         return data
+
+
+def make_dk_collate(feeders):
+    """Collate that batches the graph AND assembles the batched KCL tree plan
+    (offset per-feeder plans to match PyG's node/comp concatenation)."""
+    from torch_geometric.data import Batch
+    from .dk_tree import batch_plans, SHUNT_STORES, SERIES_STORES
+
+    def collate(samples):
+        fids = [int(s.feeder_id) for s in samples]
+        plans = [feeders[f].plan for f in fids]
+        node_counts = [int(s["node"].num_nodes) for s in samples]
+        keys = tuple(SHUNT_STORES) + tuple(SERIES_STORES)
+        store_counts = [{st: int(s[st].ir.shape[0]) for st in keys
+                         if st in s.node_types and hasattr(s[st], "ir")} for s in samples]
+        batch = Batch.from_data_list(samples)
+        return batch, batch_plans(plans, node_counts, store_counts)
+
+    return collate
