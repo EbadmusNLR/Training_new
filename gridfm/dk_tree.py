@@ -509,10 +509,20 @@ def build_xfmr_maps(data, thr=1e-4):
         if N.shape[1] == 0:
             continue
         Kl = [act.index(s) for s in K]; Ul = [act.index(s) for s in U]
-        M = -np.linalg.pinv(N[Ul].T) @ N[Kl].T           # I_U = M @ I_K
+        # EXACT constraint (not the ideal amp-turn approximation): since I = Y@V and
+        # Y is symmetric, nᵀI = nᵀYV = (Yn)ᵀV for every null vector n. For near-null
+        # n, Yn is tiny -> this term is well-conditioned (no cancellation) and it is
+        # exactly the magnetizing/no-load current the nᵀI=0 idealization drops.
+        #   N_UᵀI_U = (YN)ᵀV - N_KᵀI_K   ->   I_U = A @ V_act + B @ I_K
+        P = np.linalg.pinv(N[Ul].T)
+        A = P @ (Ya @ N).T                                # [nU, nact]  (V_act -> I_U)
+        B = -P @ N[Kl].T                                  # [nU, nK]    (I_K   -> I_U)
         maps.append({"comp": int(row), "K": torch.tensor(K, dtype=torch.long),
                      "U": torch.tensor(U, dtype=torch.long),
-                     "Mr": torch.tensor(M.real.copy()), "Mi": torch.tensor(M.imag.copy())})
+                     "act": torch.tensor(act, dtype=torch.long),
+                     "anode": torch.tensor([nodes[s] for s in act], dtype=torch.long),
+                     "Ar": torch.tensor(A.real.copy()), "Ai": torch.tensor(A.imag.copy()),
+                     "Br": torch.tensor(B.real.copy()), "Bi": torch.tensor(B.imag.copy())})
     return maps
 
 
@@ -555,17 +565,29 @@ def _set_terminals_by_kcl(data, out, store, terminals, n):
     out[store] = (Ir, Ii)
 
 
-def _apply_xfmr_maps(out, xmaps):
-    """Close the unknown transformer conductors U from the KCL-known K: I_U=M@I_K."""
+def _apply_xfmr_maps(out, xmaps, vr=None, vi=None):
+    """Close the unknown transformer conductors U from the KCL-known K:
+        I_U = A @ V_act + B @ I_K
+    The A@V term is the EXACT (Yn)ᵀV magnetizing part -- well-conditioned because
+    Yn is tiny for near-null n. Drop it (vr=None) and you get the ideal amp-turn
+    approximation, which floors the transformer at ~0.5-1%."""
     if "transformer" not in out or not xmaps:
         return
     Ir, Ii = out["transformer"]
     for m in xmaps:
         c, K, U = m["comp"], m["K"], m["U"]
-        Mr, Mi = m["Mr"].double(), m["Mi"].double()
+        Br, Bi = m["Br"].double(), m["Bi"].double()
         Ikr, Iki = Ir[c, K], Ii[c, K]
-        Ir = Ir.index_put((torch.full_like(U, c), U), Mr @ Ikr - Mi @ Iki)
-        Ii = Ii.index_put((torch.full_like(U, c), U), Mr @ Iki + Mi @ Ikr)
+        pr = Br @ Ikr - Bi @ Iki
+        pi = Br @ Iki + Bi @ Ikr
+        if vr is not None:
+            Ar, Ai = m["Ar"].double(), m["Ai"].double()
+            nd = m["anode"]
+            Var, Vai = vr[nd].double(), vi[nd].double()
+            pr = pr + (Ar @ Var - Ai @ Vai)
+            pi = pi + (Ar @ Vai + Ai @ Var)
+        Ir = Ir.index_put((torch.full_like(U, c), U), pr)
+        Ii = Ii.index_put((torch.full_like(U, c), U), pi)
     out["transformer"] = (Ir, Ii)
 
 
@@ -642,7 +664,7 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         # transformer secondary (nodal KCL) -> primary (YPrim null-space map)
         if "transformer" in out:
             _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
-            _apply_xfmr_maps(out, xmaps)
+            _apply_xfmr_maps(out, xmaps, vr, vi)
     # vsource <- nodal KCL at slack (last, once lines have converged). Its bus2 is
     # always ground in practice (vsource.py _is_ground_like_bus2), so it behaves as
     # a SHUNT at the slack: a series source branch with I_bus2 = -I_bus1
