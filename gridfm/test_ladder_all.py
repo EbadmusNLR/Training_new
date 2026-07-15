@@ -92,20 +92,35 @@ def one(args):
             den = np.abs(Vt[free]).sum() + 1e-30
             if den < 1e-12:
                 continue
-            lu = spla.splu(As)                    # CONSTANT per sample: Y_series has no V in it
-            V = Vi[free].copy()
-            hit6 = hit9 = -1; err = np.inf
-            for k in range(1, 31):
-                V = lu.solve(b - Ash @ V)
-                if not np.isfinite(V).all():
-                    err = np.inf; break
-                err = np.abs(V - Vt[free]).sum() / den
-                if hit6 < 0 and err < 1e-6:
-                    hit6 = k
-                if hit9 < 0 and err < 1e-9:
-                    hit9 = k; break
-            out.append({"n_free": int(len(free)), "err30": float(err),
+
+            def sweep(M, N):
+                """V <- M^-1 (b - N V). M is CONSTANT per sample (no V in Y), so its
+                factorisation is precomputable; N carries the coupling."""
+                lu = spla.splu(M.tocsc())
+                V = Vi[free].copy()
+                h6 = h9 = -1; e = np.inf
+                for k in range(1, 31):
+                    V = lu.solve(b - N @ V)
+                    if not np.isfinite(V).all():
+                        return np.inf, -1, -1
+                    e = np.abs(V - Vt[free]).sum() / den
+                    if h6 < 0 and e < 1e-6:
+                        h6 = k
+                    if h9 < 0 and e < 1e-9:
+                        h9 = k; break
+                return float(e), h6, h9
+
+            # (1) plain ladder: series solve, all shunt on the rhs
+            e30, hit6, hit9 = sweep(As, Ash)
+            # (2) ladder + the shunt's OWN DIAGONAL folded into the solve matrix.
+            # A grounded shunt (reactor/cap) is purely diagonal, so N becomes ~0 and
+            # the stiff tail that made (1) DIVERGE should converge at once. A diagonal
+            # addition does not break the tree structure, so this is still a sweep.
+            dsh = sp.diags(Ash.diagonal())
+            e30d, hit6d, hit9d = sweep((As + dsh).tocsc(), (Ash - dsh).tocsc())
+            out.append({"n_free": int(len(free)), "err30": float(e30),
                         "sweeps_1e6": hit6, "sweeps_1e9": hit9,
+                        "err30d": float(e30d), "sweeps_1e6d": hit6d,
                         "base": float(np.abs(Vi[free] - Vt[free]).sum() / den)})
         return {"name": name, "rows": out, "err": None}
     except Exception as e:
@@ -148,7 +163,19 @@ def main():
     bad = [r for r in rows if not (r["err30"] < 1e-6)]
     print(f"  DID NOT converge to 1e-6: {len(bad)} / {len(rows)}")
     for r in sorted(bad, key=lambda x: -x["err30"])[:5]:
-        print(f"     n_free={r['n_free']:6d} err30={r['err30']:.3e} base={r['base']:.3e}")
+        print(f"     n_free={r['n_free']:6d} err30={r['err30']:.3e} base={r['base']:.3e}"
+              f"  -> with diag-shunt: {r.get('err30d', float('nan')):.3e}")
+    # ladder + shunt diagonal folded into the solve matrix
+    e30d = np.array([r["err30d"] for r in rows])
+    s6d = np.array([r["sweeps_1e6d"] for r in rows])
+    okd = s6d > 0
+    badd = [r for r in rows if not (r["err30d"] < 1e-6)]
+    print(f"  --- LADDER + diag(Y_shunt) folded into the series solve ---")
+    print(f"  err after 30 sweeps: median={np.median(e30d):.3e}  p95={np.percentile(e30d,95):.3e}"
+          f"  max={e30d.max():.3e}")
+    print(f"  reached 1e-6      : {okd.sum()}/{len(rows)}  median sweeps="
+          f"{np.median(s6d[okd]) if okd.any() else -1:.0f}")
+    print(f"  DID NOT converge  : {len(badd)} / {len(rows)}   (plain ladder: {len(bad)})")
     for f in fails[:4]:
         print(f"  BUILD-FAIL {f['name'][:40]}: {f['err'][:70]}")
     return 0

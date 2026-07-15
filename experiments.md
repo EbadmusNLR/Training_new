@@ -350,3 +350,34 @@ was largely ignoring V. Both effects are real (conditioning AND loss balance); t
 earlier "message passing cannot solve pf by construction" was over-claimed.
 TODO: SMART-DS V-only probe to finish the separation; then reweight (normalise each
 loss term by its own scale) rather than hand-tuning w_v.
+
+## 9. Ladder splitting variants — no clean winner (measured, 648 samples)
+Folding the shunt's own DIAGONAL into the solve matrix (`M = Y_series + diag(Y_shunt)`;
+a grounded reactor/cap is purely diagonal so its coupling vanishes; a diagonal add does
+NOT break the tree structure, so it is still realizable as a sweep):
+```
+                     plain ladder            + diag(Y_shunt)
+minimal_component    25/240 diverge          4/240        <- rescues the stiff tail
+SMART-DS_1000         0/240, median 4 swps   0/240, median 3
+dss_data              2/168 diverge          10/168 NOT converged (max 4.3e-2)
+                      median 3.4e-10         median 1.7e-12, median 1 sweep
+```
+Better MEDIAN, worse TAIL on dss_data: 8 feeders that converged now creep instead.
+**No clean winner — the right splitting is feeder-dependent.** Do not ship either as
+"the" answer. Note `M = Ybus` itself converges in ONE step (it is the direct solve),
+and Y_shunt's only off-diagonals are WITHIN a bus (delta/multi-terminal shunts), so a
+BLOCK tree sweep over 4-conductor bus blocks would realize M = Ybus exactly. That is
+probably the real design: block-tree sweep, not a scalar ladder. **Emmanuel should
+decide** — it is an architecture choice, not a bug fix.
+
+## 10. V-only probe, final: the cause is CORPUS-DEPENDENT
+```
+                            ep1     best      dv=0 baseline
+SMART-DS,  mixed loss      1.129    ~1.0        4.22%
+SMART-DS,  V-only          0.933    0.927       4.22%   <- loss fix barely helps
+minimal_component, V-only  0.575    0.278/0.39  68.77%  <- learns well
+```
+So BOTH causes are real and they split by corpus. minimal_component: the V loss was
+simply swamped -> fix the weighting (`--norm-loss`, implemented). SMART-DS: even with V
+as the SOLE objective the model stays at skill ~0.93, consistent with dv being only 4%
+of |V| and cond(Ybus)=1e18 -> that one needs the architecture (ladder/block sweep).
