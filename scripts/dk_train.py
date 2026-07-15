@@ -38,7 +38,8 @@ def kcl_of(batch, cur):
     return res
 
 
-def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1):
+def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
+           norm=False):
     nd = batch["node"]
     msk = nd.msk_v
     # voltage: MSE on dv (small) + report WAPE
@@ -60,7 +61,14 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1):
         st = batch[s]; sc = scales["I"][s]
         fr_p, fi_p = feat(ir, sc, use_feat), feat(ii, sc, use_feat)
         fr_t, fi_t = feat(st.ir, sc, use_feat), feat(st.ii, sc, use_feat)
-        i_mse = i_mse + ((fr_p - fr_t) ** 2).mean() + ((fi_p - fi_t) ** 2).mean()
+        num_s = ((fr_p - fr_t) ** 2).mean() + ((fi_p - fi_t) ** 2).mean()
+        if norm:
+            # scale-free: divide by the family's own target power, so each term is
+            # "fraction of variance unexplained" (1.0 = predicting zero) and the
+            # weights actually mean something across families
+            den_s = (fr_t ** 2).mean() + (fi_t ** 2).mean() + EPS
+            num_s = num_s / den_s
+        i_mse = i_mse + num_s
         fnum = (ir - st.ir).abs().sum() + (ii - st.ii).abs().sum()
         fden = st.ir.abs().sum() + st.ii.abs().sum()
         inum = inum + fnum; iden = iden + fden
@@ -68,7 +76,12 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1):
     i_wape = 100.0 * inum / (iden + EPS)
     res = kcl_of(batch, cur)
     kcl = torch.asinh(res / scales["kcl"]).abs().mean()
-    loss = w_v * v_mse + w_i * i_mse + w_kcl * kcl
+    # The V term was ~100-800x smaller than the current term (w_v*v_mse ~ 8e-3 vs
+    # i_mse ~ O(1-7)), so the model largely ignored V -- measured: v_skill ~1.0 with
+    # the mixed loss vs 0.37 with V-only. `norm` makes every term "fraction of
+    # variance unexplained" (1.0 = predict zero) so the weights are comparable.
+    v_term = v_mse / ((nd.dv[msk] ** 2).mean() + EPS) if (norm and msk.any()) else v_mse
+    loss = w_v * v_term + w_i * i_mse + w_kcl * kcl
     m = {"v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
          "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
          "kcl": float(kcl)}
@@ -100,6 +113,8 @@ def main():
     ap.add_argument("--w-v", type=float, default=10.0)
     ap.add_argument("--w-i", type=float, default=1.0)
     ap.add_argument("--w-kcl", type=float, default=0.1)
+    ap.add_argument("--norm-loss", action="store_true",
+                    help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
@@ -145,7 +160,7 @@ def main():
             batch = batch.to(dev); batch.tree_plan = plan
             dv, cur = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
-                             w_kcl=0.0 if args.no_kcl else args.w_kcl)
+                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
             for k, v in m.items():
