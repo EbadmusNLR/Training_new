@@ -18,7 +18,7 @@ TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
 def one(path):
     from core.scenario_store import FeederScenarios
     from gridfm.dk_physics import store_size
-    from gridfm.dk_tree import build_xfmr_maps
+    from gridfm.dk_tree import build_xfmr_system
     name = os.path.basename(os.path.dirname(path))
     c = Counter()
     try:
@@ -27,15 +27,16 @@ def one(path):
             return c, []
         n = store_size(d, "transformer")
         unsolved = []
-        maps = build_xfmr_maps(d, unsolved=unsolved)
+        maps = build_xfmr_system(d, unsolved=unsolved)
         c["xfmr_total"] += n
-        c["xfmr_mapped"] += len(maps)
-        for _, why in unsolved:
+        c["xfmr_mapped"] += sum(len(m["comps"]) for m in maps)
+        c["groups"] += len(maps)
+        for m in maps:
+            c[f"groupsize_{len(m['comps'])}"] += 1
+        for cs, why in unsolved:
+            c["UNSOLVED_XFMRS"] += len(cs)
             c[f"UNSOLVED:{why.split(':')[0]}"] += 1
         # active terminals per transformer (3 = center-tap)
-        for m in maps:
-            nt = len({int(s) // 4 for s in m["act"].tolist()})
-            c[f"terminals_{nt}"] += 1
         return c, [(name, why) for _, why in unsolved]
     except Exception as e:
         c[f"FAIL:{type(e).__name__}"] += 1

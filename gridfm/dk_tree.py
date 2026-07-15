@@ -506,6 +506,174 @@ def transformer_null_map(Yr, Yi, thr=1e-4):
     return prim, sec, M.real.copy(), M.imag.copy()
 
 
+def build_xfmr_system(data, thr=1e-6, unsolved=None):
+    """JOINT transformer solve, per group of transformers that share a node.
+
+    Supersedes the per-transformer K/U map, which asked "is this conductor the lone
+    unknown at its node?" and could not represent the answer "no". Both settings of
+    that test fail on real networks:
+      * per-transformer census -> an OPEN-WYE/OPEN-DELTA bank (two single-phase
+        transformers sharing a secondary node) has each one believe it owns the
+        node, so each takes HALF the current;
+      * global census -> a TRANSMISSION bus with several transformers on it
+        disqualifies all of them, K comes back empty and NOTHING is solved.
+    Both are the same fact: KCL at a shared node gives only the SUM of the unknowns
+    there. That is one equation about several conductors, so it belongs in a system,
+    not in a per-element map.
+
+    Per group, unknowns x = every active conductor of its transformers, and rows are
+      * one KCL row per shared secondary node:  sum(x at node) = -(other injections)
+      * per transformer, directions n with   nᵀI = (Yn)ᵀV   (transformers carry no
+        Icomp: they are linear, I = Y@V exactly).
+    Rows are added least-stiff-first (‖Yn‖ = the singular value multiplies the V
+    error) until the system determines x. An isolated transformer at unique nodes
+    reduces EXACTLY to the old map (3 KCL rows + 4 null rows = 7 unknowns), so this
+    generalises without special-casing anything.
+
+    Returns per-group precompute; x = P @ b is assembled by _apply_xfmr_system.
+    """
+    import numpy as np
+    if "transformer" not in data.node_types or store_size(data, "transformer") == 0:
+        return []
+    st = data["transformer"]
+    Yr = st["Yxfmr_r_pu"].reshape(-1, 3 * FC, 3 * FC).double().numpy()
+    Yi = st["Yxfmr_i_pu"].reshape(-1, 3 * FC, 3 * FC).double().numpy()
+    slot_node = {}
+    for t in (1, 2, 3):
+        rel = ("transformer", f"bus{t}", "node")
+        if rel not in data.edge_types or not data[rel].edge_index.numel():
+            continue
+        ei = data[rel].edge_index
+        k = terminal_slot(ei[0])
+        for c, kk, nd in zip(ei[0].tolist(), k.tolist(), ei[1].tolist()):
+            slot_node[(int(c), (t - 1) * FC + int(kk))] = int(nd)
+    act_of = {}
+    for row in range(Yr.shape[0]):
+        diag = np.abs(np.diag(Yr[row] + 1j * Yi[row]))
+        if diag.max() > 0:
+            act_of[row] = [int(i) for i in np.where(diag > 1e-9 * diag.max())[0]]
+
+    # node -> conductors on it; a node carrying any SECONDARY conductor gets a KCL
+    # row (it is a tree root, so the lines below it are determined by their subtrees)
+    node_conds = defaultdict(list)
+    for r, a in act_of.items():
+        for s in a:
+            nd = slot_node.get((r, s), 0)
+            if nd != 0:
+                node_conds[nd].append((r, s))
+    knodes = sorted(nd for nd, cs in node_conds.items() if any(s >= FC for _, s in cs))
+
+    parent = {r: r for r in act_of}
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    for nd in knodes:                       # transformers meeting at a KCL node interact
+        rs = sorted({r for r, _ in node_conds[nd]})
+        for r in rs[1:]:
+            union(rs[0], r)
+    groups = defaultdict(list); kn_of = defaultdict(list)
+    for r in act_of:
+        groups[find(r)].append(r)
+    for nd in knodes:
+        kn_of[find(node_conds[nd][0][0])].append(nd)
+
+    out = []
+    for g, rows_ in sorted(groups.items()):
+        rows_ = sorted(rows_)
+        xi = {(r, s): i for i, (r, s) in
+              enumerate((r, s) for r in rows_ for s in act_of[r])}
+        Nx = len(xi)
+        gk = sorted(kn_of.get(g, []))
+        R = np.zeros((len(gk), Nx), dtype=np.complex128)
+        for i, nd in enumerate(gk):
+            for rs in node_conds[nd]:
+                R[i, xi[rs]] = 1.0
+        rank = np.linalg.matrix_rank(R, tol=thr) if len(gk) else 0
+        cur = R
+        # candidate constraint rows, least-stiff first
+        cands = []
+        for r in rows_:
+            act = act_of[r]
+            Y = Yr[r].astype(np.complex128) + 1j * Yi[r]
+            Ya = Y[np.ix_(act, act)]
+            _, S, Vh = np.linalg.svd(Ya)
+            smax = max(S.max(), 1e-300)
+            for j in range(len(S)):
+                nv = Vh[j].conj()                       # direction in act-space
+                row = np.zeros(Nx, dtype=np.complex128)
+                for k2, s in enumerate(act):
+                    row[xi[(r, s)]] = nv[k2]
+                cands.append((S[j] / smax, row, r, act, Ya @ nv))
+        cands.sort(key=lambda t: t[0])
+        dirs = []; svs = []
+        for _sv, row, r, act, Yn in cands:
+            if rank >= Nx:
+                break
+            test = np.vstack([cur, row[None, :]])
+            rr = np.linalg.matrix_rank(test, tol=thr)
+            if rr > rank:
+                cur, rank = test, rr
+                dirs.append((r, act, Yn)); svs.append(float(_sv))
+        if rank < Nx:
+            if unsolved is not None:
+                unsolved.append((rows_, f"underdetermined: rank {rank} < {Nx} unknowns"))
+            continue
+        P = np.linalg.pinv(cur)
+        ci = torch.tensor([r for (r, _s) in xi], dtype=torch.long)
+        si = torch.tensor([s for (_r, s) in xi], dtype=torch.long)
+        out.append({
+            "comps": rows_, "nkcl": len(gk),
+            "svs": svs, "cond": float(np.linalg.cond(cur)),
+            "knodes": torch.tensor(gk, dtype=torch.long),
+            "Pr": torch.from_numpy(P.real.copy()), "Pi": torch.from_numpy(P.imag.copy()),
+            "ci": ci, "si": si,
+            "dirs": [(torch.tensor([slot_node.get((r, s), 0) for s in act], dtype=torch.long),
+                      torch.from_numpy(Yn.real.copy()), torch.from_numpy(Yn.imag.copy()))
+                     for (r, act, Yn) in dirs],
+        })
+    return out
+
+
+def _apply_xfmr_system(data, out, groups, vr, vi, n):
+    """Solve every transformer group: x = P @ [ -(other injections at KCL nodes) ;
+    (Yn)ᵀV per constraint row ]. Transformer currents are zeroed first so the
+    residual sees ONLY the other elements' injections."""
+    if "transformer" not in out or not groups:
+        return
+    Ir, Ii = out["transformer"]
+    Ir = torch.zeros_like(Ir); Ii = torch.zeros_like(Ii)
+    out["transformer"] = (Ir, Ii)
+    r0 = _full_residual(data, out, n)
+    if os.environ.get("XDBG"):
+        for g in groups:
+            kn = g["knodes"].tolist()
+            print(f"    [xdbg] comps={g['comps']} r0@knodes="
+                  f"{[complex(round(float(r0[k,0]),8), round(float(r0[k,1]),8)) for k in kn]}",
+                  flush=True)
+    vrd, vid = vr.double(), vi.double()
+    for g in groups:
+        nk = g["nkcl"]
+        br = torch.zeros(nk + len(g["dirs"]), dtype=torch.float64)
+        bi = torch.zeros_like(br)
+        if nk:
+            br[:nk] = -r0[g["knodes"], 0]; bi[:nk] = -r0[g["knodes"], 1]
+        for j, (nd, Ynr, Yni) in enumerate(g["dirs"]):
+            Va_r, Va_i = vrd[nd], vid[nd]           # V[0] == 0, so ground slots vanish
+            br[nk + j] = Ynr @ Va_r - Yni @ Va_i
+            bi[nk + j] = Ynr @ Va_i + Yni @ Va_r
+        Pr, Pi = g["Pr"], g["Pi"]
+        xr = Pr @ br - Pi @ bi
+        xi_ = Pr @ bi + Pi @ br
+        Ir = Ir.index_put((g["ci"], g["si"]), xr)
+        Ii = Ii.index_put((g["ci"], g["si"]), xi_)
+    out["transformer"] = (Ir, Ii)
+
+
 def build_xfmr_maps(data, thr=1e-6, unsolved=None):
     """Per-transformer YPrim map I_U = A @ V_act + B @ I_K, where K = the conductors
     nodal KCL can determine (load-facing SECONDARY conductors at unique non-ground
@@ -759,7 +927,7 @@ def build_recon_ctx(data, topo=None):
     rejects a stale ctx rather than trusting it."""
     if topo is not None:
         ctx = dict(topo)
-        ctx["xmaps"] = build_xfmr_maps(data)
+        ctx["xmaps"] = build_xfmr_system(data)
         ctx["yref"] = _y_fingerprint(data)
         return ctx
     slack, xsec = _slack_xfmrsec_roots(data)
@@ -770,7 +938,7 @@ def build_recon_ctx(data, topo=None):
     return {
         "Eline": Eline,
         "ltree": _tree_from_edges(Eline, slack | xsec),
-        "xmaps": build_xfmr_maps(data),
+        "xmaps": build_xfmr_system(data),
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
         # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
@@ -876,10 +1044,11 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
                 lr[:, :4] += csr; lr[:, 4:] += csr; li[:, :4] += csi; li[:, 4:] += csi
             out["line"] = (lr, li)
         _add_series_flow(_subtree_sum(build_q(line_stores), ltree), ltree, out, only=TREE_STORES)
-        # transformer secondary (nodal KCL) -> primary (YPrim null-space map)
+        # transformers: ONE joint solve per group (shared-node KCL rows + per-Y
+        # constraint rows). Replaces "set secondaries by KCL, then map U from K",
+        # which assumed each secondary was the lone unknown at its node.
         if "transformer" in out:
-            _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
-            _apply_xfmr_maps(out, xmaps, vr, vi)
+            _apply_xfmr_system(data, out, xmaps, vr, vi, n)
     # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
     # because it cannot know how current splits between parallel paths. Close it
     # with KVL around each fundamental loop (mesh analysis). Handles parallel lines
