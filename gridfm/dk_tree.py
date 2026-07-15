@@ -726,11 +726,33 @@ def check_assumptions(data, raise_on_fail=True):
     return bad
 
 
-def build_recon_ctx(data):
-    """TOPOLOGY-ONLY precompute, identical for every variant of a feeder: the line
-    tree, the transformer YPrim null-space maps, per-store injection indices, and
-    the parallel-line groups. Build once per feeder and reuse across its variants
-    (and this is exactly what the model needs to precompute per feeder)."""
+def _y_fingerprint(data):
+    """Reference to the Y a ctx's transformer maps were built from, so a ctx reused
+    on a variant with different Y is caught LOUDLY instead of quietly decoding wrong."""
+    if "transformer" not in data.node_types or store_size(data, "transformer") == 0:
+        return None
+    st = data["transformer"]
+    return (st["Yxfmr_r_pu"].detach().clone(), st["Yxfmr_i_pu"].detach().clone())
+
+
+def build_recon_ctx(data, topo=None):
+    """Per-variant precompute. Two very different lifetimes are mixed in here:
+
+      TOPOLOGY-only (tree, injection indices, series classification) -- driven by
+        edge_index, which IS static across a feeder's variants -> cacheable.
+      Y-DEPENDENT (the transformer null-space maps) -- driven by Yxfmr, which is
+        NOT static: variants change transformer TAPS, so A/B change with them.
+
+    Pass `topo` (a ctx from a previous variant of the SAME feeder) to reuse the
+    topology precompute; the Y-dependent maps are always rebuilt. Caching the
+    whole ctx across variants silently decoded taps at the wrong ratio (6.5e-1
+    on a variant whose variant-0 sibling read 1.4e-8) -- reconstruct_full now
+    rejects a stale ctx rather than trusting it."""
+    if topo is not None:
+        ctx = dict(topo)
+        ctx["xmaps"] = build_xfmr_maps(data)
+        ctx["yref"] = _y_fingerprint(data)
+        return ctx
     slack, xsec = _slack_xfmrsec_roots(data)
     # TREE_STORES: every 2-terminal series store whose through-flow the subtree/mesh
     # sweep must reconstruct. Reactors belong here too -- they are series elements,
@@ -745,6 +767,7 @@ def build_recon_ctx(data):
         # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
         "ser": {s: classify_series(data, s) for s in AMBIG_STORES},
         "n": node_count(data),
+        "yref": _y_fingerprint(data),
     }
 
 
@@ -757,6 +780,18 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     topology precompute across a feeder's variants."""
     if ctx is None:
         ctx = build_recon_ctx(data)
+    else:
+        # A ctx carries transformer maps built from a SPECIFIC Y. Variants retap the
+        # transformers, so a ctx reused blind decodes at the wrong turns ratio -- and
+        # it does so silently, which is how this went unnoticed across 100 variants.
+        yr = ctx.get("yref"); yn = _y_fingerprint(data)
+        stale = (yr is None) != (yn is None) or (
+            yr is not None and not (torch.equal(yr[0], yn[0]) and torch.equal(yr[1], yn[1])))
+        if stale:
+            raise UnsupportedNetwork(
+                "stale ctx: transformer Y differs from the one its null-space maps were "
+                "built from (variants change taps). Rebuild per variant with "
+                "build_recon_ctx(data, topo=ctx) -- topology is reused, maps are not.")
     n = ctx["n"]
     out = {s: (cur[s][0].double().clone(), cur[s][1].double().clone()) for s in cur}
     for s in ("line", "transformer", "vsource"):  # always-series: zero placeholders

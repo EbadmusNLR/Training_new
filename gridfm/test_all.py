@@ -34,8 +34,9 @@ def one(args):
         ctx = None
         for vi_ in range(nvar):
             d = fs[vi_]
-            if ctx is None:
-                ctx = build_recon_ctx(d)          # topology-only: build once, reuse
+            # topology is reused across variants; the transformer maps are NOT --
+            # variants retap the transformers, so Y (and A/B) change with them.
+            ctx = build_recon_ctx(d, topo=ctx)
             vr, vim = d["node"].V_r_pu.double(), d["node"].V_i_pu.double()
             present = [s for s in STORES if s in d.node_types and store_size(d, s) > 0]
             truth = {s: stored_currents(d, s, dtype=torch.float64) for s in present}
