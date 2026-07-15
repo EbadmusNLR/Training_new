@@ -7,11 +7,13 @@ from core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, store_size, stored_currents, element_currents
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, _series_edges,
                             _slot_node_map, _slack_xfmrsec_roots, SHUNT_STORES, AMBIG_STORES)
-TD="/kfs2/projects/gogpt/Ebadmus/training_data/minimal_component"
+TD=os.path.join("/kfs2/projects/gogpt/Ebadmus/training_data",
+                os.environ.get("CORPUS","minimal_component"))
 import re
 TGT = os.environ.get("TGT","t1_0208_k10_storage_de")
 p = [x for x in sorted(glob.glob(os.path.join(TD, "*", "static.pt"))) if TGT in x][0]
-d = FeederScenarios(os.path.dirname(p))[0]
+fs = FeederScenarios(os.path.dirname(p))
+d = fs[int(os.environ.get("VAR","0"))]
 print("feeder:", os.path.basename(os.path.dirname(p)))
 print("nodes:", d["node"].V_r_pu.shape[0])
 for s in d.node_types:

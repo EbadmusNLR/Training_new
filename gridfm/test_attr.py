@@ -62,7 +62,10 @@ def one(a):
                     if den >= FLOOR:
                         acc[f"{s}|{grp}|fnum"] += num; acc[f"{s}|{grp}|fden"] += den
                         if num/den > 1e-6:
-                            worst.append((round(num/den, 9), name[:30], v, s, grp, c))
+                            # carry |I| and the ABSOLUTE error: a large relative error on a
+                            # near-zero element is not a bug, and only |I| distinguishes them
+                            worst.append((round(num/den, 9), name[:30], v, s, grp, c,
+                                          float(den), float(num)))
                     else:
                         acc[f"{s}|{grp}|noise"] += 1
         worst.sort(reverse=True)
@@ -95,10 +98,16 @@ def main():
             fn, fd = tot.get(f"{k}|fnum", 0.0), tot.get(f"{k}|fden", 0.0)
             print(f"{k:28s} {num/(den+1e-30):11.3e} {fn/(fd+1e-30):13.3e} "
                   f"{den:11.4e} {tot.get(f'{k}|noise', 0):12d}")
+        print("\n  worst real elements BY RELATIVE error (|I| >= FLOOR):")
         worst.sort(reverse=True)
-        print("\n  worst real elements (|I| >= FLOOR):")
-        for w in worst[:15]:
-            print(f"    {w[0]:.3e}  {w[1]:32s} var{w[2]:<3d} {w[3]}|{w[4]} comp{w[5]}")
+        for w in worst[:8]:
+            print(f"    WAPE={w[0]:.3e}  |I|={w[6]:.3e}  abs_err={w[7]:.3e}  "
+                  f"{w[1]:32s} var{w[2]:<3d} {w[3]}|{w[4]} comp{w[5]}")
+        print("\n  worst real elements BY ABSOLUTE error (what actually moves the aggregate):")
+        worst.sort(key=lambda w: -w[7])
+        for w in worst[:8]:
+            print(f"    abs_err={w[7]:.3e}  |I|={w[6]:.3e}  WAPE={w[0]:.3e}  "
+                  f"{w[1]:32s} var{w[2]:<3d} {w[3]}|{w[4]} comp{w[5]}")
         for f in fails[:10]:
             print(f"  FAIL {f}")
         return 0

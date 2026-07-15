@@ -533,15 +533,24 @@ def build_xfmr_maps(data, thr=1e-6, unsolved=None):
         k = terminal_slot(comp)
         for c, kk, nd in zip(comp.tolist(), k.tolist(), node.tolist()):
             slot_node[(int(c), (t - 1) * FC + int(kk))] = int(nd)
+    # ACTIVE slots per transformer, then a GLOBAL node census over them. A conductor
+    # is determinable by nodal KCL only if it is the ONLY unknown transformer
+    # conductor at its node -- and that must be counted across ALL transformers, not
+    # within one: an open-wye/open-delta bank is two single-phase transformers whose
+    # secondaries SHARE a node, so KCL there yields only their SUM. Counting per
+    # transformer made each one believe it owned the node and take half the current.
+    act_of = {}
     for row in range(Yr.shape[0]):
-        Y = Yr[row].astype(np.complex128) + 1j * Yi[row]
-        diag = np.abs(np.diag(Y))
+        diag = np.abs(np.diag(Yr[row] + 1j * Yi[row]))
         if diag.max() <= 0:
             continue
-        act = [int(i) for i in np.where(diag > 1e-9 * diag.max())[0]]
+        act_of[row] = [int(i) for i in np.where(diag > 1e-9 * diag.max())[0]]
+    gcnt = Counter(slot_node[(r, s)] for r, a in act_of.items() for s in a
+                   if slot_node.get((r, s), 0) != 0)
+    for row, act in act_of.items():
+        Y = Yr[row].astype(np.complex128) + 1j * Yi[row]
         nodes = {s: slot_node.get((row, s), 0) for s in act}
-        cnt = Counter(nodes.values())
-        K = [s for s in act if s >= FC and nodes[s] != 0 and cnt[nodes[s]] == 1]
+        K = [s for s in act if s >= FC and nodes[s] != 0 and gcnt[nodes[s]] == 1]
         U = [s for s in act if s not in K]
         if not K or not U:
             if unsolved is not None and U:
