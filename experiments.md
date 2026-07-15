@@ -438,3 +438,60 @@ scope that is a SCOPE call, not a data-quality one.
 | SMART-DS_1000 | 100,000 | 6.050e-08 | 0/1000 |
 | minimal_component | 200,000 | 7.859e-10 | 0/2000 |
 | dss_data | 8,300 | 1.664e-07 | 0/83 (+1 refused: IEEE 30 Bus) |
+
+## 13. IEEE 30 Bus: the refusal is NOT "a loop through a transformer"
+
+Carried that diagnosis for a while. It is WRONG, and measuring the null space killed it.
+
+`dbg_null.py` dumps the null basis of the joint transformer/bridge system:
+
+```
+group: 86 unknowns | rows: kcl=18 cut=18 bridge=15 dirs=41 | cond=2.93e+16
+  NULL space: 9 modes
+    line         100.00% of null weight
+    transformer    0.00% of null weight
+    modes live on exactly 4 line components: c18 c19 c20 c21
+```
+
+**0.00% on any transformer winding.** The 9 undetermined DOF are pure LINE circulating
+currents that close through BRIDGES; the transformer is merely the ROOT of the component
+a bridge lands in, and is never in the loop. So this needs no transformer loop model, no
+turns ratio in the KVL, and no impedance form for a winding -- which does not exist, since
+YPrim is singular. Every hour spent on "how do I write KVL through a tap changer" was
+spent on a non-problem.
+
+Corollary: `transformer WAPE 1.07` was never indeterminacy. The transformers are
+DETERMINED. That number was pinv least-squaring an inconsistent mid-Jacobi rhs and
+smearing the error across the determined unknowns too. A rank-deficient system does not
+politely confine its error to the null space.
+
+### What fixed 6 of the 9: KVL rows INSIDE the system (`build_kvl_rows`)
+One row per BRIDGE that is a chord of the mesh forest: `(mᵀZ) f = 0` around its
+fundamental loop -- currents and impedances only, never V1-V2, so no Y@V stiffness.
+Fed INTO the joint system (not bolted on after), so it becomes full rank, pinv is a true
+inverse, and nothing smears. **rank 77 -> 83 of 86.**
+
+Post-hoc `mesh_correct` cannot substitute for this: measured IEEE 30 Bus line 3.2e-01 /
+xfmr 1.07, and it REGRESSED 37Bus 6.6e-11 -> 1.1e-07. Do not retry it.
+
+### The remaining 3, and why they are exactly 3
+The line graph is PER-PHASE DISCONNECTED (`_series_edges` pairs same-slot conductors
+only), so each phase is its own component set with its own slack component -- and
+`build_xfmr_system` SKIPS the cut-set of any component containing the slack (its vsource
+is unknown until the end). That is one lost row per phase = **3**. Per phase the bridge
+cycle space supplies only 2 loops (5 bridge conductors, mesh forest uses 3 as tree
+edges), which is exactly the 6 rows found. 2/phase found + 1/phase missing = 9.
+
+The 3 survivors live on c19/c20 -- bridges that are mesh-TREE edges, so they close no
+loop against that forest and no bridge-chord row can reach them.
+
+### The identified close (NOT yet done)
+Two mechanisms currently own loop currents and they overlap: the joint system owns bridge
+conductors, `mesh_correct` owns pure-line chords, and neither sees the other's unknowns.
+Unify: treat EVERY non-tree line edge (bridge AND rooted-chord) as an unknown conductor
+pair with its `I1+I2 = charging` row, add one KVL row per mesh chord, and retire
+`mesh_correct`. Radial feeders have no non-tree edges, so they are untouched by
+construction. This subsumes `_split_parallel_lines` (the L=1 case) too.
+
+STATUS: IEEE 30 Bus is STILL REFUSED (3 DOF short). Refusing beats returning
+silently-zero currents, which is how all seven earlier decoder bugs presented.

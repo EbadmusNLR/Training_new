@@ -16,7 +16,8 @@ import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 
-ROOT = "/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000"
+ROOT = os.environ.get("CORPUS_ROOT",
+        "/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000")
 FAMILIES = ("load", "pvsystem", "storage", "capacitor", "generator", "line", "transformer", "vsource")
 
 

@@ -17,7 +17,8 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from core.scenario_store import FeederScenarios
 from gridfm.dk_tree import (build_xfmr_system, _series_edges, _tree_from_edges,
-                            SERIES_STORES)
+                            _slack_xfmrsec_roots, classify_series, build_kvl_rows,
+                            TREE_STORES, AMBIG_STORES)
 
 CORPUS = os.environ.get("CORPUS", "dss_data")
 TGT = os.environ.get("TGT", "IEEE 30 Bus")
@@ -26,22 +27,38 @@ p = [x for x in sorted(glob.glob(os.path.join(TD, "*", "static.pt")))
      if TGT in os.path.basename(os.path.dirname(x))][0]
 fs = FeederScenarios(os.path.dirname(p))
 d = fs[0]
-# go under build_recon_ctx: it REFUSES this feeder, and the refusal is exactly what
-# is being diagnosed.
-slack = d["node"].slack.tolist() if hasattr(d["node"], "slack") else []
-slack_set = {i for i, v in enumerate(slack) if v}
-Eline = _series_edges(d, ("line",))
-ltree = _tree_from_edges(Eline, slack_set)
+# Go under build_recon_ctx (it REFUSES this feeder, which is what is being
+# diagnosed) -- but replicate its topology EXACTLY. Rooting at the slack alone
+# instead of slack|xfmr-secondaries gives a different tree: 0 bridges, 56 unknowns,
+# "fully determined". A probe that builds its own topology measures its own bug.
+slack, xsec = _slack_xfmrsec_roots(d)
+ser = {s: classify_series(d, s) for s in AMBIG_STORES}
+Eline = [e for e in _series_edges(d, TREE_STORES)
+         if e[0] not in AMBIG_STORES or e[1] in ser.get(e[0], set())]
+ltree = _tree_from_edges(Eline, slack | xsec)
 bridges = [Eline[i] for i in ltree["bridges"]]
+kr = build_kvl_rows(d, Eline, ltree)
+kvl = (kr[0], kr[1], kr[2], Eline) if kr else None
 xmaps = build_xfmr_system(d, bridges=bridges, unsolved=[],
-                          comp_of=ltree.get("comp_of"))
+                          comp_of=ltree.get("comp_of"), kvl=kvl)
 print(f"feeder {os.path.basename(os.path.dirname(p))}  groups={len(xmaps)}")
 print(f"bridges={len(bridges)}  mchords={len(ltree.get('mchords', []))}")
+mte = set(ltree["mparent_edge"].values())
+bch = [i for i in ltree["bridges"] if i not in mte]
+print(f"bridges that are mesh CHORDS (candidate loops): {len(bch)}   "
+      f"mesh-TREE bridges (close no loop): {len(ltree['bridges']) - len(bch)}")
+if kr:
+    print(f"build_kvl_rows -> {kr[1].shape[0]} candidate loop rows")
+for c in bch:
+    s, cc, n1, n2, ca, cb = Eline[c]
+    print(f"    chord bridge: {s}[c{cc}] n{n1}->n{n2} slots {ca}/{cb} "
+          f"comp {ltree['comp_of'].get(n1)}->{ltree['comp_of'].get(n2)}")
 
 for g in xmaps:
     keys, NB = g["keys"], g.get("null")
     print(f"\ngroup: {len(keys)} unknowns | rows: kcl={g['nkcl']} cut={g['ncut']} "
-          f"bridge={g['nbridge']} dirs={len(g['dirs'])} | cond={g['cond']:.2e}")
+          f"bridge={g['nbridge']} kvl={g.get('nkvl')} dirs={len(g['dirs'])} | "
+          f"cond={g['cond']:.2e}")
     if NB is None:
         print("  fully determined")
         continue

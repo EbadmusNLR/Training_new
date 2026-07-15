@@ -576,7 +576,7 @@ def transformer_null_map(Yr, Yi, thr=1e-4):
 
 
 def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
-                      loop_dof=0):
+                      loop_dof=0, kvl=None):
     """JOINT transformer solve, per group of transformers that share a node.
 
     Supersedes the per-transformer K/U map, which asked "is this conductor the lone
@@ -736,6 +736,35 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
             row[xi[ka]] = 1.0; row[xi[kb]] = 1.0
             cur = np.vstack([cur, row[None, :]])
             rank = np.linalg.matrix_rank(cur, tol=thr)
+        # KVL rows (see build_kvl_rows). Added BEFORE the transformer's constitutive
+        # directions because they are well-conditioned (Z and currents only), and the
+        # whole point of the greedy order is least-stiff-first.
+        kvl_sel, kvl_W = [], []
+        if kvl is not None:
+            klive, KW, _kch, KE = kvl
+            for ci in range(KW.shape[0]):
+                if rank >= Nx:
+                    break
+                row = np.zeros(Nx, dtype=np.complex128)
+                wrest = np.zeros(len(klive), dtype=np.complex128)
+                for k, ei in enumerate(klive):
+                    w = complex(KW[ci, k])
+                    if w == 0:
+                        continue
+                    s2, c2, _n1, _n2, ca2, cb2 = KE[ei]
+                    ka, kb = (s2, c2, ca2), (s2, c2, cb2)
+                    if ka in xi and kb in xi:      # a BRIDGE unknown of THIS group
+                        row[xi[ka]] -= 0.5 * w
+                        row[xi[kb]] += 0.5 * w
+                    else:                          # known branch -> rhs, from f
+                        wrest[k] = w
+                if not np.any(row):                # loop touches none of our unknowns
+                    continue
+                test = np.vstack([cur, row[None, :]])
+                rr = np.linalg.matrix_rank(test, tol=thr)
+                if rr > rank:
+                    cur, rank = test, rr
+                    kvl_sel.append(ci); kvl_W.append(wrest)
         rows_ = sorted({r for (st, r, _s) in keys if st == "transformer"})
         # candidate constraint rows, least-stiff first
         cands = []
@@ -783,6 +812,8 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
             "comps": rows_, "nkcl": len(gk), "nbridge": len(gpairs),
             "ncut": len(gcs), "keys": keys,
             "null": NB, "ndef": int(Nx - rank),
+            "nkvl": len(kvl_sel),
+            "kvl_W": (torch.from_numpy(np.stack(kvl_W)) if kvl_W else None),
             "cutnodes": [torch.tensor(ns, dtype=torch.long) for ns, _ks in gcs],
             "svs": svs, "cond": float(np.linalg.cond(cur)),
             "knodes": torch.tensor(gk, dtype=torch.long),
@@ -801,7 +832,7 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
     return out
 
 
-def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None):
+def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None, kvl=None):
     """Solve every group: x = P @ [ -(other injections at KCL nodes) ;
     (Yn)ᵀV per constraint row ; Yh(V1+V2) per bridge row ]. Every unknown conductor
     (transformer AND bridge) is zeroed first so the residual sees ONLY the other
@@ -822,9 +853,17 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None):
                   f"{[complex(round(float(r0[k,0]),8), round(float(r0[k,1]),8)) for k in kn]}",
                   flush=True)
     vrd, vid = vr.double(), vi.double()
+    # KVL rhs needs the through-flow of every branch the loop closes through. Those
+    # are KNOWN this iteration (the sweep just wrote them); only the group's own
+    # bridges are unknown, and those sit on the lhs.
+    fbr = None
+    if kvl is not None and any(g.get("nkvl") for g in groups):
+        klive, _KW, _kch, KE = kvl
+        fbr = _branch_f(out, KE, klive)
     for g in groups:
         nk, nb, nc = g["nkcl"], g["nbridge"], g.get("ncut", 0)
-        br = torch.zeros(nk + nc + nb + len(g["dirs"]), dtype=torch.float64)
+        nv = g.get("nkvl", 0)
+        br = torch.zeros(nk + nc + nb + nv + len(g["dirs"]), dtype=torch.float64)
         bi = torch.zeros_like(br)
         if nk:
             br[:nk] = -r0[g["knodes"], 0]; bi[:nk] = -r0[g["knodes"], 1]
@@ -834,10 +873,15 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None):
         for j, (c_, sl_) in enumerate(g["bridge_cs"]):
             if cs is not None:               # I1 + I2 = Yh(V1+V2) = 2 * (half-charging)
                 br[nk + nc + j] = 2.0 * cs[0][c_, sl_]; bi[nk + nc + j] = 2.0 * cs[1][c_, sl_]
+        # KVL: (mᵀZ)f = 0 -> (lhs on our bridges) = -(mᵀZ) f over the known branches
+        if nv:
+            rhs = -(g["kvl_W"].to(torch.complex128) @ fbr)
+            br[nk + nc + nb:nk + nc + nb + nv] = rhs.real
+            bi[nk + nc + nb:nk + nc + nb + nv] = rhs.imag
         for j, (nd, Ynr, Yni) in enumerate(g["dirs"]):
             Va_r, Va_i = vrd[nd], vid[nd]           # V[0] == 0, so ground slots vanish
-            br[nk + nc + nb + j] = Ynr @ Va_r - Yni @ Va_i
-            bi[nk + nc + nb + j] = Ynr @ Va_i + Yni @ Va_r
+            br[nk + nc + nb + nv + j] = Ynr @ Va_r - Yni @ Va_i
+            bi[nk + nc + nb + nv + j] = Ynr @ Va_i + Yni @ Va_r
         Pr, Pi = g["Pr"], g["Pi"]
         xr = Pr @ br - Pi @ bi
         xi_ = Pr @ bi + Pi @ br
@@ -1077,13 +1121,13 @@ def check_assumptions(data, raise_on_fail=True):
     return bad
 
 
-def _xsys_or_raise(data, bridges, comp_of=None, loop_dof=0):
+def _xsys_or_raise(data, bridges, comp_of=None, loop_dof=0, kvl=None):
     """An underdetermined group is SKIPPED by build_xfmr_system, which leaves its
     currents at exactly ZERO -- the silent-wrong failure every bug in this decoder
     has presented as. Refuse the feeder instead."""
     uns = []
     xs = build_xfmr_system(data, bridges=bridges, unsolved=uns, comp_of=comp_of,
-                           loop_dof=loop_dof)
+                           loop_dof=loop_dof, kvl=kvl)
     if uns:
         raise UnsupportedNetwork(
             f"transformer group(s) underdetermined: {uns}. The leftover DOF are not "
@@ -1129,7 +1173,8 @@ def build_recon_ctx(data, topo=None):
     if topo is not None:
         ctx = dict(topo)
         ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"], ctx["ltree"].get("comp_of"),
-                                      len(ctx["ltree"].get("mchords", [])))
+                                      len(ctx["ltree"].get("mchords", [])),
+                                      kvl=ctx.get("kvl"))
         ctx["yref"] = _y_fingerprint(data)
         return ctx
     slack, xsec = _slack_xfmrsec_roots(data)
@@ -1145,15 +1190,21 @@ def build_recon_ctx(data, topo=None):
              if e[0] not in AMBIG_STORES or e[1] in ser.get(e[0], set())]
     ltree = _tree_from_edges(Eline, slack | xsec)
     bridges = [Eline[i] for i in ltree["bridges"]]
+    # KVL closure for the bridge loops. Topology + LINE impedance only, both static
+    # across a feeder's variants (only transformer TAPS move), so it lives in the
+    # reusable topology half of the ctx.
+    kr = build_kvl_rows(data, Eline, ltree)
+    kvl = (kr[0], kr[1], kr[2], Eline) if kr else None
     return {
         "Eline": Eline,
         "ltree": ltree,
         "bridges": bridges,
+        "kvl": kvl,
         # bridge conductors are injections the subtree sweep cannot see: their
         # current must enter q like a transformer's, or every sum above them is short
         "binj": _bridge_inj(bridges),
         "xmaps": _xsys_or_raise(data, bridges, ltree.get("comp_of"),
-                                len(ltree.get("mchords", []))),
+                                len(ltree.get("mchords", [])), kvl=kvl),
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
         # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
@@ -1281,7 +1332,8 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         # the lone unknown at its node.
         if "transformer" in out:
             _apply_xfmr_system(data, out, xmaps, vr, vi, n,
-                               cs=(csr, csi) if vr is not None else None)
+                               cs=(csr, csi) if vr is not None else None,
+                               kvl=ctx.get("kvl"))
             bkeep = {s: (out[s][0][c, col].clone(), out[s][1][c, col].clone())
                      for s, (c, col, _nd) in binj.items() if s in out}
     # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
@@ -1350,6 +1402,99 @@ def _series_yeff(data, store, cache):
     return Y
 
 
+def _branch_Z(data, E, live, bidx=None):
+    """Branch impedance over `live`, BLOCK-diagonal per ELEMENT so an element's own
+    conductors stay coupled (phase mutual impedance is included, not dropped)."""
+    if bidx is None:
+        bidx = {e: k for k, e in enumerate(live)}
+    nb = len(live)
+    Z = torch.zeros(nb, nb, dtype=torch.complex128)
+    by_elem = defaultdict(list)
+    for ei in live:
+        by_elem[(E[ei][0], E[ei][1])].append(ei)
+    yeff = {}
+    for (store, cmp_), eids in by_elem.items():
+        Y = _series_yeff(data, store, yeff)[cmp_]
+        slots = [E[e][4] % FC for e in eids]
+        sub = Y[slots][:, slots]
+        try:
+            Zsub = torch.linalg.inv(sub)
+        except Exception:
+            Zsub = torch.linalg.pinv(sub)
+        for a, ea in enumerate(eids):
+            for b, eb in enumerate(eids):
+                Z[bidx[ea], bidx[eb]] = Zsub[a, b]
+    return Z
+
+
+def _branch_f(out, E, live):
+    """Per-branch through-flow f = 0.5*(I_colb - I_cola). The charging common-mode
+    cancels in the difference, so f is the series part only."""
+    f = torch.zeros(len(live), dtype=torch.complex128)
+    for k, ei in enumerate(live):
+        s, cmp_, _n1, _n2, ca, cb = E[ei]
+        Or, Oi = out[s]
+        f[k] = complex(0.5 * (Or[cmp_, cb] - Or[cmp_, ca]),
+                       0.5 * (Oi[cmp_, cb] - Oi[cmp_, ca]))
+    return f
+
+
+def _loop_vec(ei, E, mt, bidx, nb):
+    """Fundamental loop of chord `ei` w.r.t. the mesh forest, as a signed incidence
+    vector over branches: chord oriented n1->n2, closed by the tree path n2->n1."""
+    m = torch.zeros(nb, dtype=torch.complex128)
+    _s, _c, n1, n2, _ca, _cb = E[ei]
+    m[bidx[ei]] = 1.0
+    up, dn = _tree_path(n2, n1, mt)
+    for node in up:
+        e2 = mt["parent_edge"][node]
+        if e2 in bidx:
+            m[bidx[e2]] += 1.0 if node == E[e2][2] else -1.0
+    for node in dn:
+        e2 = mt["parent_edge"][node]
+        if e2 in bidx:
+            m[bidx[e2]] += -1.0 if node == E[e2][2] else 1.0
+    return m
+
+
+def build_kvl_rows(data, E, ltree):
+    """KVL rows for the loops the joint system CANNOT see, ready to go INTO it.
+
+    The undetermined DOF of the transformer/bridge system are circulating currents.
+    MEASURED (IEEE 30 Bus): the 9 null modes carry 100% of their weight on LINE
+    conductors and 0.00% on any transformer winding -- they are pure line loops that
+    close through BRIDGES, and the transformer is merely the ROOT of the component a
+    bridge lands in. So this needs no transformer loop model, no turns-ratio in the
+    KVL, and no impedance form for a winding (which does not exist -- YPrim is
+    singular).
+
+    Bolting a post-hoc mesh_correct on afterwards does NOT work: the group system is
+    rank deficient, so pinv least-squares an inconsistent mid-Jacobi rhs and smears
+    the error into the DETERMINED unknowns too (transformers went to WAPE 1.07).
+    Feeding these rows INTO the system instead makes it full rank, so pinv is a true
+    inverse and nothing smears.
+
+    One row per BRIDGE that is a chord of the mesh forest (a bridge that is a mesh
+    TREE edge closes no loop). Row: (mᵀZ) f = 0 around the loop -- currents and
+    impedances only, never V1-V2, so no Y@V stiffness is reintroduced.
+    Returns (live, W [L,nb] complex, chords) or None.
+    """
+    live = [i for i, e in enumerate(E) if e[2] != 0 and e[3] != 0]
+    if not live:
+        return None
+    bidx = {e: k for k, e in enumerate(live)}
+    mt = {"parent_edge": ltree.get("mparent_edge", ltree["parent_edge"]),
+          "parent_node": ltree.get("mparent_node", ltree["parent_node"]),
+          "depth": ltree.get("mdepth", ltree["depth"])}
+    mtree_eids = set(mt["parent_edge"].values())
+    chords = [i for i in ltree.get("bridges", ()) if i not in mtree_eids and i in bidx]
+    if not chords:
+        return None
+    Z = _branch_Z(data, E, live, bidx)
+    W = torch.stack([_loop_vec(ei, E, mt, bidx, len(live)) @ Z for ei in chords])
+    return live, W, chords
+
+
 def mesh_correct(data, out, tree, E):
     """GENERAL loop (mesh) correction -- makes the decoder valid on NON-RADIAL
     networks, not just radial ones.
@@ -1389,35 +1534,8 @@ def mesh_correct(data, out, tree, E):
             e2 = mt["parent_edge"][node]
             if e2 in bidx:
                 M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
-    # branch impedance Z (block-diagonal per ELEMENT, coupling that element's own
-    # conductors -> phase mutual coupling included)
-    Zr = torch.zeros(nb, nb, dtype=torch.float64); Zi = torch.zeros(nb, nb, dtype=torch.float64)
-    by_elem = defaultdict(list)
-    for ei in live:
-        by_elem[(E[ei][0], E[ei][1])].append(ei)
-    yeff = {}
-    for (store, cmp_), eids in by_elem.items():
-        Y = _series_yeff(data, store, yeff)[cmp_]
-        slots = [E[e][4] % FC for e in eids]
-        sub = Y[slots][:, slots]
-        try:
-            Zsub = torch.linalg.inv(sub)
-        except Exception:
-            Zsub = torch.linalg.pinv(sub)
-        for a, ea in enumerate(eids):
-            for b, eb in enumerate(eids):
-                Zr[bidx[ea], bidx[eb]] = Zsub[a, b].real
-                Zi[bidx[ea], bidx[eb]] = Zsub[a, b].imag
-    # tree currents (series part f) per branch: f = 0.5*(I_colb - I_cola)
-    fr = torch.zeros(nb, dtype=torch.float64); fi = torch.zeros(nb, dtype=torch.float64)
-    for ei in live:
-        s, cmp_, n1, n2, ca, cb = E[ei]
-        k = bidx[ei]
-        Or, Oi = out[s]
-        fr[k] = 0.5 * (Or[cmp_, cb] - Or[cmp_, ca])
-        fi[k] = 0.5 * (Oi[cmp_, cb] - Oi[cmp_, ca])
-    Z = Zr + 1j * Zi
-    f = fr + 1j * fi
+    Z = _branch_Z(data, E, live, bidx)
+    f = _branch_f(out, E, live)
     Mc = M.to(torch.complex128)
     Zl = Mc.T @ Z @ Mc                                   # [L,L] loop impedance
     b = Mc.T @ (Z @ f)                                   # [L]
