@@ -908,6 +908,35 @@ def _tree_path(u, v, tree):
     return up, list(reversed(dn))
 
 
+def _series_yeff(data, store, cache):
+    """Effective SERIES admittance [ncomp, FC, FC] of a 2-terminal store, from its
+    own Y alone -- no element-type knowledge.
+
+    For the standard pi primitive YPrim = [[A, B], [Bᵀ, D]] the through-branch sees
+    the series admittance plus half the shunt at each end:
+        A = Ys + Yh,  B = -Ys   ->   (A - B)/2 = Ys + Yh/2
+    which is exactly the line's Z^-1, and for a pure series element (Yh = 0) reduces
+    to Ys. One formula covers line / reactor / capacitor, so a new series component
+    type needs no new code here.
+    """
+    if store in cache:
+        return cache[store]
+    st = data[store]
+    if store == "line":                       # split blocks are stored: use them directly
+        ys_r = st["Ys_r_pu"].reshape(-1, FC, FC).double()
+        ys_i = st["Ys_i_pu"].reshape(-1, FC, FC).double()
+        yh_i = st["Yh_i_pu"].reshape(-1, FC, FC).double()
+        Y = ys_r + 1j * (ys_i + 0.5 * yh_i)
+    else:
+        prefix, _, _ = STORES[store]
+        Yf = (st[f"{prefix}_r_pu"].reshape(-1, 2 * FC, 2 * FC).double()
+              + 1j * st[f"{prefix}_i_pu"].reshape(-1, 2 * FC, 2 * FC).double())
+        A = Yf[:, :FC, :FC]; B = Yf[:, :FC, FC:]
+        Y = 0.5 * (A - B)
+    cache[store] = Y
+    return Y
+
+
 def mesh_correct(data, out, tree, E):
     """GENERAL loop (mesh) correction -- makes the decoder valid on NON-RADIAL
     networks, not just radial ones.
@@ -923,11 +952,13 @@ def mesh_correct(data, out, tree, E):
     V1-V2 -- so it does NOT reintroduce the Y@V stiffness. The parallel-line
     current divider is the L=1 special case of this.
     """
-    chords = [i for i in tree["chords"] if E[i][0] == SERIES]
+    chords = list(tree["chords"])
     if not chords:
         return
-    # branch set = every live line conductor-edge (tree + chords)
-    live = [i for i, e in enumerate(E) if e[0] == SERIES and e[2] != 0 and e[3] != 0]
+    # branch set = every live series conductor-edge (tree + chords), ANY store.
+    # NOT just lines: a reactor/capacitor can close a loop too, and a chord that is
+    # filtered out here never gets a current at all -- it stays silently ZERO.
+    live = [i for i, e in enumerate(E) if e[2] != 0 and e[3] != 0]
     bidx = {e: k for k, e in enumerate(live)}
     nb, nl = len(live), len(chords)
     # fundamental loop matrix M [nb, nl]
@@ -944,16 +975,15 @@ def mesh_correct(data, out, tree, E):
             e2 = tree["parent_edge"][node]
             if e2 in bidx:
                 M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
-    # branch impedance Z (block-diagonal per line, coupling that line's conductors)
-    ys_r = data["line"]["Ys_r_pu"].reshape(-1, FC, FC).double()
-    ys_i = data["line"]["Ys_i_pu"].reshape(-1, FC, FC).double()
-    yh_i = data["line"]["Yh_i_pu"].reshape(-1, FC, FC).double()
+    # branch impedance Z (block-diagonal per ELEMENT, coupling that element's own
+    # conductors -> phase mutual coupling included)
     Zr = torch.zeros(nb, nb, dtype=torch.float64); Zi = torch.zeros(nb, nb, dtype=torch.float64)
-    by_line = defaultdict(list)
+    by_elem = defaultdict(list)
     for ei in live:
-        by_line[E[ei][1]].append(ei)
-    for cmp_, eids in by_line.items():
-        Y = (ys_r[cmp_] + 0.5 * torch.zeros_like(ys_r[cmp_])) + 1j * (ys_i[cmp_] + 0.5 * yh_i[cmp_])
+        by_elem[(E[ei][0], E[ei][1])].append(ei)
+    yeff = {}
+    for (store, cmp_), eids in by_elem.items():
+        Y = _series_yeff(data, store, yeff)[cmp_]
         slots = [E[e][4] % FC for e in eids]
         sub = Y[slots][:, slots]
         try:
@@ -965,11 +995,11 @@ def mesh_correct(data, out, tree, E):
                 Zr[bidx[ea], bidx[eb]] = Zsub[a, b].real
                 Zi[bidx[ea], bidx[eb]] = Zsub[a, b].imag
     # tree currents (series part f) per branch: f = 0.5*(I_colb - I_cola)
-    Or, Oi = out["line"]
     fr = torch.zeros(nb, dtype=torch.float64); fi = torch.zeros(nb, dtype=torch.float64)
     for ei in live:
         s, cmp_, n1, n2, ca, cb = E[ei]
         k = bidx[ei]
+        Or, Oi = out[s]
         fr[k] = 0.5 * (Or[cmp_, cb] - Or[cmp_, ca])
         fi[k] = 0.5 * (Oi[cmp_, cb] - Oi[cmp_, ca])
     Z = Zr + 1j * Zi
@@ -986,10 +1016,10 @@ def mesh_correct(data, out, tree, E):
     for ei in live:
         s, cmp_, n1, n2, ca, cb = E[ei]
         k = bidx[ei]
+        Or, Oi = out[s]
         cs_r = 0.5 * (Or[cmp_, ca] + Or[cmp_, cb]); cs_i = 0.5 * (Oi[cmp_, ca] + Oi[cmp_, cb])
         Or[cmp_, ca] = cs_r - fnew[k].real; Or[cmp_, cb] = cs_r + fnew[k].real
         Oi[cmp_, ca] = cs_i - fnew[k].imag; Oi[cmp_, cb] = cs_i + fnew[k].imag
-    out["line"] = (Or, Oi)
 
 
 def _split_parallel_lines(data, out):
