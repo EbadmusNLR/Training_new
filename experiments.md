@@ -381,3 +381,29 @@ So BOTH causes are real and they split by corpus. minimal_component: the V loss 
 simply swamped -> fix the weighting (`--norm-loss`, implemented). SMART-DS: even with V
 as the SOLE objective the model stays at skill ~0.93, consistent with dv being only 4%
 of |V| and cond(Ybus)=1e18 -> that one needs the architecture (ladder/block sweep).
+
+## 11. RETRACTION — `--norm-loss` is NOT a fix; the "swamped V loss" was wrong
+The control I had not run (minimal_component, UNNORMALISED mixed loss) settles it.
+minimal_component, 12 epochs, V skill unseen (best):
+```
+CONTROL (unnormalised mixed, w_v=10 w_i=1)   0.674 .. 0.387 0.400 0.402   -> ~0.39
+norm-loss + family-MEAN                      0.713 .. 0.412 0.415         -> ~0.41
+norm-loss + family-SUM                       0.905 .. 0.545 0.513         -> ~0.51
+V-only (w_i=0)                               0.575 .. 0.376 0.391         -> ~0.37
+```
+**The ORIGINAL loss already reaches 0.40 — as good as V-only (0.37). Normalising made
+it slightly WORSE.** So minimal_component was never swamped; the arithmetic said so
+(mc dv~0.78 => w_v*v_mse ~ 6, comparable to i_mse ~1-7) and I should have checked
+BEFORE claiming the imbalance explained the corpus difference. On SMART-DS the 100-400x
+imbalance is real but is NOT the cause either: deleting the current loss entirely
+(V-only) moved skill only 1.0 -> 0.91.
+
+**=> Loss balance is a MINOR factor. Do not spend more time on weighting.** What
+separates the corpora is the V SIGNAL SIZE + CONDITIONING, under every loss config:
+```
+                   dv=0 baseline   cond(Ybus)   best V skill (any loss config)
+minimal_component      70.1%        1e6..1e10        ~0.39
+SMART-DS_1000           4.4%        1e9..1e18        ~0.91
+```
+`--norm-loss` is kept as a flag (off by default) but it is NOT the answer. The
+architecture (ladder / block-tree sweep) is the live lever, per sections 6-9.
