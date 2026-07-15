@@ -439,6 +439,201 @@ def reconstruct_all(data, cur):
     return out
 
 
+def transformer_null_map(Yr, Yi, thr=1e-4):
+    """Per-transformer map M with I_primary = M @ I_secondary, from the YPrim
+    null space (the amp-turn constraints). Type-agnostic (wye/delta/center-tap):
+    Y encodes it. Returns (prim_slots, sec_slots, Mr, Mi) or None. numpy in/out."""
+    import numpy as np
+    Y = Yr.astype(np.complex128) + 1j * Yi
+    diag = np.abs(np.diag(Y))
+    if diag.max() <= 0:
+        return None
+    act = np.where(diag > 1e-9 * diag.max())[0]
+    prim = np.array([i for i in act if i < FC], dtype=int)          # bus1 = primary
+    sec = np.array([i for i in act if i >= FC], dtype=int)          # bus2/bus3 = secondary
+    if prim.size == 0 or sec.size == 0:
+        return None
+    Ya = Y[np.ix_(act, act)]
+    _, S, Vh = np.linalg.svd(Ya)
+    null_mask = (S / S.max()) < thr
+    N = Vh[null_mask].conj().T                                      # Ya @ N ~ 0  -> nᵀI=0
+    if N.shape[1] == 0:
+        return None
+    pl = np.array([k for k, i in enumerate(act) if i < FC])
+    sl = np.array([k for k, i in enumerate(act) if i >= FC])
+    # N[prim]ᵀ I_prim = -N[sec]ᵀ I_sec  ->  I_prim = M @ I_sec
+    M = -np.linalg.pinv(N[pl].T) @ N[sl].T
+    return prim, sec, M.real.copy(), M.imag.copy()
+
+
+def build_xfmr_maps(data):
+    """Per-transformer null-space maps + the (comp,col) positions of primary and
+    secondary conductors, so I_prim = M @ I_sec can be applied at runtime."""
+    maps = []
+    if "transformer" not in data.node_types or store_size(data, "transformer") == 0:
+        return maps
+    st = data["transformer"]
+    Yr = st["Yxfmr_r_pu"].reshape(-1, 12, 12).numpy()
+    Yi = st["Yxfmr_i_pu"].reshape(-1, 12, 12).numpy()
+    for row in range(Yr.shape[0]):
+        m = transformer_null_map(Yr[row], Yi[row])
+        if m is None:
+            continue
+        prim, sec, Mr, Mi = m
+        maps.append({"comp": int(row), "prim": torch.tensor(prim, dtype=torch.long),
+                     "sec": torch.tensor(sec, dtype=torch.long),
+                     "Mr": torch.tensor(Mr), "Mi": torch.tensor(Mi)})
+    return maps
+
+
+def _slack_xfmrsec_roots(data):
+    slack, xsec = set(), set()
+    rel = ("vsource", "bus1", "node")
+    if rel in data.edge_types and data[rel].edge_index.numel():
+        slack = {int(x) for x in data[rel].edge_index[1].tolist() if int(x) != 0}
+    for t in (2, 3):
+        rel = ("transformer", f"bus{t}", "node")
+        if rel in data.edge_types and data[rel].edge_index.numel():
+            xsec.update(int(x) for x in data[rel].edge_index[1].tolist() if int(x) != 0)
+    return slack, xsec
+
+
+def _full_residual(data, out, n):
+    r = torch.zeros(n, 2, dtype=torch.float64)
+    for s, (Ir, Ii) in out.items():
+        comp, col, node = _inj_index(data, s)
+        if comp.numel():
+            r = r.index_add(0, node, torch.stack([Ir[comp, col], Ii[comp, col]], 1))
+    r[0] = 0.0
+    return r
+
+
+def _set_terminals_by_kcl(data, out, store, terminals, n):
+    """Set a store's terminal-conductor currents so nodal KCL closes at their
+    nodes (each is the lone unknown there): I -= residual(node)."""
+    r = _full_residual(data, out, n)
+    Ir, Ii = out[store]
+    for t in terminals:
+        rel = (store, f"bus{t}", "node")
+        if rel not in data.edge_types or not data[rel].edge_index.numel():
+            continue
+        ei = data[rel].edge_index
+        comp, node = ei[0], ei[1]
+        col = (t - 1) * FC + terminal_slot(comp)
+        Ir = Ir.index_put((comp, col), Ir[comp, col] - r[node, 0])
+        Ii = Ii.index_put((comp, col), Ii[comp, col] - r[node, 1])
+    out[store] = (Ir, Ii)
+
+
+def _apply_xfmr_maps(out, xmaps):
+    if "transformer" not in out or not xmaps:
+        return
+    Ir, Ii = out["transformer"]
+    for m in xmaps:
+        c, prim, sec = m["comp"], m["prim"], m["sec"]
+        Mr, Mi = m["Mr"].double(), m["Mi"].double()
+        Isr, Isi = Ir[c, sec], Ii[c, sec]
+        Ir = Ir.index_put((torch.full_like(prim, c), prim), Mr @ Isr - Mi @ Isi)
+        Ii = Ii.index_put((torch.full_like(prim, c), prim), Mr @ Isi + Mi @ Isr)
+    out["transformer"] = (Ir, Ii)
+
+
+def _line_charging(data, vr, vi):
+    """Well-conditioned line common-mode (charging) current per conductor:
+    0.5*Yh*(V1+V2), with Yh = A+B recovered from the fused 8x8 YPrim block
+    [[A,B],[B^T,A]] (line.tex: Ys=-B, Yh=A+B). Returns (sr,si) [n_line,4]."""
+    st = data["line"]
+    Yr = st["Yline_r_pu"].reshape(-1, 8, 8).double()
+    Yi = st["Yline_i_pu"].reshape(-1, 8, 8).double()
+    Yh_r = Yr[:, :4, :4] + Yr[:, :4, 4:]
+    Yh_i = Yi[:, :4, :4] + Yi[:, :4, 4:]
+    nl = Yr.shape[0]
+    V1r = torch.zeros(nl, 4, dtype=torch.float64); V1i = torch.zeros(nl, 4, dtype=torch.float64)
+    V2r = torch.zeros(nl, 4, dtype=torch.float64); V2i = torch.zeros(nl, 4, dtype=torch.float64)
+    for t, (Vr_, Vi_) in ((1, (V1r, V1i)), (2, (V2r, V2i))):
+        rel = ("line", f"bus{t}", "node")
+        if rel not in data.edge_types or not data[rel].edge_index.numel():
+            continue
+        ei = data[rel].edge_index
+        comp, node = ei[0], ei[1]
+        slot = terminal_slot(comp)
+        Vr_[comp, slot] = vr[node].double(); Vi_[comp, slot] = vi[node].double()
+    Vsr = (V1r + V2r).unsqueeze(-1); Vsi = (V1i + V2i).unsqueeze(-1)
+    sr = 0.5 * (torch.bmm(Yh_r, Vsr) - torch.bmm(Yh_i, Vsi)).squeeze(-1)
+    si = 0.5 * (torch.bmm(Yh_r, Vsi) + torch.bmm(Yh_i, Vsr)).squeeze(-1)
+    return sr, si
+
+
+def reconstruct_full(data, cur, vr=None, vi=None):
+    """Corrected per-feeder reconstruction (validation reference). Order:
+    LV lines(shunts, rooted at slack+xfmr-sec) -> xfmr secondary(nodal KCL) ->
+    xfmr primary(YPrim null-space map) -> all lines(+xfmr inj) -> vsource(KCL).
+    If (vr,vi) given, adds the well-conditioned Yh line charging common-mode."""
+    n = node_count(data)
+    out = {s: (cur[s][0].double().clone(), cur[s][1].double().clone()) for s in cur}
+    for s in SERIES_STORES:                       # zero the series placeholders
+        if s in out:
+            z = torch.zeros_like(out[s][0]); out[s] = (z, z.clone())
+    slack, xsec = _slack_xfmrsec_roots(data)
+    ltree = _tree_from_edges(_series_edges(data, (SERIES,)), slack | xsec)
+    xmaps = build_xfmr_maps(data)
+    # line charging (common-mode) from Yh -- added to both terminals so it does
+    # not disturb the KCL/through-flow (it cancels in I1-I2, appears in I1+I2).
+    if vr is not None and "line" in out:
+        csr, csi = _line_charging(data, vr, vi)
+        lr, li = out["line"]
+        lr[:, :4] += csr; lr[:, 4:] += csr; li[:, :4] += csi; li[:, 4:] += csi
+        out["line"] = (lr, li)
+
+    def build_q(stores):
+        q = torch.zeros(n, 2, dtype=torch.float64)
+        for s in stores:
+            src = out if s in SERIES_STORES else cur
+            if s not in src:
+                continue
+            comp, col, node = _inj_index(data, s)
+            if comp.numel():
+                Ir, Ii = src[s]
+                q = q.index_add(0, node, torch.stack([Ir[comp, col].double(), Ii[comp, col].double()], 1))
+        return q
+
+    # Fixed point: LV lines need the transformer current, the transformer
+    # secondary needs the LV lines (KCL). Jacobi-iterate lines <-> transformer.
+    line_stores = list(SHUNT_STORES) + ["transformer", "vsource", "reactor"]
+    for _ in range(6):
+        # lines from shunts + current transformer/vsource estimate
+        if "line" in out:
+            z = torch.zeros_like(out["line"][0]); lr, li = z, z.clone()
+            if vr is not None:
+                lr[:, :4] += csr; lr[:, 4:] += csr; li[:, :4] += csi; li[:, 4:] += csi
+            out["line"] = (lr, li)
+        _add_series_flow(_subtree_sum(build_q(line_stores), ltree), ltree, out, only=(SERIES,))
+        # transformer secondary (nodal KCL) -> primary (YPrim null-space map)
+        if "transformer" in out:
+            _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
+            _apply_xfmr_maps(out, xmaps)
+    # vsource <- nodal KCL at slack (last, once lines have converged)
+    if "vsource" in out:
+        _set_terminals_by_kcl(data, out, "vsource", (1,), n)
+    return out
+
+
+def _add_series_flow(flow, tree, out, only):
+    """Like _assign but ADDS the through-flow to existing series currents (so a
+    charging common-mode seeded beforehand is preserved): I_a += -f, I_b += +f."""
+    for s in only:
+        m = tree["sid"] == _SID[s]
+        if not m.any() or s not in out:
+            continue
+        comp, ca, cb, f = tree["comp"][m], tree["cola"][m], tree["colb"][m], flow[m]
+        outr, outi = out[s]
+        outr = outr.index_put((comp, ca), outr[comp, ca] - f[:, 0])
+        outi = outi.index_put((comp, ca), outi[comp, ca] - f[:, 1])
+        outr = outr.index_put((comp, cb), outr[comp, cb] + f[:, 0])
+        outi = outi.index_put((comp, cb), outi[comp, cb] + f[:, 1])
+        out[s] = (outr, outi)
+
+
 def _active_terminals(data, store, comp_row, nterm):
     """Which terminals of a given component row carry any edge."""
     out = []
