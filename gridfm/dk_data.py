@@ -316,6 +316,14 @@ class DKDataset(torch.utils.data.Dataset):
             else:
                 st.icr = torch.zeros(n, FC); st.ici = torch.zeros(n, FC)
         TASKS[self.task](data)
+        # The corpus is fp64 BY DESIGN (generating quality data), but the model
+        # trains in fp32. Cast at this boundary -- not in the corpus -- so the
+        # reference decoder keeps its fp64 inputs.
+        for store in data.node_types:
+            st = data[store]
+            for k, v in list(st.items()):
+                if torch.is_tensor(v) and v.dtype == torch.float64:
+                    st[k] = v.float()
         return data
 
 

@@ -198,3 +198,76 @@ coverage is strongest current lever"), (b) a better-generalizing architecture
 (e.g. residual-feedback / learned-iterative-solver for V), or (c) recognizing
 these stiff reactors as a minimal_component artifact and validating the pipeline
 (exact at truth reactor: 0.175%) on realistic dss/SMART-DS data.
+
+# 2026-07-15 — Decoder finished (3 corpora) + the V metric was lying to us
+
+## 1. Current decoder: DONE, verified on 308,400 samples across 3 corpora
+| corpus | samples | decoder WAPE |
+|---|---|---|
+| SMART-DS_1000 | 100,000 | **6.050e-08** (diffuse fp64 accumulation) |
+| minimal_component | 200,000 | **7.859e-10** (0/2000 feeders > 1e-6) |
+| dss_data (real IEEE) | 8,400 | **1.078e-06** (82/84 clean, 1 refused) |
+
+Seven bugs, **all in my code, none in the data** — every corpus reproduces
+`I = Y@V - Icomp` at truth V to ~1e-14, `build_synthetic_corpus` included. Every
+one presented identically: **a current of exactly ZERO, silently**.
+- transformer null-space map min-normed the primary ZERO-SEQUENCE to 0
+  (grounded-wye/floating-wye). `n^T I = (Yn)^T V` is exact for EVERY n; null-ness
+  buys CONDITIONING, not correctness -> take the |U| least-stiff independent
+  directions, no threshold.
+- `build_recon_ctx` cached per feeder: **variants RETAP the transformers**, so
+  Yxfmr is NOT static (edge_index is). Variant 0 was exact BY CONSTRUCTION, which
+  is why dissecting feeders kept "proving" the worst feeder clean.
+- `mesh_correct` was line-only -> series reactor chords silently 0 (the entire
+  3.967e-4 reactor residual). Generalised: for the pi primitive [[A,B],[B^T,D]]
+  the through-branch admittance is **(A-B)/2**, no element-type knowledge.
+- transformer K uniqueness per-transformer -> open-wye/open-delta banks HALVED;
+  global -> transmission buses solved NOTHING. Both are "KCL at a shared node
+  gives only the SUM" -> **joint solve per group** of node-sharing transformers.
+- `_tree_from_edges` marked roots lazily -> BFS adopted one root as another's
+  CHILD (37Bus regulator jumper). Roots pre-marked; non-tree edges split into
+  CHORD (real loop -> KVL/mesh) vs BRIDGE (different trees -> joins the joint system).
+- ground-touching edges dropped -> 4-wire lines' grounded NEUTRAL stayed 0.
+  Ground is now a root, but only SERIES-element conductors may enter the tree.
+
+**KNOWN GAP**: IEEE 30 Bus = a LOOP THROUGH A TRANSFORMER (rank 47 < 56). Needs
+mesh analysis extended to transformer branches. Now **REFUSED** loudly, not faked.
+
+## 2. The "4% V error" is the DO-NOTHING baseline  <-- the real headline
+`test_vbase.py`, SMART-DS, 743,185 masked nodes:
+```
+|dv| per node     mean = 4.452e-02
+BASELINE dv=0          v_wape = 4.415 %   <- predict V_init, learn NOTHING
+BASELINE dv=mean       v_wape = 4.414 %
+```
+`v_wape` divides by |V| ~ 1.0 pu while the signal |dv| is 0.044 pu, so a null model
+scores 4.4% and looks "96% accurate". Added `v_skill = |err|/|dv|` (1.0 = no skill).
+
+## 3. Why: pf is well-posed and LINEAR, but Ybus is unusable for local relaxation
+`test_wellposed.py`: mask_pf hides only non-slack V; every Y and Icomp is visible,
+so `Ybus @ V = sum(Icomp)`. A direct solve recovers the hidden V to **1e-9..1e-14**
+on all 3 corpora -> the information IS there; the task is not ill-posed.
+BUT `cond(Ybus)` reaches **1.25e+18**. `test_ladder.py`:
+```
+feeder                 cond      GJ@10     GJ@60      GS@10     GS@60
+ihs0_1247--idt740    1.25e+18  4.23e-02  3.88e+10   2.60e-02  2.58e-02
+p18uhs12_1247        8.85e+09  4.07e-02  3.22e+12   3.22e-02  3.20e-02
+```
+**Gauss-Jacobi DIVERGES; Gauss-Seidel STALLS at 2.6e-2** (no progress 10->60).
+Message passing IS local relaxation, so the model sitting at the baseline is the
+MATH, not a tuning failure. More width/steps/epochs cannot fix a divergent scheme.
+
+## 4. Implied direction: tree sweeps, not Ybus relaxation
+The classical distribution answer is the **backward-forward (ladder) sweep**:
+backward = shunt currents from V + tree KCL (**we already have this EXACT**);
+forward = `V_child = V_parent - Z_branch @ I_branch` from the slack. Both halves are
+O(1)-conditioned TREE accumulations that move information across the whole feeder in
+ONE pass, which is exactly what Jacobi cannot do. Open problem for the forward half:
+V_sec from V_prim across a transformer without reintroducing a stiff inverse
+(the turns ratio lives in the null space of its YPrim).
+Also: **minimal_component's dv=0 baseline is 70.1%** (|dv| 0.78 vs 0.044) — ~18x more
+voltage signal than SMART-DS and no free ride from a flat start; better V target.
+
+## 5. fp64 corpus vs fp32 model
+The regenerated corpus is fp64; the model trains fp32. Cast added at the DATASET
+boundary (`DKDataset.__getitem__`) so the reference decoder keeps fp64 inputs.
