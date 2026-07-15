@@ -407,3 +407,34 @@ SMART-DS_1000           4.4%        1e9..1e18        ~0.91
 ```
 `--norm-loss` is kept as a flag (off by default) but it is NOT the answer. The
 architecture (ladder / block-tree sweep) is the live lever, per sections 6-9.
+
+## 12. Excluded `W` (de-energized) — dss_data now 0/83 feeders above 1e-6
+Emmanuel recalled "a network in the dss-data that is not good". Found it by measuring
+V on the BUILT corpus (`gridfm/scan_dead.py`):
+```
+  dead%   nodes    medV    maxV  feeder
+   92.1     762  0.0000  1.0000  W__8d6d9ac2ecbe            <- 702/762 nodes at V=0
+   18.2      11  0.9968  1.0000  case3_balanced_battery_3ph_en   (grounded neutrals, fine)
+    2.7     111  0.9879  1.0000  H__e0d8e0f2725c                 (grounded neutrals, fine)
+```
+OpenDSS reports `converged=True, iterations=2` for W regardless — **a converged solve is
+NOT evidence of a usable network**, which is how it passed curation. I had dismissed W's
+2e-06 as a "metric artifact" because |I| = 7e-08; the currents are ~0 BECAUSE 92% of the
+network is dead. That was a DATA defect explained away as a measurement quirk.
+Moved to `data/excluded/de_energized/W` (+ W_REASON.md); removed from training_data.
+
+**Result: dss_data 1.078e-06 -> 1.664e-07, feeders >1e-6: 2/84 -> 0/83.**
+
+NOT excluded — `IEEE 30 Bus` compiles, converges in 2 iters, V pu 0.861..1.060, no NaN.
+The segfault in arranged_validation belongs to a DIFFERENT copy (data/data-new/OpenDSS/
+Distrib__IEEETestCases__IEEE_30_Bus__Master). It is a legitimate meshed transmission
+network and the ONE feeder the decoder refuses, so deleting it on a name match would
+have quietly erased our own known gap. Kept deliberately. If transmission is out of
+scope that is a SCOPE call, not a data-quality one.
+
+## FINAL DECODER STATE
+| corpus | samples | WAPE | feeders >1e-6 |
+|---|---|---|---|
+| SMART-DS_1000 | 100,000 | 6.050e-08 | 0/1000 |
+| minimal_component | 200,000 | 7.859e-10 | 0/2000 |
+| dss_data | 8,300 | 1.664e-07 | 0/83 (+1 refused: IEEE 30 Bus) |
