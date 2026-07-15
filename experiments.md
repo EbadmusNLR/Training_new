@@ -286,9 +286,30 @@ p5rhs1                  240  9.98e+14  6.00e-02  2.32e-03  9.76e-08  4.27e-12  1
 Gauss-Seidel is STUCK at 1.1e-1 after 60 iterations.** The ladder after ONE sweep beats
 GS after SIXTY. Cause: `rho_lad = 1.75e-4 .. 6e-2` << 1 — convergence is set by the
 shunt/series admittance ratio (loads ~1e-2 vs lines ~1e6), **independent of cond(Ybus)**.
+Confirmed AT SCALE on the largest / worst-conditioned feeders (full test_ladder.py):
+```
+feeder                    cond     GJ@60     GS@60     LAD@3    LAD@10   rho_lad
+ihs0_1247--idt740     1.25e+18  3.88e+10  2.58e-02  1.11e-05  1.07e-09  1.95e-01
+p18uhs12_1247         8.85e+09  3.22e+12  3.20e-02  6.40e-06  2.99e-09  1.25e-01
+p24uhs0_1247          1.27e+18  1.96e+12  3.29e-02  1.86e-05  3.37e-09  1.99e-01
+```
+1383 free nodes, cond 1.25e+18: ladder = 1.07e-09 in 10 sweeps while GJ has diverged
+to 3.9e+10 and GS is stalled at 2.6e-02. rho_lad ~0.2 on big feeders (0.02-0.06 on
+small) => ~0.7 decades/sweep => 10 sweeps takes 4.4e-2 -> 1e-9.
 => The conditioning wall is a property of the SCHEME, not of the problem. A 12-step
-network CAN solve pf if each step is a LADDER SWEEP (12 is about right: 3->1e-7,
-10->1e-10); it CANNOT with local relaxation at any width/depth/data.
+network CAN solve pf if each step is a LADDER SWEEP (12 is ~exactly the right depth:
+3->1e-5..1e-7, 10->1e-9..1e-13); it CANNOT with local relaxation at any width/depth/data.
+
+NOTE Y_series depends on Y ALONE, not on V -- so its factorization is CONSTANT per
+sample and can be precomputed in the dataloader; the ladder step
+`V <- As^-1 (b - Ash V)` is then a triangular solve, O(n), exact, and differentiable
+w.r.t. V (dV^{k+1}/dV^k = -As^-1 Ash). That is much cheaper than hand-rolling a tree
+sweep, and it handles transformers/delta/center-tap automatically because they are
+already IN Y_series.
+DESIGN QUESTION FOR EMMANUEL: with Y and Icomp both visible, a ladder solver SOLVES
+pf classically (that is what the 1e-9 above is). The foundation-model value is then
+in the MASKED tasks (se / param / injection), where the ladder should act as the
+PRECONDITIONER inside the learned iteration rather than as the whole answer.
 
 **Build plan** (halves map onto what exists):
   backward = shunt currents from V (physics decode) + tree KCL -> branch currents
