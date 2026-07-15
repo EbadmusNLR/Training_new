@@ -643,9 +643,17 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         if "transformer" in out:
             _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
             _apply_xfmr_maps(out, xmaps)
-    # vsource <- nodal KCL at slack (last, once lines have converged)
+    # vsource <- nodal KCL at slack (last, once lines have converged). Its bus2 is
+    # always ground in practice (vsource.py _is_ground_like_bus2), so it behaves as
+    # a SHUNT at the slack: a series source branch with I_bus2 = -I_bus1
+    # (vsource.tex: I1 = y(V1-V2) - yE, Icomp1 ~ yE, Icomp2 ~ -yE). The grounded
+    # terminal carries no edge, so KCL can't set it -- mirror it from bus1.
     if "vsource" in out:
         _set_terminals_by_kcl(data, out, "vsource", (1,), n)
+        vr_, vi_ = out["vsource"]
+        vr_[:, FC:2 * FC] = -vr_[:, 0:FC]
+        vi_[:, FC:2 * FC] = -vi_[:, 0:FC]
+        out["vsource"] = (vr_, vi_)
     return out
 
 
