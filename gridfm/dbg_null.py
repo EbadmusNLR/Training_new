@@ -39,8 +39,9 @@ ltree = _tree_from_edges(Eline, slack | xsec)
 bridges = [Eline[i] for i in ltree["bridges"]]
 kr = build_kvl_rows(d, Eline, ltree)
 kvl = (kr[0], kr[1], kr[2], Eline) if kr else None
-xmaps = build_xfmr_system(d, bridges=bridges, unsolved=[],
-                          comp_of=ltree.get("comp_of"), kvl=kvl)
+# comp_of=None: cut-set rows are RETRACTED (they regressed real feeders). Must match
+# production or the probe measures a decoder that no longer exists.
+xmaps = build_xfmr_system(d, bridges=bridges, unsolved=[], comp_of=None, kvl=kvl)
 print(f"feeder {os.path.basename(os.path.dirname(p))}  groups={len(xmaps)}")
 print(f"bridges={len(bridges)}  mchords={len(ltree.get('mchords', []))}")
 mte = set(ltree["mparent_edge"].values())
