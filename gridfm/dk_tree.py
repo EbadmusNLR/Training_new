@@ -20,6 +20,7 @@ All ops are differentiable (index_add / gather), so it trains end-to-end.
 """
 from __future__ import annotations
 
+import os
 from collections import defaultdict, deque
 
 import torch
@@ -667,7 +668,7 @@ def reconstruct_full(data, cur, vr=None, vi=None):
     # Fixed point: LV lines need the transformer current, the transformer
     # secondary needs the LV lines (KCL). Jacobi-iterate lines <-> transformer.
     line_stores = list(SHUNT_STORES) + ["transformer", "vsource", "reactor"]
-    for _ in range(6):
+    for _ in range(int(os.environ.get("JACOBI", "6"))):
         # lines from shunts + current transformer/vsource estimate
         if "line" in out:
             z = torch.zeros_like(out["line"][0]); lr, li = z, z.clone()
@@ -679,6 +680,13 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         if "transformer" in out:
             _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
             _apply_xfmr_maps(out, xmaps, vr, vi)
+    # PARALLEL LINES: two line objects between the SAME node pair form a real loop
+    # (chords). The radial tree hands the whole combined flow to one of them and
+    # zero to the other. Current divides between parallel branches by admittance:
+    #   I_k = I_total * Y_k / sum(Y_j)
+    # which is exact. (Rare: 1 of 50 feeders, but it carried 99.5% of line error.)
+    if "line" in out:
+        _split_parallel_lines(data, out)
     # vsource <- nodal KCL at slack (last, once lines have converged). Its bus2 is
     # always ground in practice (vsource.py _is_ground_like_bus2), so it behaves as
     # a SHUNT at the slack: a series source branch with I_bus2 = -I_bus1
@@ -691,6 +699,56 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         vi_[:, FC:2 * FC] = -vi_[:, 0:FC]
         out["vsource"] = (vr_, vi_)
     return out
+
+
+def _split_parallel_lines(data, out):
+    """Redistribute through-flow across PARALLEL line conductors (same node pair).
+
+    A radial spanning tree cannot split current between parallel branches: it makes
+    one a tree edge (which then carries the whole combined flow) and the other a
+    chord (zero). The physical split is current division by admittance,
+        I_k = I_total * Ys_k / sum_j Ys_j
+    which is exact. Only the group's total is KCL-determined; the split needs Ys.
+    """
+    E = _series_edges(data, (SERIES,))
+    groups = defaultdict(list)
+    for i, (s, c, n1, n2, ca, cb) in enumerate(E):
+        if n1 == 0 or n2 == 0:
+            continue
+        groups[(min(n1, n2), max(n1, n2))].append(i)
+    par = {k: v for k, v in groups.items() if len(v) > 1}
+    if not par:
+        return
+    ys_r = data["line"]["Ys_r_pu"].reshape(-1, FC, FC).double()
+    ys_i = data["line"]["Ys_i_pu"].reshape(-1, FC, FC).double()
+    Or, Oi = out["line"]
+    for _, members in par.items():
+        # each member's series part f = 0.5*(I_colb - I_cola); only the tree edge
+        # holds the (combined) flow, chords hold 0 -> their sum is the true total.
+        tr = ti = 0.0
+        wr, wi = [], []
+        for i in members:
+            s_, c, n1, n2, ca, cb = E[i]
+            tr = tr + 0.5 * (Or[c, cb] - Or[c, ca])
+            ti = ti + 0.5 * (Oi[c, cb] - Oi[c, ca])
+            k = ca % FC                                  # conductor slot
+            wr.append(ys_r[c, k, k]); wi.append(ys_i[c, k, k])
+        Wr = sum(wr); Wi = sum(wi)
+        den = Wr * Wr + Wi * Wi
+        if float(den.abs() if torch.is_tensor(den) else abs(den)) < 1e-30:
+            continue
+        for n, i in enumerate(members):
+            s_, c, n1, n2, ca, cb = E[i]
+            # share = w_k / W  (complex);  f_k = total * share
+            sr = (wr[n] * Wr + wi[n] * Wi) / den
+            si = (wi[n] * Wr - wr[n] * Wi) / den
+            fr = tr * sr - ti * si
+            fi = tr * si + ti * sr
+            # keep each member's own charging s = 0.5*(I_cola + I_colb)
+            cs_r = 0.5 * (Or[c, ca] + Or[c, cb]); cs_i = 0.5 * (Oi[c, ca] + Oi[c, cb])
+            Or[c, ca] = cs_r - fr; Or[c, cb] = cs_r + fr
+            Oi[c, ca] = cs_i - fi; Oi[c, cb] = cs_i + fi
+    out["line"] = (Or, Oi)
 
 
 def _add_series_flow(flow, tree, out, only):
