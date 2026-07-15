@@ -495,3 +495,54 @@ construction. This subsumes `_split_parallel_lines` (the L=1 case) too.
 
 STATUS: IEEE 30 Bus is STILL REFUSED (3 DOF short). Refusing beats returning
 silently-zero currents, which is how all seven earlier decoder bugs presented.
+
+## 14. RETRACTION: the cut-set rows. And a harness bug that framed the decoder.
+
+Re-validating dss_data showed 10/74 feeders > 1e-6, some at WAPE 0.98, against a baseline
+of 0/83. Two independent causes, BOTH mine, neither one a decoder bug.
+
+### (a) test_all.py fed the decoder zeros and then scored them
+`test_all.py` built `cur` from `SHUNT_STORES` only and gave every other store ZEROS. But a
+SHUNT-connected reactor is physics-decoded and `reconstruct_full` KEEPS what it is handed
+-- so its current stayed at exactly 0 and scored `WAPE 1.000e+00`. `test_mc.py` always
+decoded `SHUNT_STORES or AMBIG_STORES`; test_all did not. Invisible until now only because
+the OLD dss_data had no shunt reactors -- the rebuilt corpus does.
+
+  3ph_matrix_shunt   9.792e-01 -> 3.430e-13
+  1ph_shunt_ground   9.014e-01 -> 1.847e-12
+  5bus_shunt_reactor 5.486e-01 -> 8.471e-13
+  3ph_delta_shunt    8.447e-01 -> 3.168e-12
+
+An exact `1.000e+00` is the silently-zero signature. Read it as "this current is 0",
+never as "the model is bad here".
+
+### (b) the cut-set rows are WRONG -- retracted
+Bisected trans_3w_center_tap across the three commits:
+
+  17839ee (validated baseline)  TOTAL 6.508e-11
+  1c278a3 (cut-sets restored)   TOTAL 6.611e-01   transformer 8.3e-01, vsource ZERO
+  removing them restores:  center_tap 6.5e-11 | IEEE123 1.1e-09 | 13Bus 4.5e-09 | 37Bus 5.7e-11
+
+Making them GREEDY (add only if rank-increasing) did NOT fix it => a rank-INCREASING
+cut-set row is itself wrong, so the equation does not hold on networks with grounded /
+center-tap windings. Suspected cause: the row sums KCL over a component's nodes, but node
+0 (GROUND) belongs to NO component, so an element with one terminal in the component and
+the other at ground never cancels and is silently counted as known.
+
+They also bought nothing: IEEE 30 Bus was refused with AND without them. And the KVL rows
+do not need them -- ALONE they take IEEE 30 Bus from 15 DOF short (rank 50<62 + 25<28) to
+**3** (rank 53<56, one group), better than cut-sets ever managed.
+
+Kept: never hand pinv a row that does not raise the rank. The rhs comes from a
+half-converged Jacobi sweep, so a redundant row carries a DIFFERENT rhs mid-iteration and
+pinv least-squares the disagreement into unknowns that were already exact.
+
+### State after the retraction
+| corpus | samples | WAPE | feeders >1e-6 |
+|---|---|---|---|
+| dss_data | 8,300 | 1.657e-07 | 0/83 (+1 refused: IEEE 30 Bus, 3 DOF short) |
+| minimal_component | 200,000 | 7.859e-10 | 0/2000 |
+
+Lesson: I restored 131 uncommitted lines from an attic snapshot and committed them as
+"WIP -- not a fix". They were worse than not a fix; they were a regression, and only a
+full re-validation caught it. Unvalidated work is not neutral.
