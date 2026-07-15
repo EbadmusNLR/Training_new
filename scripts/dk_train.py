@@ -56,7 +56,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     v_base = 100.0 * dvn / (vt + EPS) if msk.any() else torch.zeros((), device=dv.device)
     # currents: fitted per-family feature MSE + report pu WAPE (aggregate + per family)
     i_mse = dv.new_zeros(()); inum = dv.new_zeros(()); iden = dv.new_zeros(())
-    fam = {}
+    fam = {}; nfam = 0
     for s, (ir, ii) in cur.items():
         st = batch[s]; sc = scales["I"][s]
         fr_p, fi_p = feat(ir, sc, use_feat), feat(ii, sc, use_feat)
@@ -69,6 +69,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             den_s = (fr_t ** 2).mean() + (fi_t ** 2).mean() + EPS
             num_s = num_s / den_s
         i_mse = i_mse + num_s
+        nfam += 1
         fnum = (ir - st.ir).abs().sum() + (ii - st.ii).abs().sum()
         fden = st.ir.abs().sum() + st.ii.abs().sum()
         inum = inum + fnum; iden = iden + fden
@@ -81,7 +82,11 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # the mixed loss vs 0.37 with V-only. `norm` makes every term "fraction of
     # variance unexplained" (1.0 = predict zero) so the weights are comparable.
     v_term = v_mse / ((nd.dv[msk] ** 2).mean() + EPS) if (norm and msk.any()) else v_mse
-    loss = w_v * v_term + w_i * i_mse + w_kcl * kcl
+    # MEAN over families, not sum: i_mse summed ~7 normalised family terms, so it
+    # still carried ~7x the weight of the single V term even after normalisation
+    # (measured: mc norm-mixed 0.685 vs mc V-only 0.443 at the same epoch).
+    i_term = i_mse / max(nfam, 1) if norm else i_mse
+    loss = w_v * v_term + w_i * i_term + w_kcl * kcl
     m = {"v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
          "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
          "kcl": float(kcl)}
