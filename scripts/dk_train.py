@@ -97,6 +97,9 @@ def main():
     ap.add_argument("--samples-per-epoch", type=int, default=4000)
     ap.add_argument("--no-feat", action="store_true")
     ap.add_argument("--no-kcl", action="store_true")
+    ap.add_argument("--w-v", type=float, default=10.0)
+    ap.add_argument("--w-i", type=float, default=1.0)
+    ap.add_argument("--w-kcl", type=float, default=0.1)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
@@ -141,7 +144,8 @@ def main():
         for batch, plan in train_dl:
             batch = batch.to(dev); batch.tree_plan = plan
             dv, cur = model(batch)
-            loss, m = losses(batch, dv, cur, scales, use_feat, w_kcl=0.0 if args.no_kcl else 0.1)
+            loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
+                             w_kcl=0.0 if args.no_kcl else args.w_kcl)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
             for k, v in m.items():
