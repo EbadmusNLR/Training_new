@@ -318,3 +318,35 @@ PRECONDITIONER inside the learned iteration rather than as the whole answer.
              (the missing piece; Z from the same (A-B)/2 formula mesh_correct uses)
 Open: V_sec across a TRANSFORMER without a stiff inverse -- the turns ratio lives in
 null(YPrim), the same null space the current decoder already exploits.
+
+## 7. CAVEAT — the ladder is NOT universal (measured on 648 samples, not 8 feeders)
+`gridfm/test_ladder_all.py` (sparse splu, 120 feeders x 2 variants per corpus):
+```
+corpus              start(flat)  err30 median   reached 1e-6   median sweeps   DIVERGED
+SMART-DS_1000        5.830e-02     1.962e-09     240/240            4            0
+minimal_component    5.115e-01     2.292e-09     215/240            2           25  (err30 ~1e190)
+dss_data             3.360e-01     3.431e-10     166/168            4            2  (+1 singular)
+```
+The "3 sweeps -> 1e-7" headline came from 8 hand-picked feeders. Broadly: it is
+**perfect on SMART-DS (240/240, median 4 sweeps)** but **~10% of minimal_component
+DIVERGES** (err30 up to 1e+190). Those all have base ~1.0-1.25 (large dv) = the
+STIFF-SHUNT feeders (reactors, cf. [[dgfm-current-error-is-reactor]]): there
+rho_lad > 1 and the Jacobi-style splitting blows up. Fixable with under-relaxation /
+damping (V <- V + w(V_new - V)) or a stronger splitting, but **the honest claim is
+"works on 96% of samples, needs damping for the stiff tail", NOT "solves everything"**.
+`H__e0d8e0f2725c`: Y_series is exactly singular -> that feeder needs the full Ybus.
+
+## 8. The V loss is SWAMPED — the model CAN learn V (partial rebuttal of §3)
+V-ONLY probe (`--w-i 0 --w-kcl 0`) on minimal_component:
+```
+ep001  V skill unseen = 0.575      (dv=0 baseline = 68.77%)
+ep002  V skill unseen = 0.503      <- 2x better than doing nothing
+```
+vs the mixed-loss probe on SMART-DS, which sits at v_skill ~1.0 (0.98-1.33 over 6
+epochs). So the model is NOT incapable of learning V: with V as the sole objective and
+real V signal, it gets skill 0.5 in 2 epochs. **`w_v*v_mse ~ 8e-3` vs `w_i*i_mse ~
+O(1-7)` -> the current loss outweighs the V loss ~100-800x**, so the mixed-loss model
+was largely ignoring V. Both effects are real (conditioning AND loss balance); the
+earlier "message passing cannot solve pf by construction" was over-claimed.
+TODO: SMART-DS V-only probe to finish the separation; then reweight (normalise each
+loss term by its own scale) rather than hand-tuning w_v.
