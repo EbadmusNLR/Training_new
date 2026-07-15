@@ -8,7 +8,8 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, store_size, stored_currents, element_currents
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, build_xfmr_system,
-                            _slack_xfmrsec_roots, SHUNT_STORES, AMBIG_STORES)
+                            _slack_xfmrsec_roots, _series_edges, _tree_from_edges,
+                            TREE_STORES, SHUNT_STORES, AMBIG_STORES)
 
 TD = os.path.join("/kfs2/projects/gogpt/Ebadmus/training_data",
                   os.environ.get("CORPUS", "dss_data"))
@@ -19,11 +20,17 @@ d = FeederScenarios(os.path.dirname(p))[int(os.environ.get("VAR", "0"))]
 print("feeder:", os.path.basename(os.path.dirname(p))[:50])
 
 uns = []
-groups = build_xfmr_system(d, unsolved=uns)
+_E = _series_edges(d, TREE_STORES)
+_sl, _xs = _slack_xfmrsec_roots(d)
+_tr = _tree_from_edges(_E, _sl | _xs)
+_br = [_E[i] for i in _tr["bridges"]]
+print(f"bridges={len(_br)} chords={len(_tr['chords'])}")
+groups = build_xfmr_system(d, unsolved=uns, bridges=_br)
 print(f"groups={len(groups)}  unsolved={uns}")
 for g in groups:
-    print(f"  comps={g['comps']}  unknowns={len(g['ci'])}  kcl_rows={g['nkcl']} "
-          f"knodes={g['knodes'].tolist()}  dir_rows={len(g['dirs'])}")
+    nx = sum(len(v[0]) for v in g['scatter'].values())
+    print(f"  comps={g['comps']}  unknowns={nx}  kcl_rows={g['nkcl']} "
+          f"bridge_rows={g['nbridge']}  dir_rows={len(g['dirs'])}")
     print(f"      selected direction stiffness (sv/smax) = "
           f"{[f'{x:.2e}' for x in g['svs']]}")
     print(f"      cond(system) = {g['cond']:.3e}")
