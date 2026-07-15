@@ -638,8 +638,22 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         lr[:, :4] += csr; lr[:, 4:] += csr; li[:, :4] += csi; li[:, 4:] += csi
         out["line"] = (lr, li)
 
+    # The line's OWN charging is a KNOWN nodal injection at both of its terminals
+    # (it cancels in I1-I2 but not in I1+I2). It must enter q, or every subtree sum
+    # is off by the charging accumulated below it.
+    q_charge = torch.zeros(n, 2, dtype=torch.float64)
+    if vr is not None and "line" in out:
+        for t in (1, 2):
+            rel = ("line", f"bus{t}", "node")
+            if rel not in data.edge_types or not data[rel].edge_index.numel():
+                continue
+            ei = data[rel].edge_index
+            comp, node = ei[0], ei[1]
+            slot = terminal_slot(comp)
+            q_charge = q_charge.index_add(0, node, torch.stack([csr[comp, slot], csi[comp, slot]], 1))
+
     def build_q(stores):
-        q = torch.zeros(n, 2, dtype=torch.float64)
+        q = q_charge.clone()
         for s in stores:
             src = out if s in SERIES_STORES else cur
             if s not in src:
