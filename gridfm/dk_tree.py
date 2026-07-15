@@ -95,11 +95,20 @@ def _tree_from_edges(E, slack_set):
         sign.append(1.0 if v == n1 else -1.0); level.append(depth[v])
         sid.append(_SID[s]); comp.append(c); cola.append(ca); colb.append(cb)
     L = lambda x, dt: torch.tensor(x, dtype=dt)
+    # CHORDS = live edges that are not tree edges. Each one is an independent loop;
+    # subtree-KCL cannot determine its current (that needs KVL + impedances).
+    tree_eids = set(parent_edge.values())
+    chords = [i for i, (s, c, n1, n2, ca, cb) in enumerate(E)
+              if n1 != 0 and n2 != 0 and i not in tree_eids]
+    parent_node = {v: (E[ei][3] if v == E[ei][2] else E[ei][2]) for v, ei in parent_edge.items()}
     return {
         "child": L(child, torch.long), "parent": L(parent, torch.long),
         "sign": L(sign, torch.float64), "level": L(level, torch.long),
         "sid": L(sid, torch.long), "comp": L(comp, torch.long),
         "cola": L(cola, torch.long), "colb": L(colb, torch.long),
+        # loop/mesh support (python-side; topology-only)
+        "chords": chords, "parent_edge": parent_edge, "parent_node": parent_node,
+        "depth": depth,
     }
 
 
@@ -618,19 +627,39 @@ def _line_charging(data, vr, vi):
     return sr, si
 
 
-def reconstruct_full(data, cur, vr=None, vi=None):
+def build_recon_ctx(data):
+    """TOPOLOGY-ONLY precompute, identical for every variant of a feeder: the line
+    tree, the transformer YPrim null-space maps, per-store injection indices, and
+    the parallel-line groups. Build once per feeder and reuse across its variants
+    (and this is exactly what the model needs to precompute per feeder)."""
+    slack, xsec = _slack_xfmrsec_roots(data)
+    Eline = _series_edges(data, (SERIES,))
+    return {
+        "Eline": Eline,
+        "ltree": _tree_from_edges(Eline, slack | xsec),
+        "xmaps": build_xfmr_maps(data),
+        "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
+                if s in data.node_types and store_size(data, s) > 0},
+        "n": node_count(data),
+    }
+
+
+def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     """Corrected per-feeder reconstruction (validation reference). Order:
     LV lines(shunts, rooted at slack+xfmr-sec) -> xfmr secondary(nodal KCL) ->
-    xfmr primary(YPrim null-space map) -> all lines(+xfmr inj) -> vsource(KCL).
-    If (vr,vi) given, adds the well-conditioned Yh line charging common-mode."""
-    n = node_count(data)
+    xfmr primary(YPrim null-space map) -> all lines(+xfmr inj) -> parallel-line
+    current division -> vsource(KCL). If (vr,vi) given, adds the well-conditioned
+    Yh line charging common-mode. Pass `ctx` (build_recon_ctx) to reuse the
+    topology precompute across a feeder's variants."""
+    if ctx is None:
+        ctx = build_recon_ctx(data)
+    n = ctx["n"]
     out = {s: (cur[s][0].double().clone(), cur[s][1].double().clone()) for s in cur}
     for s in SERIES_STORES:                       # zero the series placeholders
         if s in out:
             z = torch.zeros_like(out[s][0]); out[s] = (z, z.clone())
-    slack, xsec = _slack_xfmrsec_roots(data)
-    ltree = _tree_from_edges(_series_edges(data, (SERIES,)), slack | xsec)
-    xmaps = build_xfmr_maps(data)
+    ltree = ctx["ltree"]
+    xmaps = ctx["xmaps"]
     # line charging (common-mode) from Yh -- added to both terminals so it does
     # not disturb the KCL/through-flow (it cancels in I1-I2, appears in I1+I2).
     if vr is not None and "line" in out:
@@ -659,7 +688,9 @@ def reconstruct_full(data, cur, vr=None, vi=None):
             src = out if s in SERIES_STORES else cur
             if s not in src:
                 continue
-            comp, col, node = _inj_index(data, s)
+            if s not in ctx["inj"]:
+                continue
+            comp, col, node = ctx["inj"][s]
             if comp.numel():
                 Ir, Ii = src[s]
                 q = q.index_add(0, node, torch.stack([Ir[comp, col].double(), Ii[comp, col].double()], 1))
@@ -680,13 +711,14 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         if "transformer" in out:
             _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)
             _apply_xfmr_maps(out, xmaps, vr, vi)
-    # PARALLEL LINES: two line objects between the SAME node pair form a real loop
-    # (chords). The radial tree hands the whole combined flow to one of them and
-    # zero to the other. Current divides between parallel branches by admittance:
-    #   I_k = I_total * Y_k / sum(Y_j)
-    # which is exact. (Rare: 1 of 50 feeders, but it carried 99.5% of line error.)
-    if "line" in out:
-        _split_parallel_lines(data, out)
+    # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
+    # because it cannot know how current splits between parallel paths. Close it
+    # with KVL around each fundamental loop (mesh analysis). Handles parallel lines
+    # (L=1) AND genuinely meshed feeders, using impedances + the KCL tree currents
+    # -- never V1-V2 -- so no Y@V stiffness. Required for a FOUNDATION model: the
+    # radial assumption must not be baked into the physics.
+    if "line" in out and ctx.get("Eline") is not None:
+        mesh_correct(data, out, ltree, ctx["Eline"])
     # vsource <- nodal KCL at slack (last, once lines have converged). Its bus2 is
     # always ground in practice (vsource.py _is_ground_like_bus2), so it behaves as
     # a SHUNT at the slack: a series source branch with I_bus2 = -I_bus1
@@ -699,6 +731,105 @@ def reconstruct_full(data, cur, vr=None, vi=None):
         vi_[:, FC:2 * FC] = -vi_[:, 0:FC]
         out["vsource"] = (vr_, vi_)
     return out
+
+
+def _tree_path(u, v, tree):
+    """Tree path u->v as [(edge_id, +1 if traversed n1->n2 else -1)]."""
+    pe, pn, dp = tree["parent_edge"], tree["parent_node"], tree["depth"]
+    up, dn = [], []
+    a, b = u, v
+    while dp.get(a, 0) > dp.get(b, 0):
+        up.append(a); a = pn[a]
+    while dp.get(b, 0) > dp.get(a, 0):
+        dn.append(b); b = pn[b]
+    while a != b:
+        up.append(a); a = pn[a]
+        dn.append(b); b = pn[b]
+    return up, list(reversed(dn))
+
+
+def mesh_correct(data, out, tree, E):
+    """GENERAL loop (mesh) correction -- makes the decoder valid on NON-RADIAL
+    networks, not just radial ones.
+
+    Subtree-KCL determines a branch current only on a tree: with L independent
+    loops it is L equations short, and the missing information is how current
+    SPLITS between parallel paths -- set by the loop impedances, which KCL never
+    sees. Each chord defines one fundamental loop (chord + tree path); KVL gives
+        sum_k  Z_k . I_k  = 0   around that loop.
+    With I = I_tree + M @ J (M = fundamental loop matrix, J = loop currents):
+        (Mᵀ Z M) J = -(Mᵀ Z I_tree)
+    an L x L solve. Uses Z = (Ys + Yh/2)^-1 and the KCL tree currents -- never
+    V1-V2 -- so it does NOT reintroduce the Y@V stiffness. The parallel-line
+    current divider is the L=1 special case of this.
+    """
+    chords = [i for i in tree["chords"] if E[i][0] == SERIES]
+    if not chords:
+        return
+    # branch set = every live line conductor-edge (tree + chords)
+    live = [i for i, e in enumerate(E) if e[0] == SERIES and e[2] != 0 and e[3] != 0]
+    bidx = {e: k for k, e in enumerate(live)}
+    nb, nl = len(live), len(chords)
+    # fundamental loop matrix M [nb, nl]
+    M = torch.zeros(nb, nl, dtype=torch.float64)
+    for c, ei in enumerate(chords):
+        s, comp, n1, n2, ca, cb = E[ei]
+        M[bidx[ei], c] = 1.0                       # chord, oriented n1->n2
+        up, dn = _tree_path(n2, n1, tree)          # return path n2 -> n1
+        for node in up:
+            e2 = tree["parent_edge"][node]
+            if e2 in bidx:
+                M[bidx[e2], c] += 1.0 if node == E[e2][2] else -1.0
+        for node in dn:
+            e2 = tree["parent_edge"][node]
+            if e2 in bidx:
+                M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
+    # branch impedance Z (block-diagonal per line, coupling that line's conductors)
+    ys_r = data["line"]["Ys_r_pu"].reshape(-1, FC, FC).double()
+    ys_i = data["line"]["Ys_i_pu"].reshape(-1, FC, FC).double()
+    yh_i = data["line"]["Yh_i_pu"].reshape(-1, FC, FC).double()
+    Zr = torch.zeros(nb, nb, dtype=torch.float64); Zi = torch.zeros(nb, nb, dtype=torch.float64)
+    by_line = defaultdict(list)
+    for ei in live:
+        by_line[E[ei][1]].append(ei)
+    for cmp_, eids in by_line.items():
+        Y = (ys_r[cmp_] + 0.5 * torch.zeros_like(ys_r[cmp_])) + 1j * (ys_i[cmp_] + 0.5 * yh_i[cmp_])
+        slots = [E[e][4] % FC for e in eids]
+        sub = Y[slots][:, slots]
+        try:
+            Zsub = torch.linalg.inv(sub)
+        except Exception:
+            Zsub = torch.linalg.pinv(sub)
+        for a, ea in enumerate(eids):
+            for b, eb in enumerate(eids):
+                Zr[bidx[ea], bidx[eb]] = Zsub[a, b].real
+                Zi[bidx[ea], bidx[eb]] = Zsub[a, b].imag
+    # tree currents (series part f) per branch: f = 0.5*(I_colb - I_cola)
+    Or, Oi = out["line"]
+    fr = torch.zeros(nb, dtype=torch.float64); fi = torch.zeros(nb, dtype=torch.float64)
+    for ei in live:
+        s, cmp_, n1, n2, ca, cb = E[ei]
+        k = bidx[ei]
+        fr[k] = 0.5 * (Or[cmp_, cb] - Or[cmp_, ca])
+        fi[k] = 0.5 * (Oi[cmp_, cb] - Oi[cmp_, ca])
+    Z = Zr + 1j * Zi
+    f = fr + 1j * fi
+    Mc = M.to(torch.complex128)
+    Zl = Mc.T @ Z @ Mc                                   # [L,L] loop impedance
+    b = Mc.T @ (Z @ f)                                   # [L]
+    try:
+        J = torch.linalg.solve(Zl, -b)
+    except Exception:
+        J = torch.linalg.lstsq(Zl, (-b).unsqueeze(1)).solution.squeeze(1)
+    fnew = f + Mc @ J
+    # rebuild terminal currents, preserving each branch's own charging s
+    for ei in live:
+        s, cmp_, n1, n2, ca, cb = E[ei]
+        k = bidx[ei]
+        cs_r = 0.5 * (Or[cmp_, ca] + Or[cmp_, cb]); cs_i = 0.5 * (Oi[cmp_, ca] + Oi[cmp_, cb])
+        Or[cmp_, ca] = cs_r - fnew[k].real; Or[cmp_, cb] = cs_r + fnew[k].real
+        Oi[cmp_, ca] = cs_i - fnew[k].imag; Oi[cmp_, cb] = cs_i + fnew[k].imag
+    out["line"] = (Or, Oi)
 
 
 def _split_parallel_lines(data, out):
