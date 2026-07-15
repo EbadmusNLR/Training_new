@@ -717,17 +717,31 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
         for i, nd in enumerate(gk):
             for k in node_conds[nd]:
                 R[i, xi[k]] = 1.0
-        # cut-set rows: sum of this component's boundary/unknown conductors
-        gcs = cs_of.get(g, [])
-        if gcs:
-            C = np.zeros((len(gcs), Nx), dtype=np.complex128)
-            for i, (_ns, ks) in enumerate(gcs):
-                for k in ks:
-                    if k in xi:
-                        C[i, xi[k]] = 1.0
-            R = np.vstack([R, C]) if len(gk) else C
         rank = np.linalg.matrix_rank(R, tol=thr) if R.shape[0] else 0
         cur = R
+        # CUT-SET rows: sum of this component's boundary/unknown conductors.
+        # Added ONLY if the row raises the rank. A redundant row is NOT free: the rhs
+        # is assembled from a half-converged Jacobi sweep, so a row that duplicates a
+        # KCL row carries a DIFFERENT rhs mid-iteration. pinv then least-squares the
+        # disagreement and smears it across unknowns that were already exact --
+        # measured, trans_3w_center_tap went 6.5e-11 -> 6.6e-01 (transformer 8.3e-01,
+        # vsource silently ZERO) purely from adding redundant cut-sets. Same failure
+        # mode as the rank-deficient IEEE 30 Bus case: only ever hand pinv a system
+        # whose rows are independent.
+        gcs, cut_keep = cs_of.get(g, []), []
+        for i, (_ns, ks) in enumerate(gcs):
+            row = np.zeros(Nx, dtype=np.complex128)
+            for k in ks:
+                if k in xi:
+                    row[xi[k]] = 1.0
+            if not np.any(row):
+                continue
+            test = np.vstack([cur, row[None, :]]) if cur.shape[0] else row[None, :]
+            rr = np.linalg.matrix_rank(test, tol=thr)
+            if rr > rank:
+                cur, rank = test, rr
+                cut_keep.append(i)
+        gcs = [gcs[i] for i in cut_keep]
         # BRIDGE rows: I1 + I2 = Yh(V1+V2). Well-conditioned -- the stiff series part
         # cancels in the sum, exactly as for the line charging common-mode.
         gpairs = [(ka, kb) for (ka, kb) in bpairs if ka in xi]
@@ -1172,7 +1186,7 @@ def build_recon_ctx(data, topo=None):
     rejects a stale ctx rather than trusting it."""
     if topo is not None:
         ctx = dict(topo)
-        ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"], ctx["ltree"].get("comp_of"),
+        ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"], None,
                                       len(ctx["ltree"].get("mchords", [])),
                                       kvl=ctx.get("kvl"))
         ctx["yref"] = _y_fingerprint(data)
@@ -1203,7 +1217,14 @@ def build_recon_ctx(data, topo=None):
         # bridge conductors are injections the subtree sweep cannot see: their
         # current must enter q like a transformer's, or every sum above them is short
         "binj": _bridge_inj(bridges),
-        "xmaps": _xsys_or_raise(data, bridges, ltree.get("comp_of"),
+        # comp_of=None DISABLES the cut-set rows. They are RETRACTED: measured, they
+        # take trans_3w_center_tap from 6.5e-11 to 6.6e-01 (transformer 8.3e-01,
+        # vsource silently ZERO) -- and not merely by being redundant, since the row
+        # is rank-INCREASING and still wrong, so the cut-set equation itself does not
+        # hold on that network. They also bought nothing: IEEE 30 Bus is refused with
+        # or without them. Do not re-enable without a test that the row holds at TRUTH
+        # currents on a feeder with grounded/center-tap windings.
+        "xmaps": _xsys_or_raise(data, bridges, None,
                                 len(ltree.get("mchords", [])), kvl=kvl),
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
