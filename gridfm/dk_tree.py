@@ -31,6 +31,14 @@ SERIES = "line"
 # series (through-flow) elements vs shunt (nodal-injection) elements
 SERIES_STORES = ("line", "transformer", "vsource", "reactor")
 SHUNT_STORES = ("load", "generator", "pvsystem", "storage", "capacitor")
+# Series stores whose through-flow is reconstructed by the subtree/mesh sweep.
+# (transformer -> YPrim null-space map; vsource -> nodal KCL at the slack.)
+# REACTORS ARE DELIBERATELY ABSENT: SMART-DS has none, so any handling would be
+# UNTESTED, and a reactor is ambiguous -- a SHUNT reactor (bus2=ground) behaves like
+# a capacitor (physics-decode), a SERIES reactor belongs in the tree. Guessing is how
+# the silent-zero bugs got in. check_assumptions() raises on them instead; to support
+# them, get test data (dss_data has reactors) and validate before adding.
+TREE_STORES = ("line",)
 _SID = {s: i for i, s in enumerate(SERIES_STORES)}       # series store -> int id
 _SID_INV = {i: s for s, i in _SID.items()}
 
@@ -627,13 +635,62 @@ def _line_charging(data, vr, vi):
     return sr, si
 
 
+class UnsupportedNetwork(Exception):
+    """The decoder cannot handle this network structure. Raised rather than
+    silently returning wrong currents -- a foundation model must know when it is
+    out of distribution."""
+
+
+def check_assumptions(data, raise_on_fail=True):
+    """Guard the decoder's structural assumptions. SMART-DS satisfies all of these,
+    but 'never seen here' != 'safe' -- we only found the mesh problem because ONE
+    feeder happened to have loops. Anything unhandled must FAIL LOUDLY, because the
+    silent failure mode is a current of exactly ZERO (that is how the vsource
+    grounded terminal and the transformer neutrals hid for so long).
+
+    Returns a list of violations; raises UnsupportedNetwork if raise_on_fail.
+    """
+    bad = []
+    # A2/A3: vsource must be a single slack whose bus2 is ground (bus2 = -bus1).
+    if "vsource" in data.node_types and store_size(data, "vsource") > 0:
+        if store_size(data, "vsource") > 1:
+            bad.append(f"multiple vsources ({store_size(data,'vsource')}): the "
+                       f"bus2=-bus1 slack mirror assumes a single slack")
+        m2 = _slot_node_map(data, "vsource", 2)
+        live2 = [n for n in m2.values() if n != 0]
+        if live2:
+            bad.append(f"vsource bus2 is NOT ground (nodes {live2[:4]}): it is a real "
+                       f"2-terminal source, so I_bus2 = -I_bus1 is invalid")
+    # A6: capacitors are treated as shunt injections.
+    if "capacitor" in data.node_types and store_size(data, "capacitor") > 0:
+        m1 = _slot_node_map(data, "capacitor", 1); m2 = _slot_node_map(data, "capacitor", 2)
+        ser = [(c, sl) for (c, sl), n1 in m1.items()
+               if n1 != 0 and m2.get((c, sl), 0) != 0]
+        if ser:
+            bad.append(f"{len(ser)} SERIES capacitor conductors (both terminals live): "
+                       f"capacitors are reconstructed as shunt injections")
+    # A_generic: any 2-terminal SERIES store we do not put in the tree is silently 0.
+    for s in SERIES_STORES:
+        if s in (SERIES, "transformer", "vsource"):
+            continue                     # line=tree, transformer=null-space, vsource=KCL
+        if s in data.node_types and store_size(data, s) > 0:
+            bad.append(f"{store_size(data, s)} '{s}' elements: series store is not in "
+                       f"the reconstruction tree -> its current would be silently 0")
+    if bad and raise_on_fail:
+        raise UnsupportedNetwork("; ".join(bad))
+    return bad
+
+
 def build_recon_ctx(data):
     """TOPOLOGY-ONLY precompute, identical for every variant of a feeder: the line
     tree, the transformer YPrim null-space maps, per-store injection indices, and
     the parallel-line groups. Build once per feeder and reuse across its variants
     (and this is exactly what the model needs to precompute per feeder)."""
     slack, xsec = _slack_xfmrsec_roots(data)
-    Eline = _series_edges(data, (SERIES,))
+    # TREE_STORES: every 2-terminal series store whose through-flow the subtree/mesh
+    # sweep must reconstruct. Reactors belong here too -- they are series elements,
+    # and leaving them out means their current is silently ZERO (A1 in the audit).
+    Eline = _series_edges(data, TREE_STORES)
     return {
         "Eline": Eline,
         "ltree": _tree_from_edges(Eline, slack | xsec),
@@ -706,7 +763,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
             if vr is not None:
                 lr[:, :4] += csr; lr[:, 4:] += csr; li[:, :4] += csi; li[:, 4:] += csi
             out["line"] = (lr, li)
-        _add_series_flow(_subtree_sum(build_q(line_stores), ltree), ltree, out, only=(SERIES,))
+        _add_series_flow(_subtree_sum(build_q(line_stores), ltree), ltree, out, only=TREE_STORES)
         # transformer secondary (nodal KCL) -> primary (YPrim null-space map)
         if "transformer" in out:
             _set_terminals_by_kcl(data, out, "transformer", (2, 3), n)

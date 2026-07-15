@@ -99,7 +99,10 @@ class DKFeeder:
         self._pe_cached = self.pe
         # precompute the KCL tree-current plan once per topology (like the PE)
         base["node"].slack = self.slack
-        from .dk_tree import build_tree_plan
+        from .dk_tree import build_tree_plan, check_assumptions
+        # Fail loudly on structures the current decoder cannot reconstruct, rather
+        # than training on silently-zero currents (every past bug looked like that).
+        check_assumptions(base)
         self.plan = build_tree_plan(base)
 
     def _slack_mask(self, base) -> torch.Tensor:
