@@ -598,6 +598,10 @@ def _line_charging(data, vr, vi):
     st = data["line"]
     Yr = st["Yline_r_pu"].reshape(-1, 8, 8).double()
     Yi = st["Yline_i_pu"].reshape(-1, 8, 8).double()
+    # Yh = A+B. This cancellation was SUSPECTED of being fp32 noise on stiff lines,
+    # but masking the "below-noise" entries made the decoder 10x WORSE (line 9.9e-4
+    # -> 1.1e-2): the recovered Yh is REAL charging, not noise. The fused Y does not
+    # destroy it -- keep it as-is.
     Yh_r = Yr[:, :4, :4] + Yr[:, :4, 4:]
     Yh_i = Yi[:, :4, :4] + Yi[:, :4, 4:]
     nl = Yr.shape[0]
