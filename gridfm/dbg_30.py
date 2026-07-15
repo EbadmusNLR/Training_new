@@ -14,7 +14,7 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, SHUNT_STORES,
-                            UnsupportedNetwork)
+                            AMBIG_STORES, UnsupportedNetwork)
 
 CORPUS = os.environ.get("CORPUS", "dss_data")
 TD = f"/kfs2/projects/gogpt/Ebadmus/training_data/{CORPUS}"
@@ -45,7 +45,8 @@ for v in range(min(NV, len(fs))):
     truth = {s: stored_currents(d, s, dtype=torch.float64) for s in present}
     cur = {}
     for s in present:
-        if s in SHUNT_STORES:
+        # AMBIG too (shunt reactor/capacitor): recon keeps what it is handed
+        if s in SHUNT_STORES or s in AMBIG_STORES:
             cur[s] = element_currents(d, s, vr, vi)
         else:
             z = torch.zeros_like(truth[s][0]); cur[s] = (z, z.clone())

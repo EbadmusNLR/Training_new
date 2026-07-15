@@ -25,7 +25,8 @@ def one(args):
     path, max_var = args
     from core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
-    from gridfm.dk_tree import reconstruct_full, build_recon_ctx, SHUNT_STORES
+    from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, SHUNT_STORES,
+                                AMBIG_STORES)
     name = os.path.basename(os.path.dirname(path))
     try:
         fs = FeederScenarios(os.path.dirname(path))
@@ -43,7 +44,14 @@ def one(args):
             truth = {s: stored_currents(d, s, dtype=torch.float64) for s in present}
             cur = {}
             for s in present:
-                if s in SHUNT_STORES:
+                # decode EVERY 1-term shunt AND every AMBIGUOUS 2-term store
+                # (capacitor/reactor). A SHUNT-connected reactor is physics-decoded and
+                # recon keeps whatever it is handed -- so feeding it zeros left its
+                # current at exactly 0 and read back as WAPE 1.000e+00, blamed on the
+                # decoder. The series-classified rows get overwritten by the tree inside
+                # recon, so decoding them here is harmless. test_mc.py always did this;
+                # test_all.py did not, and old dss_data had no shunt reactors to catch it.
+                if s in SHUNT_STORES or s in AMBIG_STORES:
                     cur[s] = element_currents(d, s, vr, vim)
                 else:
                     z = torch.zeros_like(truth[s][0]); cur[s] = (z, z.clone())
