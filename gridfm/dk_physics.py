@@ -22,8 +22,11 @@ import torch
 FC = 4  # fixed conductors per terminal
 
 # store -> (json Y-field prefix, n_terminals, icomp_slots)
+# NOTE: the line no longer stores a fused 8x8 YPrim. It stores the physical blocks
+# Ys (series, 4x4 complex) and Yh (half-shunt, 4x4 IMAG-only -- purely susceptive),
+# which removes the Yh = A+B cancellation entirely. line_yprim() rebuilds the 8x8.
 STORES: dict[str, tuple[str, int, int]] = {
-    "line": ("Yline", 2, 0),
+    "line": ("Ys", 2, 0),
     "capacitor": ("Ycap", 2, 0),
     "reactor": ("Yreactor", 2, 0),
     "transformer": ("Yxfmr", 3, 0),
@@ -59,7 +62,30 @@ def terminal_slot(comp_ids: torch.Tensor) -> torch.Tensor:
     return torch.cat([torch.arange(int(c), device=comp_ids.device) for c in counts])
 
 
-def _y_full(store_data, prefix: str, dim: int, dtype):
+def line_yprim(store_data, dtype=torch.float64):
+    """Rebuild the line's 8x8 YPrim from the SPLIT physical blocks:
+        YPrim = [[Ys+Yh, -Ys], [-Ys, Ys+Yh]]        (line.tex)
+    Ys = Ys_r + j*Ys_i (series); Yh = j*Yh_i (half-shunt, purely susceptive).
+    Storing these separately (instead of the fused matrix) removes the
+    Yh = A+B cancellation at the source."""
+    n = store_data["Ys_r_pu"].shape[0]
+    ys_r = store_data["Ys_r_pu"].to(dtype).reshape(n, FC, FC)
+    ys_i = store_data["Ys_i_pu"].to(dtype).reshape(n, FC, FC)
+    yh_i = store_data["Yh_i_pu"].to(dtype).reshape(n, FC, FC)
+    A_r, A_i = ys_r, ys_i + yh_i
+    B_r, B_i = -ys_r, -ys_i
+    yr = torch.zeros(n, 2 * FC, 2 * FC, dtype=dtype)
+    yi = torch.zeros(n, 2 * FC, 2 * FC, dtype=dtype)
+    yr[:, :FC, :FC] = A_r; yr[:, :FC, FC:] = B_r
+    yr[:, FC:, :FC] = B_r.transpose(1, 2); yr[:, FC:, FC:] = A_r
+    yi[:, :FC, :FC] = A_i; yi[:, :FC, FC:] = B_i
+    yi[:, FC:, :FC] = B_i.transpose(1, 2); yi[:, FC:, FC:] = A_i
+    return yr, yi
+
+
+def _y_full(store_data, prefix: str, dim: int, dtype, store: str | None = None):
+    if store == "line" or "Ys_r_pu" in store_data:
+        return line_yprim(store_data, dtype)
     n = store_data[f"{prefix}_r_pu"].shape[0]
     yr = store_data[f"{prefix}_r_pu"].to(dtype).reshape(n, dim, dim)
     yi = store_data[f"{prefix}_i_pu"].to(dtype).reshape(n, dim, dim)
@@ -97,7 +123,7 @@ def element_currents(data, store: str, vr: torch.Tensor, vi: torch.Tensor,
     dtype = vr.dtype
     st = data[store]
     if yr_full is None:
-        yr_full, yi_full = _y_full(st, prefix, dim, dtype)
+        yr_full, yi_full = _y_full(st, prefix, dim, dtype, store)
     Vlr, Vli = local_voltages(data, store, nterm, vr, vi)
     Ir = torch.bmm(yr_full, Vlr.unsqueeze(-1)).squeeze(-1) - torch.bmm(yi_full, Vli.unsqueeze(-1)).squeeze(-1)
     Ii = torch.bmm(yr_full, Vli.unsqueeze(-1)).squeeze(-1) + torch.bmm(yi_full, Vlr.unsqueeze(-1)).squeeze(-1)

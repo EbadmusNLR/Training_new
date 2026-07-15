@@ -28,7 +28,19 @@ import sys
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 from core.scenario_store import FeederScenarios  # noqa: E402
 
-from .dk_physics import FC, STORES, store_size, node_count, terminal_slot  # noqa: E402
+from .dk_physics import FC, STORES, store_size, node_count, terminal_slot, line_yprim  # noqa: E402
+
+
+def store_yfull(st, store, dim):
+    """Full [n,dim,dim] Y for a store. The line stores the physical blocks
+    (Ys 4x4 + Yh 4x4 imag-only) rather than a fused 8x8, so rebuild its YPrim;
+    every other store keeps its fused matrix. Keeps the model's single-Y feature."""
+    if store == "line":
+        return line_yprim(st, dtype=st["Ys_r_pu"].dtype)
+    prefix = STORES[store][0]
+    n = st[f"{prefix}_r_pu"].shape[0]
+    return (st[f"{prefix}_r_pu"].reshape(n, dim, dim),
+            st[f"{prefix}_i_pu"].reshape(n, dim, dim))
 
 PE_DIM = 6  # [log_deg, hop/10, is_slack, is_ground, deg_ratio, log1p_nbr_deg]
 
@@ -211,8 +223,7 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
                 for t in range(1, nterm + 1):
                     if f"I_r_bus{t}_pu" in st:
                         Ib[s].append(_keep(torch.hypot(st[f"I_r_bus{t}_pu"], st[f"I_i_bus{t}_pu"])))
-                yr = st[f"{prefix}_r_pu"].reshape(-1, dim, dim)
-                yi = st[f"{prefix}_i_pu"].reshape(-1, dim, dim)
+                yr, yi = store_yfull(st, s, dim)
                 eye = torch.eye(dim, dtype=torch.bool)
                 Yb[s]["r_diag"].append(_keep(yr[:, eye].abs()))
                 Yb[s]["r_off"].append(_keep(yr[:, ~eye].abs()))
@@ -289,8 +300,7 @@ class DKDataset(torch.utils.data.Dataset):
             prefix, nterm, nic = STORES[s]
             dim = nterm * FC
             n = st[f"{prefix}_r_pu"].shape[0]
-            st.yr = st[f"{prefix}_r_pu"].reshape(n, dim, dim)
-            st.yi = st[f"{prefix}_i_pu"].reshape(n, dim, dim)
+            st.yr, st.yi = store_yfull(st, s, dim)
             ir = torch.zeros(n, dim); ii = torch.zeros(n, dim)
             for t in range(1, nterm + 1):
                 if f"I_r_bus{t}_pu" in st:

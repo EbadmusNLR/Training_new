@@ -345,7 +345,7 @@ def _nodal_injection(data, cur, exclude):
 def reconstruct_series(data, cur):
     """Return reconstructed line currents (Ir, Ii) [n_line, 2*FC] via subtree KCL."""
     st = data[SERIES]
-    n_line = st["Yline_r_pu"].shape[0] if "Yline_r_pu" in st else st.ir.shape[0]
+    n_line = st["Ys_r_pu"].shape[0] if "Ys_r_pu" in st else st.ir.shape[0]
     Ir_s = cur[SERIES][0].double(); Ii_s = cur[SERIES][1].double()
     out_r = Ir_s.clone(); out_i = Ii_s.clone()
 
@@ -596,15 +596,11 @@ def _line_charging(data, vr, vi):
     0.5*Yh*(V1+V2), with Yh = A+B recovered from the fused 8x8 YPrim block
     [[A,B],[B^T,A]] (line.tex: Ys=-B, Yh=A+B). Returns (sr,si) [n_line,4]."""
     st = data["line"]
-    Yr = st["Yline_r_pu"].reshape(-1, 8, 8).double()
-    Yi = st["Yline_i_pu"].reshape(-1, 8, 8).double()
-    # Yh = A+B. This cancellation was SUSPECTED of being fp32 noise on stiff lines,
-    # but masking the "below-noise" entries made the decoder 10x WORSE (line 9.9e-4
-    # -> 1.1e-2): the recovered Yh is REAL charging, not noise. The fused Y does not
-    # destroy it -- keep it as-is.
-    Yh_r = Yr[:, :4, :4] + Yr[:, :4, 4:]
-    Yh_i = Yi[:, :4, :4] + Yi[:, :4, 4:]
-    nl = Yr.shape[0]
+    # Yh now comes DIRECTLY from the corpus (Yh_i_pu, purely susceptive) instead of
+    # the old Yh = A+B cancellation off the fused 8x8 -- exact by construction.
+    Yh_i = st["Yh_i_pu"].reshape(-1, 4, 4).double()
+    Yh_r = torch.zeros_like(Yh_i)
+    nl = Yh_i.shape[0]
     V1r = torch.zeros(nl, 4, dtype=torch.float64); V1i = torch.zeros(nl, 4, dtype=torch.float64)
     V2r = torch.zeros(nl, 4, dtype=torch.float64); V2i = torch.zeros(nl, 4, dtype=torch.float64)
     for t, (Vr_, Vi_) in ((1, (V1r, V1i)), (2, (V2r, V2i))):
