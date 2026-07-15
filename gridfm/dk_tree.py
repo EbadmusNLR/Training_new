@@ -159,6 +159,42 @@ def _tree_from_edges(E, slack_set):
         if i in tree_eids or (n1 == 0 and n2 == 0):
             continue
         (chords if comp_of.get(n1) == comp_of.get(n2) else bridges).append(i)
+
+    # ---- MESH tree: a spanning forest of the WHOLE graph, ROOTS IGNORED --------
+    # The rooted forest above exists for the KCL SWEEP: its roots are injection
+    # points whose KCL we need, so they must not get a parent edge. That makes it a
+    # BAD basis for the CYCLE SPACE -- an edge between two rooted trees (a BRIDGE)
+    # has no tree path, so its loop cannot be built at all. The two jobs want
+    # different trees, and nothing says they must be the same one.
+    #
+    # Cycle space needs one spanning tree per CONNECTED component. Any non-tree edge
+    # of THIS tree is then a chord with a real path, so every independent loop --
+    # including ones that close through several bridges leaving one root (IEEE 30
+    # Bus: 4 lines from node 49 into component 25 = 3 loops per phase = the 9
+    # undetermined DOF) -- becomes visible to mesh_correct.
+    #
+    # Loop currents are invisible to EVERY KCL-derived equation (a circulating +d/-d
+    # changes no nodal sum and no cut-set), so KVL+Z is the only thing that can fix
+    # them. Measured: 18 cut-set rows added 0 rank.
+    mseen, mparent_edge, mdepth, mparent_node = set(), {}, {}, {}
+    for r in sorted(adj.keys()):
+        if r in mseen:
+            continue
+        mseen.add(r); mdepth[r] = 0
+        dq = deque([r])
+        while dq:
+            u = dq.popleft()
+            for ei in adj[u]:
+                _s, _c, n1, n2, _ca, _cb = E[ei]
+                v = n2 if u == n1 else n1
+                if v in mseen:
+                    continue
+                mseen.add(v); mparent_edge[v] = ei; mparent_node[v] = u
+                mdepth[v] = mdepth[u] + 1
+                dq.append(v)
+    mtree_eids = set(mparent_edge.values())
+    mchords = [i for i, (s, c, n1, n2, ca, cb) in enumerate(E)
+               if i not in mtree_eids and not (n1 == 0 and n2 == 0)]
     parent_node = {v: (E[ei][3] if v == E[ei][2] else E[ei][2]) for v, ei in parent_edge.items()}
     return {
         "child": L(child, torch.long), "parent": L(parent, torch.long),
@@ -169,6 +205,9 @@ def _tree_from_edges(E, slack_set):
         "chords": chords, "bridges": bridges, "comp_of": comp_of,
         "parent_edge": parent_edge, "parent_node": parent_node,
         "depth": depth,
+        # cycle-space basis (separate tree; see above)
+        "mchords": mchords, "mparent_edge": mparent_edge,
+        "mparent_node": mparent_node, "mdepth": mdepth,
     }
 
 
@@ -536,7 +575,8 @@ def transformer_null_map(Yr, Yi, thr=1e-4):
     return prim, sec, M.real.copy(), M.imag.copy()
 
 
-def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
+def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
+                      loop_dof=0):
     """JOINT transformer solve, per group of transformers that share a node.
 
     Supersedes the per-transformer K/U map, which asked "is this conductor the lone
@@ -606,8 +646,31 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
     # KCL is usable only at a ROOT: everything else at it (children subtree sums,
     # shunts) is known. Transformer-secondary roots qualify; the slack does not
     # (its vsource is itself unknown until the end).
-    _, xsec = _slack_xfmrsec_roots(data)
+    slack_s, xsec = _slack_xfmrsec_roots(data)
     knodes = sorted(nd for nd in node_conds if nd in xsec)
+    # CUT-SET rows. A BRIDGE has 2 unknown terminals but only ONE row of its own
+    # (I1+I2 = Yh(V1+V2)); the second must come from KCL, which exists only at
+    # transformer-secondary roots -- so a bridge landing on ordinary nodes stays
+    # underdetermined (IEEE 30 Bus: rank 50 < 62). Summing KCL over a WHOLE rooted
+    # component closes it: every internal 2-terminal element contributes only
+    # I1+I2 = its charging (known from V), so
+    #     sum(boundary conductors of T) = -(sum of everything else in T)
+    # which is one well-conditioned equation per component -- currents only, no
+    # impedance, no V1-V2. Components containing the SLACK are skipped: their
+    # vsource is itself unknown until the end.
+    cutsets = []
+    if comp_of:
+        by_root = defaultdict(list)
+        for nd, root in comp_of.items():
+            if nd != 0:
+                by_root[root].append(nd)
+        for root, nodes in sorted(by_root.items()):
+            ns = set(nodes)
+            if ns & slack_s:
+                continue
+            keys = sorted({k for nd in nodes for k in node_conds.get(nd, ())})
+            if keys:
+                cutsets.append((sorted(ns), keys))
 
     parent = {}
     def find(x):
@@ -629,6 +692,9 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
         ks = node_conds[nd]
         for k in ks[1:]:
             union(ks[0], k)
+    for _ns, ks in cutsets:                     # a cut-set couples everything on it
+        for k in ks[1:]:
+            union(ks[0], k)
 
     allkeys = [("transformer", r, s) for r, a in act_of.items() for s in a] \
         + [k for p in bpairs for k in p]
@@ -638,6 +704,9 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
     kn_of = defaultdict(list)
     for nd in knodes:
         kn_of[find(node_conds[nd][0])].append(nd)
+    cs_of = defaultdict(list)
+    for ns, ks in cutsets:
+        cs_of[find(ks[0])].append((ns, ks))
 
     out = []
     for g, keys in sorted(groups.items(), key=lambda kv: str(kv[0])):
@@ -648,7 +717,16 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
         for i, nd in enumerate(gk):
             for k in node_conds[nd]:
                 R[i, xi[k]] = 1.0
-        rank = np.linalg.matrix_rank(R, tol=thr) if len(gk) else 0
+        # cut-set rows: sum of this component's boundary/unknown conductors
+        gcs = cs_of.get(g, [])
+        if gcs:
+            C = np.zeros((len(gcs), Nx), dtype=np.complex128)
+            for i, (_ns, ks) in enumerate(gcs):
+                for k in ks:
+                    if k in xi:
+                        C[i, xi[k]] = 1.0
+            R = np.vstack([R, C]) if len(gk) else C
+        rank = np.linalg.matrix_rank(R, tol=thr) if R.shape[0] else 0
         cur = R
         # BRIDGE rows: I1 + I2 = Yh(V1+V2). Well-conditioned -- the stiff series part
         # cancels in the sum, exactly as for the line charging common-mode.
@@ -683,15 +761,29 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=()):
             if rr > rank:
                 cur, rank = test, rr
                 dirs.append((r, act, Yn)); svs.append(float(_sv))
+        # A deficient group is still RETURNED (with its null basis), so a caller can
+        # close it with KVL. Whether an unclosed deficiency is fatal is the CALLER's
+        # decision (_xsys_or_raise) -- skipping the group here would leave its currents
+        # at exactly ZERO, the silent-wrong failure every bug in this decoder has worn.
+        #
+        # The leftover DOF are CIRCULATING (loop) currents -- they satisfy every row
+        # here BY CONSTRUCTION (a +d/-d around a loop changes no nodal sum), so no
+        # extra KCL-derived row can ever pin them: measured, 18 cut-set rows added
+        # +0 rank. Only KVL+Z can.
+        NB = None
         if rank < Nx:
             if unsolved is not None:
                 unsolved.append((rows_, f"underdetermined: rank {rank} < {Nx} unknowns"))
-            continue
+            _u, _s, _vh = np.linalg.svd(cur)
+            NB = _vh[rank:].conj().T                      # [Nx, Nx-rank]
         P = np.linalg.pinv(cur)
         pos = {st: [i for i, (s_, _c, _s2) in enumerate(keys) if s_ == st]
                for st in {k[0] for k in keys}}
         out.append({
             "comps": rows_, "nkcl": len(gk), "nbridge": len(gpairs),
+            "ncut": len(gcs), "keys": keys,
+            "null": NB, "ndef": int(Nx - rank),
+            "cutnodes": [torch.tensor(ns, dtype=torch.long) for ns, _ks in gcs],
             "svs": svs, "cond": float(np.linalg.cond(cur)),
             "knodes": torch.tensor(gk, dtype=torch.long),
             "Pr": torch.from_numpy(P.real.copy()), "Pi": torch.from_numpy(P.imag.copy()),
@@ -731,18 +823,21 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None):
                   flush=True)
     vrd, vid = vr.double(), vi.double()
     for g in groups:
-        nk, nb = g["nkcl"], g["nbridge"]
-        br = torch.zeros(nk + nb + len(g["dirs"]), dtype=torch.float64)
+        nk, nb, nc = g["nkcl"], g["nbridge"], g.get("ncut", 0)
+        br = torch.zeros(nk + nc + nb + len(g["dirs"]), dtype=torch.float64)
         bi = torch.zeros_like(br)
         if nk:
             br[:nk] = -r0[g["knodes"], 0]; bi[:nk] = -r0[g["knodes"], 1]
+        # cut-set: sum(unknowns on the component) = -(everything else summed over it)
+        for j, ns in enumerate(g.get("cutnodes", [])):
+            br[nk + j] = -r0[ns, 0].sum(); bi[nk + j] = -r0[ns, 1].sum()
         for j, (c_, sl_) in enumerate(g["bridge_cs"]):
             if cs is not None:               # I1 + I2 = Yh(V1+V2) = 2 * (half-charging)
-                br[nk + j] = 2.0 * cs[0][c_, sl_]; bi[nk + j] = 2.0 * cs[1][c_, sl_]
+                br[nk + nc + j] = 2.0 * cs[0][c_, sl_]; bi[nk + nc + j] = 2.0 * cs[1][c_, sl_]
         for j, (nd, Ynr, Yni) in enumerate(g["dirs"]):
             Va_r, Va_i = vrd[nd], vid[nd]           # V[0] == 0, so ground slots vanish
-            br[nk + nb + j] = Ynr @ Va_r - Yni @ Va_i
-            bi[nk + nb + j] = Ynr @ Va_i + Yni @ Va_r
+            br[nk + nc + nb + j] = Ynr @ Va_r - Yni @ Va_i
+            bi[nk + nc + nb + j] = Ynr @ Va_i + Yni @ Va_r
         Pr, Pi = g["Pr"], g["Pi"]
         xr = Pr @ br - Pi @ bi
         xi_ = Pr @ bi + Pi @ br
@@ -982,18 +1077,19 @@ def check_assumptions(data, raise_on_fail=True):
     return bad
 
 
-def _xsys_or_raise(data, bridges):
+def _xsys_or_raise(data, bridges, comp_of=None, loop_dof=0):
     """An underdetermined group is SKIPPED by build_xfmr_system, which leaves its
     currents at exactly ZERO -- the silent-wrong failure every bug in this decoder
     has presented as. Refuse the feeder instead."""
     uns = []
-    xs = build_xfmr_system(data, bridges=bridges, unsolved=uns)
+    xs = build_xfmr_system(data, bridges=bridges, unsolved=uns, comp_of=comp_of,
+                           loop_dof=loop_dof)
     if uns:
         raise UnsupportedNetwork(
-            f"transformer group(s) underdetermined: {uns}. This is a LOOP THROUGH A "
-            "TRANSFORMER: the missing rows are KVL/impedance ones, and mesh_correct "
-            "cannot supply them because transformers are not branches of the line "
-            "tree. Refusing rather than returning silently-zero currents.")
+            f"transformer group(s) underdetermined: {uns}. The leftover DOF are not "
+            "loop currents (those are handled: pinv gives the KCL particular solution "
+            "and mesh_correct adds the KVL/Z loop part), so something else is "
+            "unconstrained. Refusing rather than returning silently-zero currents.")
     return xs
 
 
@@ -1032,7 +1128,8 @@ def build_recon_ctx(data, topo=None):
     rejects a stale ctx rather than trusting it."""
     if topo is not None:
         ctx = dict(topo)
-        ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"])
+        ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"], ctx["ltree"].get("comp_of"),
+                                      len(ctx["ltree"].get("mchords", [])))
         ctx["yref"] = _y_fingerprint(data)
         return ctx
     slack, xsec = _slack_xfmrsec_roots(data)
@@ -1055,7 +1152,8 @@ def build_recon_ctx(data, topo=None):
         # bridge conductors are injections the subtree sweep cannot see: their
         # current must enter q like a transformer's, or every sum above them is short
         "binj": _bridge_inj(bridges),
-        "xmaps": _xsys_or_raise(data, bridges),
+        "xmaps": _xsys_or_raise(data, bridges, ltree.get("comp_of"),
+                                len(ltree.get("mchords", []))),
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
         # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
@@ -1270,6 +1368,7 @@ def mesh_correct(data, out, tree, E):
     chords = list(tree["chords"])
     if not chords:
         return
+    mt = tree
     # branch set = every live series conductor-edge (tree + chords), ANY store.
     # NOT just lines: a reactor/capacitor can close a loop too, and a chord that is
     # filtered out here never gets a current at all -- it stays silently ZERO.
@@ -1281,13 +1380,13 @@ def mesh_correct(data, out, tree, E):
     for c, ei in enumerate(chords):
         s, comp, n1, n2, ca, cb = E[ei]
         M[bidx[ei], c] = 1.0                       # chord, oriented n1->n2
-        up, dn = _tree_path(n2, n1, tree)          # return path n2 -> n1
+        up, dn = _tree_path(n2, n1, mt)            # return path n2 -> n1 (cycle tree)
         for node in up:
-            e2 = tree["parent_edge"][node]
+            e2 = mt["parent_edge"][node]
             if e2 in bidx:
                 M[bidx[e2], c] += 1.0 if node == E[e2][2] else -1.0
         for node in dn:
-            e2 = tree["parent_edge"][node]
+            e2 = mt["parent_edge"][node]
             if e2 in bidx:
                 M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
     # branch impedance Z (block-diagonal per ELEMENT, coupling that element's own
