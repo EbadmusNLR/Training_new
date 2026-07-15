@@ -31,15 +31,37 @@ SERIES = "line"
 # series (through-flow) elements vs shunt (nodal-injection) elements
 SERIES_STORES = ("line", "transformer", "vsource", "reactor")
 SHUNT_STORES = ("load", "generator", "pvsystem", "storage", "capacitor")
-# Series stores whose through-flow is reconstructed by the subtree/mesh sweep.
+# SHUNT vs SERIES is a property of each ELEMENT's connectivity, not of its store.
+# MEASURED (minimal_component, 24k reactors): reactors are BOTH -- ~21/24 have
+# bus2=ground (shunt) and ~3/24 have both terminals live (series). Capacitors are
+# the same. So route per element:
+#   a terminal grounded  -> SHUNT : physics-decode I=Y@V-Icomp (well-conditioned,
+#                                   verified 4.2e-16 for reactors, 1.5e-16 for gens)
+#   both terminals live  -> SERIES: through-flow from the subtree/mesh sweep, plus
+#                                   the well-conditioned common-mode s=0.5(I1+I2)
 # (transformer -> YPrim null-space map; vsource -> nodal KCL at the slack.)
-# REACTORS ARE DELIBERATELY ABSENT: SMART-DS has none, so any handling would be
-# UNTESTED, and a reactor is ambiguous -- a SHUNT reactor (bus2=ground) behaves like
-# a capacitor (physics-decode), a SERIES reactor belongs in the tree. Guessing is how
-# the silent-zero bugs got in. check_assumptions() raises on them instead; to support
-# them, get test data (dss_data has reactors) and validate before adding.
-TREE_STORES = ("line",)
-_SID = {s: i for i, s in enumerate(SERIES_STORES)}       # series store -> int id
+AMBIG_STORES = ("capacitor", "reactor")          # per-element shunt-or-series
+TREE_STORES = ("line", "reactor", "capacitor")   # ground-touching elems auto-excluded
+
+
+def classify_series(data, store):
+    """comps of a 2-terminal store that are SERIES (both terminals on live nodes).
+    Everything else in the store is shunt-connected (a terminal is ground)."""
+    if store not in data.node_types or store_size(data, store) == 0:
+        return set()
+    m1 = _slot_node_map(data, store, 1)
+    m2 = _slot_node_map(data, store, 2)
+    ser = set()
+    for (c, sl), n1 in m1.items():
+        n2 = m2.get((c, sl))
+        if n2 is not None and n1 != 0 and n2 != 0:
+            ser.add(c)
+    return ser
+# store -> int id for the tree's per-edge `sid`. Must cover EVERY store that can be
+# a tree edge: the always-series ones AND the ambiguous ones (capacitor/reactor),
+# whose both-terminals-live elements are series.
+_SID_STORES = tuple(dict.fromkeys(tuple(SERIES_STORES) + tuple(AMBIG_STORES)))
+_SID = {s: i for i, s in enumerate(_SID_STORES)}
 _SID_INV = {i: s for s, i in _SID.items()}
 
 
@@ -484,12 +506,14 @@ def transformer_null_map(Yr, Yi, thr=1e-4):
     return prim, sec, M.real.copy(), M.imag.copy()
 
 
-def build_xfmr_maps(data, thr=1e-4):
-    """Per-transformer YPrim null-space map I_U = M @ I_K, where K = the conductors
+def build_xfmr_maps(data, thr=1e-6, unsolved=None):
+    """Per-transformer YPrim map I_U = A @ V_act + B @ I_K, where K = the conductors
     nodal KCL can determine (load-facing SECONDARY conductors at unique non-ground
     nodes) and U = everything else (primary + grounded/shared-neutral secondary).
-    The null space (amp-turn constraints) closes U from K -- handles center-tap
-    (shared neutral) and any connection, straight from Y."""
+    Handles center-tap (shared neutral) and any connection, straight from Y.
+
+    `unsolved` (optional list) collects comps for which no determined map exists --
+    the caller MUST treat those as errors, never as zero current."""
     import numpy as np
     from collections import Counter
     maps = []
@@ -520,19 +544,39 @@ def build_xfmr_maps(data, thr=1e-4):
         K = [s for s in act if s >= FC and nodes[s] != 0 and cnt[nodes[s]] == 1]
         U = [s for s in act if s not in K]
         if not K or not U:
+            if unsolved is not None and U:
+                unsolved.append((int(row), "no K conductors (no load-facing secondary)"))
             continue
         Ya = Y[np.ix_(act, act)]
         _, S, Vh = np.linalg.svd(Ya)
-        N = Vh[(S / S.max()) < thr].conj().T
-        if N.shape[1] == 0:
-            continue
         Kl = [act.index(s) for s in K]; Ul = [act.index(s) for s in U]
-        # EXACT constraint (not the ideal amp-turn approximation): since I = Y@V and
-        # Y is symmetric, nᵀI = nᵀYV = (Yn)ᵀV for every null vector n. For near-null
-        # n, Yn is tiny -> this term is well-conditioned (no cancellation) and it is
-        # exactly the magnetizing/no-load current the nᵀI=0 idealization drops.
+        # EXACT constraint (not the ideal amp-turn approximation): since I = Y@V and Y
+        # is symmetric, nᵀI = nᵀYV = (Yn)ᵀV for EVERY n -- null-ness is not required for
+        # correctness, only for CONDITIONING (‖Yn‖ = the singular value is the price:
+        # it multiplies the V error). So take the |U| least-stiff INDEPENDENT directions
+        # that actually determine I_U, smallest singular value first.
         #   N_UᵀI_U = (YN)ᵀV - N_KᵀI_K   ->   I_U = A @ V_act + B @ I_K
-        P = np.linalg.pinv(N[Ul].T)
+        # Null vectors are free and usually suffice (they are the amp-turn constraints,
+        # and the (Yn)ᵀV term is exactly the magnetizing current that nᵀI=0 drops). But
+        # they are NOT always enough: a grounded-wye primary feeding a floating-wye
+        # secondary has a null vector supported only on K (the secondary common mode),
+        # leaving the primary ZERO-SEQUENCE unconstrained -- that current flows through
+        # the magnetizing branch alone, so it is a function of V and is genuinely absent
+        # from I_K. Thresholding the null space silently min-normed it to 0.
+        sel, rank = [], 0
+        for j in np.argsort(S):
+            cand = sel + [int(j)]
+            r = np.linalg.matrix_rank(Vh[cand].conj().T[Ul].T, tol=thr)
+            if r > rank:
+                sel, rank = cand, r
+            if rank == len(U):
+                break
+        if rank < len(U):
+            if unsolved is not None:
+                unsolved.append((int(row), f"underdetermined: rank {rank} < |U| {len(U)}"))
+            continue
+        N = Vh[sel].conj().T
+        P = np.linalg.pinv(N[Ul].T)                       # square & invertible by construction
         A = P @ (Ya @ N).T                                # [nU, nact]  (V_act -> I_U)
         B = -P @ N[Kl].T                                  # [nU, nK]    (I_K   -> I_U)
         maps.append({"comp": int(row), "K": torch.tensor(K, dtype=torch.long),
@@ -669,10 +713,11 @@ def check_assumptions(data, raise_on_fail=True):
         if ser:
             bad.append(f"{len(ser)} SERIES capacitor conductors (both terminals live): "
                        f"capacitors are reconstructed as shunt injections")
-    # A_generic: any 2-terminal SERIES store we do not put in the tree is silently 0.
+    # A_generic: any 2-terminal SERIES store not routed anywhere is silently 0.
     for s in SERIES_STORES:
-        if s in (SERIES, "transformer", "vsource"):
-            continue                     # line=tree, transformer=null-space, vsource=KCL
+        if s in (SERIES, "transformer", "vsource") or s in TREE_STORES:
+            continue        # line/reactor/cap = tree(+per-element shunt split),
+                            # transformer = null-space map, vsource = slack KCL
         if s in data.node_types and store_size(data, s) > 0:
             bad.append(f"{store_size(data, s)} '{s}' elements: series store is not in "
                        f"the reconstruction tree -> its current would be silently 0")
@@ -697,6 +742,8 @@ def build_recon_ctx(data):
         "xmaps": build_xfmr_maps(data),
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
+        # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
+        "ser": {s: classify_series(data, s) for s in AMBIG_STORES},
         "n": node_count(data),
     }
 
@@ -712,9 +759,30 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         ctx = build_recon_ctx(data)
     n = ctx["n"]
     out = {s: (cur[s][0].double().clone(), cur[s][1].double().clone()) for s in cur}
-    for s in SERIES_STORES:                       # zero the series placeholders
+    for s in ("line", "transformer", "vsource"):  # always-series: zero placeholders
         if s in out:
             z = torch.zeros_like(out[s][0]); out[s] = (z, z.clone())
+    # AMBIGUOUS stores (capacitor/reactor): shunt-connected elements keep their exact
+    # physics-decode (I=Y@V-Icomp, verified 1e-16); SERIES-connected ones (both
+    # terminals live) must instead get s + tree-flow, so zero only those rows and
+    # seed them with their well-conditioned common-mode s = 0.5*(I1+I2), whose stiff
+    # series part cancels algebraically.
+    ser_cm = {}
+    for s in AMBIG_STORES:
+        sers = ctx["ser"].get(s, set())
+        if s not in out or not sers:
+            continue
+        rows = torch.tensor(sorted(sers), dtype=torch.long)
+        Or, Oi = out[s]
+        cm_r = 0.5 * (Or[rows, :FC] + Or[rows, FC:2 * FC])
+        cm_i = 0.5 * (Oi[rows, :FC] + Oi[rows, FC:2 * FC])
+        Or[rows] = 0.0; Oi[rows] = 0.0
+        Or[rows[:, None], torch.arange(FC)] = cm_r
+        Or[rows[:, None], torch.arange(FC, 2 * FC)] = cm_r
+        Oi[rows[:, None], torch.arange(FC)] = cm_i
+        Oi[rows[:, None], torch.arange(FC, 2 * FC)] = cm_i
+        out[s] = (Or, Oi)
+        ser_cm[s] = (rows, cm_r, cm_i)
     ltree = ctx["ltree"]
     xmaps = ctx["xmaps"]
     # line charging (common-mode) from Yh -- added to both terminals so it does
@@ -742,7 +810,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     def build_q(stores):
         q = q_charge.clone()
         for s in stores:
-            src = out if s in SERIES_STORES else cur
+            src = out if (s in SERIES_STORES or s in AMBIG_STORES) else cur
             if s not in src:
                 continue
             if s not in ctx["inj"]:
