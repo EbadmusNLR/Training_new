@@ -271,3 +271,29 @@ voltage signal than SMART-DS and no free ride from a flat start; better V target
 ## 5. fp64 corpus vs fp32 model
 The regenerated corpus is fp64; the model trains fp32. Cast added at the DATASET
 boundary (`DKDataset.__getitem__`) so the reference decoder keeps fp64 inputs.
+
+## 6. PROVEN: the ladder sweep escapes the conditioning wall (architecture answer)
+`gridfm/ladfast.py` — splitting `Y_series V^{k+1} = sum(Icomp) - Y_shunt V^k`:
+```
+feeder                    n      cond   rho_lad     LAD@1     LAD@3    LAD@10     GS@60
+p24uhs9                   3  2.56e+00  1.75e-04  1.99e-06  9.41e-15  2.89e-16  1.94e-16
+p35uhs0_4                53  4.30e+07  1.89e-02  1.53e-03  4.06e-07  1.23e-11  1.86e-02
+p11uhs11                148  1.00e+17  2.79e-02  1.72e-04  3.88e-08  7.57e-10  1.13e-01
+p20uhs15                222  4.39e+06  5.17e-02  2.67e-04  3.56e-07  1.42e-13  2.53e-02
+p5rhs1                  240  9.98e+14  6.00e-02  2.32e-03  9.76e-08  4.27e-12  1.80e-01
+```
+**3 sweeps -> 1e-7; 10 sweeps -> 1e-10..1e-13 — on feeders where cond(Ybus)=1e17 and
+Gauss-Seidel is STUCK at 1.1e-1 after 60 iterations.** The ladder after ONE sweep beats
+GS after SIXTY. Cause: `rho_lad = 1.75e-4 .. 6e-2` << 1 — convergence is set by the
+shunt/series admittance ratio (loads ~1e-2 vs lines ~1e6), **independent of cond(Ybus)**.
+=> The conditioning wall is a property of the SCHEME, not of the problem. A 12-step
+network CAN solve pf if each step is a LADDER SWEEP (12 is about right: 3->1e-7,
+10->1e-10); it CANNOT with local relaxation at any width/depth/data.
+
+**Build plan** (halves map onto what exists):
+  backward = shunt currents from V (physics decode) + tree KCL -> branch currents
+             **ALREADY EXACT** (dk_tree.reconstruct_full, 6e-8 / 7.9e-10 / 1.1e-6)
+  forward  = V_child = V_parent - Z_branch @ I_branch, accumulated from the slack
+             (the missing piece; Z from the same (A-B)/2 formula mesh_correct uses)
+Open: V_sec across a TRANSFORMER without a stiff inverse -- the turns ratio lives in
+null(YPrim), the same null space the current decoder already exploits.
