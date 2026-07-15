@@ -466,23 +466,53 @@ def transformer_null_map(Yr, Yi, thr=1e-4):
     return prim, sec, M.real.copy(), M.imag.copy()
 
 
-def build_xfmr_maps(data):
-    """Per-transformer null-space maps + the (comp,col) positions of primary and
-    secondary conductors, so I_prim = M @ I_sec can be applied at runtime."""
+def build_xfmr_maps(data, thr=1e-4):
+    """Per-transformer YPrim null-space map I_U = M @ I_K, where K = the conductors
+    nodal KCL can determine (load-facing SECONDARY conductors at unique non-ground
+    nodes) and U = everything else (primary + grounded/shared-neutral secondary).
+    The null space (amp-turn constraints) closes U from K -- handles center-tap
+    (shared neutral) and any connection, straight from Y."""
+    import numpy as np
+    from collections import Counter
     maps = []
     if "transformer" not in data.node_types or store_size(data, "transformer") == 0:
         return maps
     st = data["transformer"]
     Yr = st["Yxfmr_r_pu"].reshape(-1, 12, 12).numpy()
     Yi = st["Yxfmr_i_pu"].reshape(-1, 12, 12).numpy()
-    for row in range(Yr.shape[0]):
-        m = transformer_null_map(Yr[row], Yi[row])
-        if m is None:
+    # slot -> node per transformer row, from the terminal edges
+    slot_node = {}
+    for t in (1, 2, 3):
+        rel = ("transformer", f"bus{t}", "node")
+        if rel not in data.edge_types or not data[rel].edge_index.numel():
             continue
-        prim, sec, Mr, Mi = m
-        maps.append({"comp": int(row), "prim": torch.tensor(prim, dtype=torch.long),
-                     "sec": torch.tensor(sec, dtype=torch.long),
-                     "Mr": torch.tensor(Mr), "Mi": torch.tensor(Mi)})
+        ei = data[rel].edge_index
+        comp, node = ei[0], ei[1]
+        k = terminal_slot(comp)
+        for c, kk, nd in zip(comp.tolist(), k.tolist(), node.tolist()):
+            slot_node[(int(c), (t - 1) * FC + int(kk))] = int(nd)
+    for row in range(Yr.shape[0]):
+        Y = Yr[row].astype(np.complex128) + 1j * Yi[row]
+        diag = np.abs(np.diag(Y))
+        if diag.max() <= 0:
+            continue
+        act = [int(i) for i in np.where(diag > 1e-9 * diag.max())[0]]
+        nodes = {s: slot_node.get((row, s), 0) for s in act}
+        cnt = Counter(nodes.values())
+        K = [s for s in act if s >= FC and nodes[s] != 0 and cnt[nodes[s]] == 1]
+        U = [s for s in act if s not in K]
+        if not K or not U:
+            continue
+        Ya = Y[np.ix_(act, act)]
+        _, S, Vh = np.linalg.svd(Ya)
+        N = Vh[(S / S.max()) < thr].conj().T
+        if N.shape[1] == 0:
+            continue
+        Kl = [act.index(s) for s in K]; Ul = [act.index(s) for s in U]
+        M = -np.linalg.pinv(N[Ul].T) @ N[Kl].T           # I_U = M @ I_K
+        maps.append({"comp": int(row), "K": torch.tensor(K, dtype=torch.long),
+                     "U": torch.tensor(U, dtype=torch.long),
+                     "Mr": torch.tensor(M.real.copy()), "Mi": torch.tensor(M.imag.copy())})
     return maps
 
 
@@ -526,15 +556,16 @@ def _set_terminals_by_kcl(data, out, store, terminals, n):
 
 
 def _apply_xfmr_maps(out, xmaps):
+    """Close the unknown transformer conductors U from the KCL-known K: I_U=M@I_K."""
     if "transformer" not in out or not xmaps:
         return
     Ir, Ii = out["transformer"]
     for m in xmaps:
-        c, prim, sec = m["comp"], m["prim"], m["sec"]
+        c, K, U = m["comp"], m["K"], m["U"]
         Mr, Mi = m["Mr"].double(), m["Mi"].double()
-        Isr, Isi = Ir[c, sec], Ii[c, sec]
-        Ir = Ir.index_put((torch.full_like(prim, c), prim), Mr @ Isr - Mi @ Isi)
-        Ii = Ii.index_put((torch.full_like(prim, c), prim), Mr @ Isi + Mi @ Isr)
+        Ikr, Iki = Ir[c, K], Ii[c, K]
+        Ir = Ir.index_put((torch.full_like(U, c), U), Mr @ Ikr - Mi @ Iki)
+        Ii = Ii.index_put((torch.full_like(U, c), U), Mr @ Iki + Mi @ Ikr)
     out["transformer"] = (Ir, Ii)
 
 
