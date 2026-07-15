@@ -46,6 +46,13 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1):
     v_mse = (verr[msk] ** 2).mean() if msk.any() else verr.new_zeros(())
     vt = (nd.v_init + nd.dv)[msk].norm(dim=1).sum()
     v_wape = 100.0 * verr[msk].abs().sum() / (vt + EPS) if msk.any() else torch.zeros((), device=dv.device)
+    # v_wape divides by |V| ~ 1.0 pu, but the SIGNAL is dv (|dv| ~ 0.04 pu on
+    # SMART-DS). So "predict dv=0", which learns nothing, already scores v_wape
+    # 4.4% there -- the metric flatters a null model into looking 96% accurate.
+    # v_skill is the honest number: error / (error of dv=0). 1.0 = no skill.
+    dvn = nd.dv[msk].abs().sum()
+    v_skill = verr[msk].abs().sum() / (dvn + EPS) if msk.any() else torch.zeros((), device=dv.device)
+    v_base = 100.0 * dvn / (vt + EPS) if msk.any() else torch.zeros((), device=dv.device)
     # currents: fitted per-family feature MSE + report pu WAPE (aggregate + per family)
     i_mse = dv.new_zeros(()); inum = dv.new_zeros(()); iden = dv.new_zeros(())
     fam = {}
@@ -62,8 +69,9 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1):
     res = kcl_of(batch, cur)
     kcl = torch.asinh(res / scales["kcl"]).abs().mean()
     loss = w_v * v_mse + w_i * i_mse + w_kcl * kcl
-    m = {"v_wape": float(v_wape), "i_wape": float(i_wape),
-         "v_mse": float(v_mse), "i_mse": float(i_mse), "kcl": float(kcl)}
+    m = {"v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
+         "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
+         "kcl": float(kcl)}
     m.update(fam)
     return loss, m
 
@@ -153,6 +161,8 @@ def main():
         fam_str = " ".join(f"{k[2:]}={un[k]:.1f}" for k in sorted(un) if k.startswith("i_"))
         print(f"ep{epoch:03d} {time.time()-te:.0f}s | train V/I={tr['v_wape']:.3f}%/{tr['i_wape']:.3f}% "
               f"kcl={tr['kcl']:.3e} | unseen V/I={un['v_wape']:.3f}%/{un['i_wape']:.3f}%\n"
+              f"        V skill: train={tr['v_skill']:.3f} unseen={un['v_skill']:.3f} "
+              f"(1.000 = no better than dv=0; dv=0 scores v_wape {un['v_base']:.2f}%)\n"
               f"        unseen I/fam: {fam_str}", flush=True)
         torch.save({"model": model.state_dict(), "args": vars(args), "epoch": epoch, "scales": scales},
                    Path(args.out) / "last.pt")
