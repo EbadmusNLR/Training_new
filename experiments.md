@@ -700,3 +700,34 @@ NOT started tonight -- A and B are multi-session builds needing training runs to
 and a half-built architecture that regresses training is worse than a written plan. The
 decoder is now EXACT and complete across all four corpora, which is exactly the
 precondition A/B need.
+
+## 20. THE PORT: batched transformer solve proven, half done
+
+Per-sample reconstruct_full in the model was benchmarked at 350ms/sample = ~700s/forward
+(these SMART-DS feeders average 220 transformers). Non-starter. But MEASURED: SMART-DS
+transformers are ALL ISOLATED (groups == xfmr count, sizes 6/7/8, zero bridges/kvl), so the
+joint-pinv system is an independent small solve per transformer -> batches as a per-
+size-class bmm.
+
+DONE + VERIFIED:
+* `_pack_isolated_xfmr` stacks same-signature isolated groups; `_apply_xfmr_batched` solves
+  each class with one bmm, falls back to `_apply_xfmr_groups_loop` for non-isolated groups
+  (IEEE30 bridges, autotransformer reactor-bridges, IEEE9500 mixed-dir-length coupled banks).
+* Bit-identical to the scalar path: max|scalar-batched| = 5e-21.
+* reconstruct_full now uses it (packed cached in ctx). Regression at scale UNCHANGED:
+  dss_data 1.657e-07 (0/83), new_dss_data 3.026e-06, minimal_component 9.293e-10.
+
+REMAINING (model integration -- now well-defined, de-risked):
+1. `batch_xpacked(xpacked_list, node_off, comp_off)`: merge per-feeder packed structs with
+   PyG's node/comp offsets (mirror `batch_plans`). KN/DND += node_off; CI += comp_off.
+2. In a `reconstruct_model` (or extend reconstruct_vectorized): after the batched unified
+   tree sweep places shunt+line currents, call `_apply_xfmr_batched` on the BATCHED graph
+   with the merged packed (samples are node-disjoint, so the global _full_residual is
+   per-sample-correct), then re-sweep lines. This is the Jacobi loop, batched.
+3. Wire into `dk_model._completed_currents` behind a flag (default OFF so training never
+   breaks); precompute ctx per DKFeeder (SMART-DS Y is static across variants, so one ctx
+   per feeder -- confirmed 0/40). Verify: model i_wape on a smoke batch drops ~5.9e-01 ->
+   ~1e-7, then the i_term / kcl gradient into V becomes physical (prerequisite for the
+   voltage KVL-residual feedback, section 19).
+Also add "reactor" to dk_model.PHYS_DECODE (it is in SERIES_STORES but not PHYS_DECODE, so
+the model zeroes shunt reactors -- the same silently-zero bug fixed in test_all.py).
