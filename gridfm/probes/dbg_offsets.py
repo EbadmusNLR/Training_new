@@ -12,7 +12,7 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from torch_geometric.data import Batch
 from core.scenario_store import FeederScenarios
-from gridfm.dk_physics import STORES, store_size, node_count
+from gridfm.dk_physics import STORES, store_size, node_count, ensure_batch_schema
 from gridfm.dk_tree import (build_recon_ctx, batch_recon_ctx, _inj_index,
                             SHUNT_STORES, SERIES_STORES)
 
@@ -26,8 +26,14 @@ for fdir in sys.argv[1:]:
             continue
         pre = STORES[s][0] if s in STORES else None
         d[s].num_nodes = d[s][f"{pre}_r_pu"].shape[0] if pre and f"{pre}_r_pu" in d[s] else 0
-    datas.append(d); ctxs.append(build_recon_ctx(d))
-    ncs.append(node_count(d))
+    datas.append(d)
+
+# Schema must be reconciled ACROSS the batch BEFORE ctx/offsets are built, so every sample
+# has the same stores/relations and PyG's edge-offset cumsum sees every sample's node count.
+if os.environ.get("FIX_SCHEMA", "1") == "1":
+    ensure_batch_schema(datas)
+for d in datas:
+    ctxs.append(build_recon_ctx(d)); ncs.append(node_count(d))
     scs.append({s: store_size(d, s) for s in keys if s in d.node_types and store_size(d, s) > 0})
 
 print("per-feeder store sets:")

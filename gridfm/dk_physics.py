@@ -38,6 +38,55 @@ STORES: dict[str, tuple[str, int, int]] = {
 }
 
 
+def ensure_batch_schema(samples):
+    """Give EVERY sample the SAME store/relation/key schema (empty where absent).
+
+    MEASURED BUG this fixes: PyG's hetero collate accumulates edge_index offsets only over
+    the samples that HAVE a relation. A feeder without `pvsystem` is skipped in that cumsum,
+    so every LATER feeder's pvsystem edges are offset too little and point INTO an earlier
+    feeder's node range -- injecting one feeder's PV/storage currents into another's nodes.
+    Verified on 6 SMART-DS feeders: 494 pvsystem + 182 storage node indices wrong (comp
+    indices fine); load/line/transformer/vsource/capacitor -- present in EVERY feeder -- were
+    all correct. It corrupts the MODEL too: dk_model._edges reads batch[rel].edge_index, so
+    _phys_current reads the wrong v[node] and _kcl_residual scatters to the wrong nodes.
+
+    Reconciling must happen at BATCH level: only there is the union of keys knowable. An empty
+    store must carry every key its populated peers have (with 0 rows), or PyG's collate raises
+    KeyError. With the relation present in every sample its inc contributes (0, n_node), so the
+    node cumsum is complete. Batching is only safe when every sample shares one schema.
+    """
+    spec: dict = {}          # store -> {key: (trailing_shape, dtype)}
+    rels = set()
+    for d in samples:
+        for s in d.node_types:
+            if s == "node":
+                continue
+            for k, v in d[s].items():
+                if torch.is_tensor(v) and v.dim() >= 1:
+                    spec.setdefault(s, {}).setdefault(k, (tuple(v.shape[1:]), v.dtype))
+        rels.update(d.edge_types)
+    for d in samples:
+        for s, keys in spec.items():
+            n = store_size(d, s) if s in d.node_types else 0
+            st = d[s]
+            for k, (tail, dt) in keys.items():
+                if k in st:
+                    continue
+                if n:
+                    # A POPULATED store missing a key its peers have is a real schema
+                    # inconsistency -- zero-filling it would silently invent physics.
+                    raise ValueError(
+                        f"store '{s}' has {n} rows but is missing '{k}', which other samples "
+                        f"in this batch have. Refusing to zero-fill a populated store.")
+                st[k] = torch.zeros((n, *tail), dtype=dt)
+            st.num_nodes = n
+        for r in rels:
+            if r not in d.edge_types or "edge_index" not in d[r]:
+                d[r].edge_index = torch.zeros(2, 0, dtype=torch.long)
+        d["node"].num_nodes = node_count(d)
+    return samples
+
+
 def store_size(data, store: str) -> int:
     """Component count for a store (PyG cannot infer num_nodes here)."""
     st = data[store]

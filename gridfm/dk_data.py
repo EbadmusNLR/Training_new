@@ -331,11 +331,21 @@ def make_dk_collate(feeders):
     """Collate that batches the graph AND assembles the batched KCL tree plan
     (offset per-feeder plans to match PyG's node/comp concatenation)."""
     from torch_geometric.data import Batch
+    from .dk_physics import ensure_batch_schema
     from .dk_tree import batch_plans, SHUNT_STORES, SERIES_STORES
 
     def collate(samples):
         fids = [int(s.feeder_id) for s in samples]
         plans = [feeders[f].plan for f in fids]
+        # EVERY sample must share ONE schema before Batch.from_data_list. PyG accumulates
+        # edge_index offsets only over the samples that HAVE a relation, so a feeder without
+        # pvsystem/storage is skipped in that cumsum and every LATER feeder's pvsystem edges
+        # point INTO an earlier feeder's node range. MEASURED on 6 SMART-DS feeders: 494
+        # pvsystem + 182 storage node indices wrong; load/line/transformer/vsource (present in
+        # every feeder) were fine. That silently corrupted training: _edges reads
+        # batch[rel].edge_index, so _phys_current gathered the wrong v[node] and the KCL
+        # residual scattered PV/storage current onto another feeder's nodes.
+        ensure_batch_schema(samples)
         node_counts = [int(s["node"].num_nodes) for s in samples]
         keys = tuple(SHUNT_STORES) + tuple(SERIES_STORES)
         store_counts = [{st: int(s[st].ir.shape[0]) for st in keys

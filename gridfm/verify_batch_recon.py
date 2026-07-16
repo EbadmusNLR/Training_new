@@ -11,7 +11,8 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from torch_geometric.data import Batch
 from core.scenario_store import FeederScenarios
-from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents, node_count, FC
+from gridfm.dk_physics import (STORES, store_size, stored_currents, element_currents,
+                               node_count, ensure_batch_schema, FC)
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, batch_recon_ctx,
                             SHUNT_STORES, AMBIG_STORES, SERIES_STORES, UnsupportedNetwork)
 
@@ -70,7 +71,10 @@ for p in paths:
     node_counts.append(node_count(d))
     store_counts.append({s: store_size(d, s) for s in keys if s in d.node_types and store_size(d, s) > 0})
 
-# assemble batched graph + merged ctx + merged cur/V
+# Every sample must share ONE schema before batching: PyG's edge-offset cumsum skips
+# samples lacking a relation, so a feeder without pvsystem/storage makes later feeders'
+# edges point into ITS nodes. (Measured: 494 pvsystem + 182 storage node indices wrong.)
+ensure_batch_schema(datas)
 batch = Batch.from_data_list([d for d in datas])
 bctx = batch_recon_ctx(ctxs, node_counts, store_counts)
 bvr = torch.cat([d["node"].V_r_pu.double() for d in datas])

@@ -13,7 +13,8 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from torch_geometric.data import Batch
 from core.scenario_store import FeederScenarios
-from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents, node_count
+from gridfm.dk_physics import (STORES, store_size, stored_currents, element_currents,
+                               node_count, ensure_batch_schema)
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, batch_recon_ctx,
                             SHUNT_STORES, AMBIG_STORES, SERIES_STORES, _pack_isolated_xfmr)
 
@@ -59,6 +60,7 @@ for fdir in sys.argv[1:]:
     ncs.append(node_count(d))
     scs.append({s: store_size(d, s) for s in keys if s in d.node_types and store_size(d, s) > 0})
 
+ensure_batch_schema(datas)   # PyG offsets are only correct with one shared schema
 batch = Batch.from_data_list(datas)
 bctx = batch_recon_ctx(ctxs, ncs, scs)
 bvr = torch.cat([d["node"].V_r_pu.double() for d in datas])
@@ -75,6 +77,7 @@ for sc in scs:
     for s in keys:
         soff[s].append(soff[s][-1] + int(sc.get(s, 0)))
 print()
+worst = 0.0
 for i, (present, truth, rec) in enumerate(per):
     for s in present:
         if s not in brec:
@@ -82,9 +85,21 @@ for i, (present, truth, rec) in enumerate(per):
         a, b = soff[s][i], soff[s][i + 1]
         d0 = float((brec[s][0][a:b] - rec[s][0]).abs().max())
         d1 = float((brec[s][1][a:b] - rec[s][1]).abs().max())
+        worst = max(worst, d0, d1)
         if max(d0, d1) > 1e-9:
             # how many rows differ, and is the batched one ZERO there?
             m = (brec[s][0][a:b] - rec[s][0]).abs().max(dim=1).values > 1e-9
             bz = float(brec[s][0][a:b][m].abs().sum()) if m.any() else 0.0
             print(f"  feeder{i} {s:12s} diff={max(d0,d1):.3e}  rows_differing={int(m.sum())}/{int(m.numel())}"
                   f"  |batched@diff|={bz:.3e}")
+
+tn = td = 0.0
+for i, (present, truth, rec) in enumerate(per):
+    for s in present:
+        if s not in brec: continue
+        a, b = soff[s][i], soff[s][i + 1]
+        R = (brec[s][0][a:b], brec[s][1][a:b]); T = truth[s]
+        tn += float((R[0]-T[0]).abs().sum() + (R[1]-T[1]).abs().sum())
+        td += float(T[0].abs().sum() + T[1].abs().sum())
+print(f"\nmax |batched - per_feeder| = {worst:.3e}   ({len(per)} feeders)")
+print(f"batched WAPE vs truth      = {tn/(td+1e-30):.3e}")
