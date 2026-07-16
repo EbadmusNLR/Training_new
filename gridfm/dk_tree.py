@@ -643,6 +643,25 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
         ka, kb = (bs, bc, bca), (bs, bc, bcb)
         node_conds[bn1].append(ka); node_conds[bn2].append(kb)
         bpairs.append((ka, kb))
+    # Per-bridge COMMON-MODE row  I1+I2 = CM1@V1 + CM2@V2, from the bridge element's OWN
+    # primitive (line -> Yh(V1+V2); series reactor -> 0). Replaces the old code that
+    # looked up the LINE charging table indexed by the bridge's own comp id -- correct
+    # only when the bridge was a line, garbage for a reactor bridge (autotransformer
+    # cases). Precompute the full FC phase-node vectors per terminal + the CM row.
+    ycm_cache = {}
+    bstores = {bs for (bs, *_r) in bridges}
+    bterm_node = {s: {t: _slot_node_map(data, s, t) for t in (1, 2)} for s in bstores}
+    bcm_of = {}
+    for (bs, bc, bn1, bn2, bca, bcb) in bridges:
+        sl = bca % FC
+        CM1, CM2 = _series_ycm(data, bs, ycm_cache)
+        cm1 = CM1[bc, sl]; cm2 = CM2[bc, sl]                      # [FC] complex
+        nd1 = torch.tensor([bterm_node[bs][1].get((bc, p), 0) for p in range(FC)],
+                           dtype=torch.long)
+        nd2 = torch.tensor([bterm_node[bs][2].get((bc, p), 0) for p in range(FC)],
+                           dtype=torch.long)
+        bcm_of[(bs, bc, bca)] = (cm1.real.clone(), cm1.imag.clone(),
+                                 cm2.real.clone(), cm2.imag.clone(), nd1, nd2)
     # KCL is usable only at a ROOT: everything else at it (children subtree sums,
     # shunts) is known. Transformer-secondary roots qualify; the slack does not
     # (its vsource is itself unknown until the end).
@@ -837,8 +856,9 @@ def build_xfmr_system(data, thr=1e-6, unsolved=None, bridges=(), comp_of=None,
                              torch.tensor([keys[i][1] for i in ps], dtype=torch.long),
                              torch.tensor([keys[i][2] for i in ps], dtype=torch.long))
                         for st, ps in pos.items()},
-            # bridge rhs lookup: (comp, slot%FC) into the charging table
-            "bridge_cs": [(ka[1], ka[2] % FC) for (ka, _kb) in gpairs],
+            # bridge rhs: per bridge, the common-mode row + phase-node vectors so
+            # I1+I2 = CM1@V1 + CM2@V2 is evaluated from the element's OWN primitive.
+            "bridge_cm": [bcm_of[ka] for (ka, _kb) in gpairs],
             "dirs": [(torch.tensor([slot_node.get((r, s), 0) for s in act], dtype=torch.long),
                       torch.from_numpy(Yn.real.copy()), torch.from_numpy(Yn.imag.copy()))
                      for (r, act, Yn) in dirs],
@@ -884,9 +904,14 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None, kvl=None):
         # cut-set: sum(unknowns on the component) = -(everything else summed over it)
         for j, ns in enumerate(g.get("cutnodes", [])):
             br[nk + j] = -r0[ns, 0].sum(); bi[nk + j] = -r0[ns, 1].sum()
-        for j, (c_, sl_) in enumerate(g["bridge_cs"]):
-            if cs is not None:               # I1 + I2 = Yh(V1+V2) = 2 * (half-charging)
-                br[nk + nc + j] = 2.0 * cs[0][c_, sl_]; bi[nk + nc + j] = 2.0 * cs[1][c_, sl_]
+        for j, (cm1r, cm1i, cm2r, cm2i, nd1, nd2) in enumerate(g["bridge_cm"]):
+            # I1 + I2 = CM1@V1 + CM2@V2, from the bridge element's own primitive. The
+            # stiff Ys cancelled algebraically in CM, so this is well-conditioned for a
+            # line (Yh) AND a series reactor (0) alike. V[0]=0, so absent phases vanish.
+            V1r, V1i = vrd[nd1], vid[nd1]
+            V2r, V2i = vrd[nd2], vid[nd2]
+            br[nk + nc + j] = ((cm1r @ V1r - cm1i @ V1i) + (cm2r @ V2r - cm2i @ V2i))
+            bi[nk + nc + j] = ((cm1r @ V1i + cm1i @ V1r) + (cm2r @ V2i + cm2i @ V2r))
         # KVL: (mᵀZ)f = 0 -> (lhs on our bridges) = -(mᵀZ) f over the known branches
         if nv:
             rhs = -(g["kvl_W"].to(torch.complex128) @ fbr)
@@ -1323,7 +1348,13 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     # Fixed point: LV lines need the transformer current, the transformer
     # secondary needs the LV lines (KCL). Jacobi-iterate lines <-> transformer.
     line_stores = list(SHUNT_STORES) + ["transformer", "vsource", "reactor"]
-    binj = ctx.get("binj") or {}
+    # binj injects a bridge conductor's solved current into q, because the subtree sweep
+    # never writes a non-tree edge. But build_q ALREADY injects every store in
+    # line_stores via ctx["inj"] -- so a bridge whose store is in line_stores (a series
+    # REACTOR, a series capacitor) would be counted TWICE at each terminal, doubling the
+    # line current above it (TestAuto: line 0.006 vs truth 0.003). Only LINE bridges are
+    # invisible to build_q, so binj must cover only bridges NOT in line_stores.
+    binj = {s: v for s, v in (ctx.get("binj") or {}).items() if s not in line_stores}
     bkeep = {s: (out[s][0][c, col].clone(), out[s][1][c, col].clone())
              for s, (c, col, _nd) in binj.items() if s in out}
     for _ in range(int(os.environ.get("JACOBI", "6"))):
@@ -1392,6 +1423,41 @@ def _tree_path(u, v, tree):
         up.append(a); a = pn[a]
         dn.append(b); b = pn[b]
     return up, list(reversed(dn))
+
+
+def _series_ycm(data, store, cache):
+    """Common-mode admittance blocks (CM1, CM2) [ncomp, FC, FC] of a 2-terminal store,
+    for the well-conditioned bridge row  I1 + I2 = CM1 @ V1 + CM2 @ V2.
+
+    For YPrim = [[A, B], [Bᵀ, D]]:  I1 = A V1 + B V2,  I2 = Bᵀ V1 + D V2, so
+        I1 + I2 = (A + Bᵀ) V1 + (B + D) V2   ->   CM1 = A + Bᵀ,  CM2 = B + D.
+    The stiff series admittance Ys cancels SYMBOLICALLY here (A = Ys+Yh, B = Bᵀ = -Ys,
+    D = Ys+Yh  =>  CM1 = CM2 = Yh), so forming CM first and THEN multiplying by V has no
+    catastrophic cancellation -- unlike computing I1, I2 separately and adding. For a
+    LINE this is Yh(V1+V2); for a PURE series reactor (Yh=0) it is 0 (I1 = -I2). One
+    formula, no element-type branch -- which is the whole point: the previous bridge row
+    hardcoded the line-charging table and indexed it with the reactor's own comp id,
+    so a reactor bridge (autotransformer test cases) got a wrong rhs.
+    """
+    key = (store, "cm")
+    if key in cache:
+        return cache[key]
+    st = data[store]
+    if store == "line":                       # split blocks: CM = full shunt Yh
+        yh_r = (st["Yh_r_pu"].reshape(-1, FC, FC).double()
+                if "Yh_r_pu" in st else 0.0)
+        yh_i = st["Yh_i_pu"].reshape(-1, FC, FC).double()
+        cm = yh_r + 1j * yh_i
+        CM1 = CM2 = cm
+    else:
+        prefix, _, _ = STORES[store]
+        Yf = (st[f"{prefix}_r_pu"].reshape(-1, 2 * FC, 2 * FC).double()
+              + 1j * st[f"{prefix}_i_pu"].reshape(-1, 2 * FC, 2 * FC).double())
+        A = Yf[:, :FC, :FC]; B = Yf[:, :FC, FC:]
+        Bt = Yf[:, FC:, :FC]; D = Yf[:, FC:, FC:]
+        CM1 = A + Bt; CM2 = B + D
+    cache[key] = (CM1, CM2)
+    return CM1, CM2
 
 
 def _series_yeff(data, store, cache):
