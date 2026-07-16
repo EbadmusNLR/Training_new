@@ -17,4 +17,4 @@ source /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/activate
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 export CORPUS_ROOT=/kfs2/projects/gogpt/Ebadmus/training_data/${CORPUS}
 python gridfm/test_all.py --shard "${SLURM_ARRAY_TASK_ID}/20" --workers 64 \
-    --variants 0 --out runs/final_${CORPUS}
+    --variants 0 --out runs/${OUTTAG:-final}_${CORPUS}

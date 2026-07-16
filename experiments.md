@@ -590,3 +590,43 @@ NOT yet fixed. Note this is a DIFFERENT bug from IEEE 30 Bus (which is pure-line
 STATUS: full re-validation of all four corpora launched with the current decoder
 (`gridfm/val_final.sbatch`, fresh `runs/final_<corpus>` dirs -- the older runs/ dirs
 straddled the cut-set retraction and are untrustworthy).
+
+## 16. EXCLUSIONS from new_dss_data, and the corpus totals
+
+Decided on the DATA (node voltages + stored |I|), never on a WAPE score or a name match
+(`gridfm/scan_dead.py` prints an auditable verdict per feeder). 49 moved, 815 remain:
+
+  data/excluded/de_energized/  3   66.7% of nodes at V=0 with converged=True (the W signature)
+  data/excluded/no_circuit/   46   |I| = 0.0 EXACTLY across every family
+
+The `no_circuit` 46 are OpenDSS FEATURE-TEST scripts swept up by the collector because they
+compile -- CableParameters, XYCurvetest, TextTsCable750MCM, and old IEEETestCases archive
+copies. A source at 1.0 pu with nothing connected. They are invisible in a WAPE column
+(0/0 scores 0.0 and PASSES), so they were never in the 93 failures -- they are 4,600
+no-op training samples that teach nothing. Used |I| < 1e-12 (strict zero) not < 1e-3, to
+stay conservative: a genuinely tiny-but-live feeder is kept.
+
+Note the three failure shapes are distinguished ONLY by |I|, never by WAPE:
+  WAPE 1.0, |I| ~ 1e-8   -> DEAD circuit (data)      -> exclude
+  WAPE 1.0, |I| real     -> silently-zero current    -> decoder/harness bug
+  WAPE 0.0, |I| == 0     -> empty circuit (data)     -> exclude, and it PASSES silently
+
+## 17. OPEN, in priority order (handoff)
+
+1. **PORT the decoder into the model** -- the biggest single win available, ~7 orders of
+   magnitude. `dk_model._completed_currents` calls `reconstruct_vectorized`: MEASURED
+   5.942e-01 on SMART-DS vs 4.588e-08 for `reconstruct_full` (`gridfm/dbg_model_decoder.py`).
+   NOT charging (SMART-DS |charging|/|I_line| = 0.0%): it is the transformers (64% wrong,
+   4.6% of |I|) propagating into the lines (92% of abs err). Needs the joint-transformer
+   pinv machinery batched + differentiable, with xfmr maps rebuilt PER SAMPLE (variants
+   retap; a stale ctx decodes at the wrong ratio -- `reconstruct_full` raises on `yref`).
+   Topology half is reusable across variants via `build_recon_ctx(data, topo=...)`.
+2. **AUTOTRANSFORMER gap** (66 feeders in new_dss_data): a SERIES REACTOR acting as a
+   bridge. `build_kvl_rows` closes loops with LINE impedance only, and the bridge row
+   assumes line charging `I1+I2 = Yh(V1+V2)` which a reactor has no entry for. The
+   autotransformer Y itself is FINE (transformer 9.6e-11).
+3. **IEEE 30 Bus**: 3 DOF short. Unify the two loop mechanisms (see 13).
+4. **VOLTAGE**: untouched this session. The 4% is the dv=0 null baseline; ALWAYS report
+   v_skill. Loss weighting is a MEASURED dead end. cond(Ybus)=1.25e18 caps local relaxation
+   at skill 0.59; the ladder sweep converges on 96% of samples but diverges on the
+   stiff-reactor tail. Architecture is the only live lever.
