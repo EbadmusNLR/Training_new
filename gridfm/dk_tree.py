@@ -1872,16 +1872,35 @@ def _branch_Z(data, E, live, bidx=None, cdt=torch.complex128, dev=None):
     return Z
 
 
-def _branch_f(out, E, live, cdt=torch.complex128, dev=None):
-    """Per-branch through-flow f = 0.5*(I_colb - I_cola). The charging common-mode
-    cancels in the difference, so f is the series part only."""
-    f = torch.zeros(len(live), dtype=cdt, device=dev)
+def _branch_index(E, live, dev=None):
+    """Per-store gather indices for the `live` branch list: store -> (k, comp, cola, colb).
+    Topology-only, so a caller can build it once and reuse it across iterations."""
+    by = defaultdict(lambda: ([], [], [], []))
     for k, ei in enumerate(live):
         s, cmp_, _n1, _n2, ca, cb = E[ei]
+        b = by[s]
+        b[0].append(k); b[1].append(cmp_); b[2].append(ca); b[3].append(cb)
+    return {s: tuple(torch.tensor(x, dtype=torch.long, device=dev) for x in v)
+            for s, v in by.items()}
+
+
+def _branch_f(out, E, live, cdt=torch.complex128, dev=None, bidx_of=None):
+    """Per-branch through-flow f = 0.5*(I_colb - I_cola). The charging common-mode
+    cancels in the difference, so f is the series part only.
+
+    TENSOR-NATIVE and DIFFERENTIABLE. The old per-edge python loop did
+    `f[k] = complex(0.5*(Or[c,cb] - Or[c,ca]), ...)` -- python's complex() converts the
+    tensor to a scalar, DETACHING the autograd graph, so no gradient reached V through the
+    loop correction. It was also O(#branches) python for what is a handful of gathers.
+    """
+    rdt = torch.float32 if cdt == torch.complex64 else torch.float64
+    fr = torch.zeros(len(live), dtype=rdt, device=dev)
+    fi = torch.zeros(len(live), dtype=rdt, device=dev)
+    for s, (kk, cc, ca, cb) in (bidx_of or _branch_index(E, live, dev)).items():
         Or, Oi = out[s]
-        f[k] = complex(0.5 * (Or[cmp_, cb] - Or[cmp_, ca]),
-                       0.5 * (Oi[cmp_, cb] - Oi[cmp_, ca]))
-    return f
+        fr = fr.index_copy(0, kk, 0.5 * (Or[cc, cb] - Or[cc, ca]).to(rdt))
+        fi = fi.index_copy(0, kk, 0.5 * (Oi[cc, cb] - Oi[cc, ca]).to(rdt))
+    return torch.complex(fr, fi)
 
 
 def _loop_vec(ei, E, mt, bidx, nb):
@@ -1991,7 +2010,8 @@ def mesh_correct(data, out, tree, E, grounds=None):
             if e2 in bidx:
                 M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
     Z = _branch_Z(data, E, live, bidx, cdt=_cdt, dev=_dev)
-    f = _branch_f(out, E, live, cdt=_cdt, dev=_dev)
+    bidx_of = _branch_index(E, live, _dev)      # per-store gathers, shared by f and write-back
+    f = _branch_f(out, E, live, cdt=_cdt, dev=_dev, bidx_of=bidx_of)
     Mc = M.to(torch.complex128)
     Zl = Mc.T @ Z @ Mc                                   # [L,L] loop impedance
     b = Mc.T @ (Z @ f)                                   # [L]
@@ -2000,14 +2020,18 @@ def mesh_correct(data, out, tree, E, grounds=None):
     except Exception:
         J = torch.linalg.lstsq(Zl, (-b).unsqueeze(1)).solution.squeeze(1)
     fnew = f + Mc @ J
-    # rebuild terminal currents, preserving each branch's own charging s
-    for ei in live:
-        s, cmp_, n1, n2, ca, cb = E[ei]
-        k = bidx[ei]
+    # Rebuild terminal currents, preserving each branch's own charging s. TENSOR-NATIVE and
+    # DIFFERENTIABLE: the old per-edge python loop assigned into Or/Oi in place, which both
+    # broke the autograd graph and cost O(#branches) python per call. index_put (functional)
+    # keeps the graph; the gathers below read the PRE-update values, exactly as the sequential
+    # loop did (each conductor is touched by one edge only, so there is no ordering effect).
+    for s, (kk, cc, ca, cb) in bidx_of.items():
         Or, Oi = out[s]
-        cs_r = 0.5 * (Or[cmp_, ca] + Or[cmp_, cb]); cs_i = 0.5 * (Oi[cmp_, ca] + Oi[cmp_, cb])
-        Or[cmp_, ca] = cs_r - fnew[k].real; Or[cmp_, cb] = cs_r + fnew[k].real
-        Oi[cmp_, ca] = cs_i - fnew[k].imag; Oi[cmp_, cb] = cs_i + fnew[k].imag
+        cs_r = 0.5 * (Or[cc, ca] + Or[cc, cb]); cs_i = 0.5 * (Oi[cc, ca] + Oi[cc, cb])
+        fr_n = fnew.real[kk].to(Or.dtype); fi_n = fnew.imag[kk].to(Oi.dtype)
+        Or = Or.index_put((cc, ca), cs_r - fr_n).index_put((cc, cb), cs_r + fr_n)
+        Oi = Oi.index_put((cc, ca), cs_i - fi_n).index_put((cc, cb), cs_i + fi_n)
+        out[s] = (Or, Oi)
 
 
 def _split_parallel_lines(data, out):
