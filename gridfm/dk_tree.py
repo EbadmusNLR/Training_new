@@ -880,13 +880,13 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None, kvl=None):
                 out[st] = (Ar.index_put((ci, si), torch.zeros(len(ci), dtype=Ar.dtype)),
                            Ai.index_put((ci, si), torch.zeros(len(ci), dtype=Ai.dtype)))
     r0 = _full_residual(data, out, n)
-    if os.environ.get("XDBG"):
-        for g in groups:
-            kn = g["knodes"].tolist()
-            print(f"    [xdbg] comps={g['comps']} r0@knodes="
-                  f"{[complex(round(float(r0[k,0]),8), round(float(r0[k,1]),8)) for k in kn]}",
-                  flush=True)
     vrd, vid = vr.double(), vi.double()
+    _apply_xfmr_groups_loop(data, out, groups, r0, vrd, vid, cs, kvl)
+
+
+def _apply_xfmr_groups_loop(data, out, groups, r0, vrd, vid, cs=None, kvl=None):
+    """Per-group solve loop (unknowns already zeroed, r0 already computed). Shared by
+    the scalar _apply_xfmr_system and the batched path's non-isolated leftovers."""
     # KVL rhs needs the through-flow of every branch the loop closes through. Those
     # are KNOWN this iteration (the sweep just wrote them); only the group's own
     # bridges are unknown, and those sit on the lhs.
@@ -929,6 +929,92 @@ def _apply_xfmr_system(data, out, groups, vr, vi, n, cs=None, kvl=None):
                 continue
             Ar, Ai = out[st]
             out[st] = (Ar.index_put((ci, si), xr[pos]), Ai.index_put((ci, si), xi_[pos]))
+
+
+def _pack_isolated_xfmr(groups):
+    """Stack ISOLATED transformer groups (no bridge/cut/kvl rows) by signature so the
+    per-group python loop in _apply_xfmr_system becomes batched matmuls. SMART-DS
+    transformers are ALL isolated (groups == xfmr count, size 6/7/8), so this is the
+    whole cost of the model port. Returns (batched_classes, leftover_groups)."""
+    iso, other = [], []
+    for g in groups:
+        if g["nbridge"] == 0 and g.get("ncut", 0) == 0 and g.get("nkvl", 0) == 0 \
+                and len(g["scatter"]) == 1 and "transformer" in g["scatter"]:
+            iso.append(g)
+        else:
+            other.append(g)
+    classes = defaultdict(list)
+    for g in iso:
+        nk = g["nkcl"]; ndir = len(g["dirs"])
+        L = g["dirs"][0][0].numel() if ndir else 0
+        Nx = g["Pr"].shape[0]; rows = g["Pr"].shape[1]
+        pos, ci, si = g["scatter"]["transformer"]
+        classes[(nk, ndir, L, Nx, rows, pos.numel())].append(g)
+    packed = []
+    for sig, gs in classes.items():
+        nk, ndir, L, Nx, rows, npos = sig
+        G = len(gs)
+        KN = torch.stack([g["knodes"] for g in gs]) if nk else torch.zeros(G, 0, dtype=torch.long)
+        Pr = torch.stack([g["Pr"] for g in gs])           # [G, Nx, rows]
+        Pi = torch.stack([g["Pi"] for g in gs])
+        if ndir:
+            DND = torch.stack([torch.stack([d[0] for d in g["dirs"]]) for g in gs])      # [G,ndir,L]
+            DYR = torch.stack([torch.stack([d[1] for d in g["dirs"]]) for g in gs])
+            DYI = torch.stack([torch.stack([d[2] for d in g["dirs"]]) for g in gs])
+        else:
+            DND = DYR = DYI = None
+        POS = torch.stack([g["scatter"]["transformer"][0] for g in gs])   # [G, npos]
+        CI = torch.stack([g["scatter"]["transformer"][1] for g in gs])
+        SI = torch.stack([g["scatter"]["transformer"][2] for g in gs])
+        packed.append({"nk": nk, "ndir": ndir, "L": L, "Nx": Nx, "rows": rows,
+                       "KN": KN, "Pr": Pr, "Pi": Pi, "DND": DND, "DYR": DYR, "DYI": DYI,
+                       "POS": POS, "CI": CI, "SI": SI})
+    return packed, other
+
+
+def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=None):
+    """Batched equivalent of _apply_xfmr_system for ISOLATED transformers: same math,
+    but same-signature groups are solved as one bmm instead of a python loop. Any
+    non-isolated group (bridge/cut/kvl -- IEEE30, autotransformers) falls back to the
+    original per-group path. `packed` is the _pack_isolated_xfmr precompute (built once
+    and reused across variants/steps); if None it is built on the fly."""
+    if "transformer" not in out or not groups:
+        return
+    if packed is None:
+        packed, other = _pack_isolated_xfmr(groups)
+    else:
+        _iso, other = _pack_isolated_xfmr(groups)   # only need the leftover list here
+    # zero every unknown before the residual (all groups, both paths)
+    for g in groups:
+        for st, (pos, ci, si) in g["scatter"].items():
+            if st in out:
+                Ar, Ai = out[st]
+                out[st] = (Ar.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ar.dtype)),
+                           Ai.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ai.dtype)))
+    r0 = _full_residual(data, out, n)
+    vrd, vid = vr.double(), vi.double()
+    Ar, Ai = out["transformer"]
+    for pk in packed:
+        G, nk, ndir, Nx, rows = pk["Pr"].shape[0], pk["nk"], pk["ndir"], pk["Nx"], pk["rows"]
+        br = torch.zeros(G, rows, dtype=torch.float64); bi = torch.zeros(G, rows, dtype=torch.float64)
+        if nk:
+            br[:, :nk] = -r0[pk["KN"], 0]; bi[:, :nk] = -r0[pk["KN"], 1]
+        if ndir:
+            Va_r = vrd[pk["DND"]]; Va_i = vid[pk["DND"]]           # [G,ndir,L]
+            br[:, nk:nk + ndir] = (pk["DYR"] * Va_r - pk["DYI"] * Va_i).sum(-1)
+            bi[:, nk:nk + ndir] = (pk["DYR"] * Va_i + pk["DYI"] * Va_r).sum(-1)
+        # x = P @ (br + i bi), batched over G
+        xr = torch.bmm(pk["Pr"], br.unsqueeze(-1)).squeeze(-1) - torch.bmm(pk["Pi"], bi.unsqueeze(-1)).squeeze(-1)
+        xi_ = torch.bmm(pk["Pr"], bi.unsqueeze(-1)).squeeze(-1) + torch.bmm(pk["Pi"], br.unsqueeze(-1)).squeeze(-1)
+        # scatter x[POS] -> out["transformer"][CI, SI], flattened
+        gi = torch.arange(G).unsqueeze(1).expand(-1, pk["POS"].shape[1])
+        xr_sel = xr[gi, pk["POS"]]; xi_sel = xi_[gi, pk["POS"]]
+        Ar = Ar.index_put((pk["CI"].reshape(-1), pk["SI"].reshape(-1)), xr_sel.reshape(-1).to(Ar.dtype))
+        Ai = Ai.index_put((pk["CI"].reshape(-1), pk["SI"].reshape(-1)), xi_sel.reshape(-1).to(Ai.dtype))
+    out["transformer"] = (Ar, Ai)
+    # leftover non-isolated groups: original exact path (already zeroed above)
+    if other:
+        _apply_xfmr_groups_loop(data, out, other, r0, vrd, vid, cs, kvl)
 
 
 def build_xfmr_maps(data, thr=1e-6, unsolved=None):
@@ -1214,6 +1300,7 @@ def build_recon_ctx(data, topo=None):
         ctx["xmaps"] = _xsys_or_raise(data, ctx["bridges"], None,
                                       len(ctx["ltree"].get("mchords", [])),
                                       kvl=ctx.get("kvl"))
+        ctx["xpacked"], _ = _pack_isolated_xfmr(ctx["xmaps"])
         ctx["yref"] = _y_fingerprint(data)
         return ctx
     slack, xsec = _slack_xfmrsec_roots(data)
@@ -1234,6 +1321,7 @@ def build_recon_ctx(data, topo=None):
     # reusable topology half of the ctx.
     kr = build_kvl_rows(data, Eline, ltree)
     kvl = (kr[0], kr[1], kr[2], Eline) if kr else None
+    _xmaps = _xsys_or_raise(data, bridges, None, len(ltree.get("mchords", [])), kvl=kvl)
     return {
         "Eline": Eline,
         "ltree": ltree,
@@ -1249,8 +1337,10 @@ def build_recon_ctx(data, topo=None):
         # hold on that network. They also bought nothing: IEEE 30 Bus is refused with
         # or without them. Do not re-enable without a test that the row holds at TRUTH
         # currents on a feeder with grounded/center-tap windings.
-        "xmaps": _xsys_or_raise(data, bridges, None,
-                                len(ltree.get("mchords", [])), kvl=kvl),
+        "xmaps": _xmaps,
+        # batched-solve precompute (isolated transformers stacked by signature); the
+        # whole cost of the model decoder port. Rebuilt with xmaps when Y changes.
+        "xpacked": _pack_isolated_xfmr(_xmaps)[0],
         "inj": {s: _inj_index(data, s) for s in tuple(SHUNT_STORES) + tuple(SERIES_STORES)
                 if s in data.node_types and store_size(data, s) > 0},
         # per-ELEMENT shunt/series split for the ambiguous 2-terminal stores
@@ -1383,9 +1473,9 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         # secondaries by KCL, then map U from K", which assumed each secondary was
         # the lone unknown at its node.
         if "transformer" in out:
-            _apply_xfmr_system(data, out, xmaps, vr, vi, n,
-                               cs=(csr, csi) if vr is not None else None,
-                               kvl=ctx.get("kvl"))
+            _apply_xfmr_batched(data, out, xmaps, vr, vi, n,
+                                cs=(csr, csi) if vr is not None else None,
+                                kvl=ctx.get("kvl"), packed=ctx.get("xpacked"))
             bkeep = {s: (out[s][0][c, col].clone(), out[s][1][c, col].clone())
                      for s, (c, col, _nd) in binj.items() if s in out}
     # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
