@@ -731,3 +731,39 @@ REMAINING (model integration -- now well-defined, de-risked):
    voltage KVL-residual feedback, section 19).
 Also add "reactor" to dk_model.PHYS_DECODE (it is in SERIES_STORES but not PHYS_DECODE, so
 the model zeroes shunt reactors -- the same silently-zero bug fixed in test_all.py).
+
+## 21. BATCHED RECON IS WIP AND **NOT CORRECT** -- do not wire into the model
+
+`batch_recon_ctx` / `_offset_group` / `_merge_ltree` / `batch_xpacked` are committed but
+**DO NOT reproduce per-feeder reconstruct_full yet**. Verified with
+`gridfm/verify_batch_recon.py` (builds a real PyG Batch, runs both, diffs per store):
+
+```
+ 4 small radial feeders   max|batched - per_feeder| = 0.000e+00     EXACT
+24-30 mixed feeders       max 2.66e-02 , WAPE vs truth 6.7e-02      WRONG
+```
+Failures concentrate on HIGH-TRANSFORMER feeders (xfmr 130-470). Root cause NOT found.
+Nothing calls it, so training is unaffected today -- but it must be exact before the port.
+
+NOTE: commit 757f241 ("Reorganize probes and add perturbation screening tools") was made by
+the **Codex agent**, not by this work, and it swallowed these changes under a message that
+does NOT record this WIP status. Two agents are committing to this repo; do not read that
+commit message as a claim that batched recon works.
+
+REAL fixes found on the way (kept, per-feeder verified):
+* `_full_residual` zeroed only GLOBAL node 0. A PyG batch has ONE GROUND PER SAMPLE at
+  node_off[i]; the others' residuals leaked into the xfmr KCL rhs. Now takes `grounds`.
+* `mesh_correct`'s live test `e[2] != 0` carries the same ground-sentinel assumption ->
+  now takes `grounds`.
+* `_merge_ltree` must merge the ROOTED-forest fields (chords / parent_edge / parent_node /
+  depth) that mesh_correct actually reads -- NOT the mparent_* cycle-space ones.
+* `_apply_xfmr_batched` can zero unknowns from the packed CI/SI (no group objects needed).
+
+DESIGN (no silent skipping, per user): the batched path must cover isolated transformers
+(batched bmm), coupled banks (offset leftover groups) AND line loops (merged mesh tree).
+Transmission BRIDGES raise loudly instead of silently falling back.
+
+PER-FEEDER DECODER VERIFIED UNAFFECTED by all of the above (defaults preserve old
+behaviour): 37Bus 5.706e-11, trans_3w_center_tap 6.508e-11 -- both exactly at baseline.
+
+gridfm/ tidied 61 -> 29 files; 32 one-off probes moved to gridfm/probes/ (README there).
