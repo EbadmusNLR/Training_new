@@ -905,7 +905,7 @@ def _apply_xfmr_groups_loop(data, out, groups, r0, vrd, vid, cs=None, kvl=None):
     for g in groups:
         nk, nb, nc = g["nkcl"], g["nbridge"], g.get("ncut", 0)
         nv = g.get("nkvl", 0)
-        br = torch.zeros(nk + nc + nb + nv + len(g["dirs"]), dtype=torch.float64)
+        br = torch.zeros(nk + nc + nb + nv + len(g["dirs"]), dtype=r0.dtype, device=r0.device)
         bi = torch.zeros_like(br)
         if nk:
             br[:nk] = -r0[g["knodes"], 0]; bi[:nk] = -r0[g["knodes"], 1]
@@ -1847,13 +1847,13 @@ def _series_yeff(data, store, cache):
     return Y
 
 
-def _branch_Z(data, E, live, bidx=None):
+def _branch_Z(data, E, live, bidx=None, cdt=torch.complex128, dev=None):
     """Branch impedance over `live`, BLOCK-diagonal per ELEMENT so an element's own
     conductors stay coupled (phase mutual impedance is included, not dropped)."""
     if bidx is None:
         bidx = {e: k for k, e in enumerate(live)}
     nb = len(live)
-    Z = torch.zeros(nb, nb, dtype=torch.complex128)
+    Z = torch.zeros(nb, nb, dtype=cdt, device=dev)
     by_elem = defaultdict(list)
     for ei in live:
         by_elem[(E[ei][0], E[ei][1])].append(ei)
@@ -1872,10 +1872,10 @@ def _branch_Z(data, E, live, bidx=None):
     return Z
 
 
-def _branch_f(out, E, live):
+def _branch_f(out, E, live, cdt=torch.complex128, dev=None):
     """Per-branch through-flow f = 0.5*(I_colb - I_cola). The charging common-mode
     cancels in the difference, so f is the series part only."""
-    f = torch.zeros(len(live), dtype=torch.complex128)
+    f = torch.zeros(len(live), dtype=cdt, device=dev)
     for k, ei in enumerate(live):
         s, cmp_, _n1, _n2, ca, cb = E[ei]
         Or, Oi = out[s]
@@ -1970,8 +1970,14 @@ def mesh_correct(data, out, tree, E, grounds=None):
     live = [i for i, e in enumerate(E) if e[2] not in gnd and e[3] not in gnd]
     bidx = {e: k for k, e in enumerate(live)}
     nb, nl = len(live), len(chords)
+    # dtype/device follow the CURRENTS (fp64/CPU reference, fp32/GPU model). The complex
+    # work uses the matching complex width so no silent fp64 upcast happens on GPU.
+    _ref = out[E[live[0]][0]][0] if live else None
+    _dt = _ref.dtype if _ref is not None else torch.float64
+    _dev = _ref.device if _ref is not None else torch.device("cpu")
+    _cdt = torch.complex64 if _dt == torch.float32 else torch.complex128
     # fundamental loop matrix M [nb, nl]
-    M = torch.zeros(nb, nl, dtype=torch.float64)
+    M = torch.zeros(nb, nl, dtype=_dt, device=_dev)
     for c, ei in enumerate(chords):
         s, comp, n1, n2, ca, cb = E[ei]
         M[bidx[ei], c] = 1.0                       # chord, oriented n1->n2
@@ -1984,8 +1990,8 @@ def mesh_correct(data, out, tree, E, grounds=None):
             e2 = mt["parent_edge"][node]
             if e2 in bidx:
                 M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
-    Z = _branch_Z(data, E, live, bidx)
-    f = _branch_f(out, E, live)
+    Z = _branch_Z(data, E, live, bidx, cdt=_cdt, dev=_dev)
+    f = _branch_f(out, E, live, cdt=_cdt, dev=_dev)
     Mc = M.to(torch.complex128)
     Zl = Mc.T @ Z @ Mc                                   # [L,L] loop impedance
     b = Mc.T @ (Z @ f)                                   # [L]

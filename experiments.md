@@ -800,3 +800,51 @@ If that is NOT the cause, the next probe is `gridfm/probes/dbg_offsets.py`, whic
 merged `ctx["inj"]` against `_inj_index(batched_graph)` per store -- reconstruct_full uses
 BOTH (build_q uses ctx["inj"]; _full_residual recomputes _inj_index), so any disagreement
 between them corrupts the residual.
+
+## 22. Batched-recon bug SOLVED: PyG mis-offsets edges for stores absent in some samples
+
+Root cause of the cross-feeder corruption, and a SILENT PRE-EXISTING TRAINING BUG.
+
+PyG's hetero collate accumulates edge_index offsets ONLY over samples that HAVE a relation.
+A feeder without `pvsystem` is skipped in that cumsum, so LATER feeders' pvsystem edges are
+offset too little and point INTO an earlier feeder's node range.
+
+```
+pvsystem   node: 494 differ   mine=[58,0,2992]  pyg=[58,0,1405]   <- feeder2's PV -> feeder1's nodes
+storage    node: 182 differ   mine=[66,0,3888]  pyg=[66,0,1963]
+load / line / transformer / vsource / capacitor: OK  (present in EVERY feeder)
+```
+Only the NODE index, only for stores ABSENT somewhere -- matching the bisect exactly
+(batch-of-1 and -2 EXACT; N=6 corrupted feeder1, the store-less one).
+
+FIX `dk_physics.ensure_batch_schema(samples)`: one schema for every sample (empty store +
+empty edge_index where absent) so each relation's inc contributes (0, n_node). MUST be
+batch-level (only there is the union of keys knowable; PyG raises KeyError if an empty store
+lacks a peer's key). Refuses to zero-fill a POPULATED store missing a key. Wired into
+make_dk_collate (fixes TRAINING) and the recon batching path.
+
+| check | before | after |
+|---|---|---|
+| batched vs per-feeder (20 feeders) | 2.66e-02 | **1.084e-19** |
+| batched WAPE vs truth | 6.7e-02 | **3.227e-08** |
+| pvsystem/storage node offsets | 494/182 wrong | **all OK** |
+
+## 23. Model SHUNT REACTOR silently-zero: BOTH fixes required
+`PHYS_DECODE` lacked "reactor" AND `build_tree_plan` let shunt reactors become TREE EDGES
+(so the sweep overwrote the decode). Either alone is a NO-OP -- measured. Together:
+`reactor 1.000e+00 -> 4.318e-16`, feeder TOTAL `9.955e-01 -> 1.249e-01`.
+
+## 24. PORT: reconstruct_full is now dtype/device aware -- 2 blockers remain
+Was CPU/fp64-only (float64 allocations, no device=) so it could not run in a GPU forward.
+Now every allocation follows the currents. `recon_ctx_to()` moves a ctx once per batch.
+`_full_residual` takes cached `inj` (it re-ran terminal_slot EVERY Jacobi iteration).
+VERIFIED a true no-op on the reference -- 6/6 exactly at baseline.
+
+REMAINING BLOCKERS before wiring into the model:
+1. **`mesh_correct` is NOT autograd-safe**: `_branch_f` does `f[k] = complex(0.5*(Or[..]-Or[..]))`
+   -- python `complex()` on a tensor DETACHES the graph, so no gradient flows through the loop
+   correction. Affects the 1.6% chord feeders. Needs a vectorized, tensor-native rewrite.
+2. **Speed**: batched recon measured ~83ms/feeder on CPU fp64. The `inj` cache removes a big
+   chunk; must re-measure on GPU/fp32 before it can sit in a training step.
+Only then: wire `_completed_currents` -> reconstruct_full behind a flag, then the
+KVL-residual feedback for voltage (section 19).
