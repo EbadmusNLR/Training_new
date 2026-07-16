@@ -289,7 +289,15 @@ def build_tree_plan(data):
     slack_set = {i for i, v in enumerate(slack) if v}
     inj = {s: _inj_index(data, s) for s in list(SHUNT_STORES) + list(SERIES_STORES)
            if s in data.node_types and store_size(data, s) > 0}
-    uni = _tree_from_edges(_series_edges(data, SERIES_STORES), slack_set)
+    # Only SERIES-connected conductors may become tree edges. The tree keeps ground-touching
+    # edges (a line's grounded neutral is a real branch), so a SHUNT reactor -- whose grounded
+    # leg is physics-decoded EXACTLY -- would otherwise become a tree edge and have its decode
+    # OVERWRITTEN by the sweep, leaving it wrong (measured: reactor WAPE 1.003 on
+    # minimal_component). build_recon_ctx applies exactly this filter; build_tree_plan did not.
+    _ser = {s: classify_series(data, s) for s in AMBIG_STORES}
+    uni_edges = [e for e in _series_edges(data, SERIES_STORES)
+                 if e[0] not in AMBIG_STORES or e[1] in _ser.get(e[0], set())]
+    uni = _tree_from_edges(uni_edges, slack_set)
     line = _tree_from_edges(_series_edges(data, (SERIES,)), slack_set)
     n = node_count(data)
     # OPEN series conductors: terminal-slots NOT written by either tree sweep

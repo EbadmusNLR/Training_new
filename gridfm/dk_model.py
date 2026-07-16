@@ -26,7 +26,11 @@ from .dk_tree import SERIES_STORES, plan_to, reconstruct_vectorized
 # free head. SERIES elements are excluded because I~Y*(V1-V2) amplifies V error:
 # lines (~2e7x, unrecoverable) and transformers (~24x measured, 110% WAPE) both go
 # to the structural tree-current path; the vsource slack keeps a free head too.
-PHYS_DECODE = {"load", "capacitor", "pvsystem", "storage", "generator"}
+# Physics-decoded from V (I = Y@V - Icomp): every 1-terminal shunt AND both AMBIGUOUS
+# 2-terminal stores. `reactor` was missing while SERIES_STORES contains it, so the model
+# zeroed every SHUNT reactor (WAPE 1.0 on that family) -- the same silently-zero bug found
+# in test_all.py. capacitor was already here; reactor is its exact counterpart.
+PHYS_DECODE = {"load", "capacitor", "reactor", "pvsystem", "storage", "generator"}
 
 
 class MLP(nn.Sequential):
@@ -134,7 +138,13 @@ class DKSolver(nn.Module):
         for s, terms in edges.items():
             if s in PHYS_DECODE:
                 cur[s] = self._phys_current(s, batch, terms, v)
-        for s in SERIES_STORES:
+        # Zero ONLY the always-series stores. `reactor` is AMBIGUOUS: a grounded one is a
+        # SHUNT and is physics-decoded exactly, while a both-ends-live one is series. Zeroing
+        # the whole store (as before) wiped the decoded shunt reactors and left them at
+        # exactly 0 -- the silently-zero signature. The tree sweep below overwrites only the
+        # conductors that ARE tree edges, so series reactors still get their through-flow
+        # while shunt reactors keep their decode. Same rule reconstruct_full uses.
+        for s in ("line", "transformer", "vsource"):
             if s in edges:
                 st = batch[s]; n, dim, _ = st.yr.shape
                 z = v.new_zeros(n, dim)
