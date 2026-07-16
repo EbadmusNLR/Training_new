@@ -978,26 +978,210 @@ def _pack_isolated_xfmr(groups):
     return packed, other
 
 
-def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=None):
+def _sid_off_vec(soff, i):
+    """[len(_SID)] tensor of the per-store comp offset for sample i, indexable by sid."""
+    return torch.tensor([soff[_SID_INV[k]][i] for k in range(len(_SID))], dtype=torch.long)
+
+
+def _merge_ltree(ltrees, node_off, soff, eline_off):
+    """Concatenate per-feeder _tree_from_edges dicts into one, offsetting child/parent
+    nodes by node_off and comp by the per-store offset (by sid). ALSO merges the mesh
+    fields (chords / mparent_* / mdepth / Eline indices) so mesh_correct runs on the
+    batched graph -- line loops are NOT dropped. eline_off[i] = # Eline edges before
+    sample i (so per-feeder Eline/edge indices shift into the merged Eline)."""
+    acc = {k: [] for k in ("child", "parent", "sign", "level", "sid", "comp", "cola", "colb")}
+    # mesh_correct uses the ROOTED-forest fields: chords (Eline indices) + parent_edge
+    # (node -> Eline index) + parent_node + depth. Offset edge indices by eline_off,
+    # nodes by node_off.
+    parent_edge, parent_node, depth = {}, {}, {}
+    chords = []
+    for i, t in enumerate(ltrees):
+        off = _sid_off_vec(soff, i); no = node_off[i]; eo = eline_off[i]
+        if t["child"].numel():
+            acc["child"].append(t["child"] + no); acc["parent"].append(t["parent"] + no)
+            acc["sign"].append(t["sign"]); acc["level"].append(t["level"]); acc["sid"].append(t["sid"])
+            acc["comp"].append(t["comp"] + off[t["sid"]])
+            acc["cola"].append(t["cola"]); acc["colb"].append(t["colb"])
+        chords += [c + eo for c in t.get("chords", [])]
+        for nd, ei in t.get("parent_edge", {}).items():
+            parent_edge[nd + no] = ei + eo
+        for nd, pn in t.get("parent_node", {}).items():
+            parent_node[nd + no] = pn + no
+        for nd, dp in t.get("depth", {}).items():
+            depth[nd + no] = dp
+    dt = {"sign": torch.float64}
+    merged = {k: (torch.cat(v) if v else torch.zeros(0, dtype=dt.get(k, torch.long)))
+              for k, v in acc.items()}
+    merged.update(chords=chords, parent_edge=parent_edge,
+                  parent_node=parent_node, depth=depth)
+    return merged
+
+
+def _offset_group(g, node_off_i, soff, i):
+    """A build_xfmr_system group dict with every NODE index (+node_off_i) and every
+    COMP index (+per-store offset) shifted to the batched graph. Structure-only fields
+    (Pr/Pi/kvl_W/null/counts) are shared unchanged. So a coupled bank (open-wye,
+    center-tap) solves correctly in the batched leftover loop -- not skipped."""
+    o = dict(g)
+    o["knodes"] = g["knodes"] + node_off_i
+    o["cutnodes"] = [c + node_off_i for c in g.get("cutnodes", [])]
+    o["dirs"] = [(nd + node_off_i, yr, yi) for (nd, yr, yi) in g["dirs"]]
+    o["bridge_cm"] = [(a, b, c, d, nd1 + node_off_i, nd2 + node_off_i)
+                      for (a, b, c, d, nd1, nd2) in g.get("bridge_cm", [])]
+    o["scatter"] = {st: (pos, ci + soff[st][i], si) for st, (pos, ci, si) in g["scatter"].items()}
+    return o
+
+
+def _merge_eline(elines, node_off, soff):
+    """Concatenate per-feeder Eline lists, offsetting comp by store and nodes by
+    node_off. Ground (local node 0) shifts to node_off[i] like any node; mesh_correct
+    is told the grounds so it still excludes ground-touching edges."""
+    E = []
+    for i, El in enumerate(elines):
+        no = node_off[i]
+        for (s, c, n1, n2, ca, cb) in El:
+            E.append((s, c + soff[s][i], n1 + no, n2 + no, ca, cb))
+    return E
+
+
+def batch_recon_ctx(ctxs, node_counts, store_counts):
+    """Merge per-feeder build_recon_ctx outputs into ONE batched ctx (offset to the
+    PyG-concatenated graph) so reconstruct_full runs ONCE over the whole batch and
+    reproduces per-feeder reconstruct_full exactly. Samples are node-disjoint, so every
+    op stays per-sample-correct.
+
+    Handles EVERY SMART-DS structure with no per-sample fallback: isolated transformers
+    (batched bmm), coupled banks (offset leftover groups), and line loops (merged mesh
+    tree). Transmission BRIDGES are the one thing not yet batched -- raised loudly, never
+    silently skipped, since the training corpus has none. store_counts[i] = {store: n}."""
+    all_stores = tuple(SHUNT_STORES) + tuple(SERIES_STORES)
+    node_off = [0]
+    for nc in node_counts:
+        node_off.append(node_off[-1] + int(nc))
+    soff = {s: [0] for s in all_stores}
+    for sc in store_counts:
+        for s in all_stores:
+            soff[s].append(soff[s][-1] + int(sc.get(s, 0)))
+    for c in ctxs:
+        if c.get("bridges"):
+            raise UnsupportedNetwork(
+                "batched recon does not yet cover transmission BRIDGES (0 in SMART-DS). "
+                "Extend batch_recon_ctx (merge kvl/binj) before training on such data -- "
+                "do not fall back silently.")
+    elines = [c.get("Eline") or [] for c in ctxs]
+    eline_off = [0]
+    for El in elines:
+        eline_off.append(eline_off[-1] + len(El))
+    # merged transformer groups: split each feeder's groups into isolated (-> one batched
+    # bmm across the whole batch) and coupled (-> the exact leftover loop), all offset.
+    other_groups = []
+    for i, c in enumerate(ctxs):
+        # coupled banks (open-wye / center-tap) that _pack sends to the leftover loop:
+        # offset them so the loop solves them on the batched graph. The ISOLATED ones are
+        # already covered by the merged xpacked below.
+        _iso, other_i = _pack_isolated_xfmr([_offset_group(g, node_off[i], soff, i)
+                                             for g in c["xmaps"]])
+        other_groups += other_i
+    merged = {
+        "batched": True,
+        "grounds": torch.tensor(node_off[:-1], dtype=torch.long),   # each sample's node 0
+        "ltree": _merge_ltree([c["ltree"] for c in ctxs], node_off, soff, eline_off),
+        "Eline": _merge_eline(elines, node_off, soff) or None,
+        "n": node_off[-1],
+        "xmaps": other_groups, "binj": {}, "kvl": None,
+        "xpacked": batch_xpacked([c.get("xpacked") for c in ctxs], node_off, soff["transformer"]),
+    }
+    # injection scatter (comp,col,node) per store, offset
+    inj = {}
+    for s in all_stores:
+        cs, cols, nds = [], [], []
+        for i, c in enumerate(ctxs):
+            if s in c["inj"]:
+                comp, col, node = c["inj"][s]
+                if comp.numel():
+                    cs.append(comp + soff[s][i]); cols.append(col); nds.append(node + node_off[i])
+        if cs:
+            inj[s] = (torch.cat(cs), torch.cat(cols), torch.cat(nds))
+    merged["inj"] = inj
+    # per-element shunt/series split for ambiguous stores (capacitor/reactor), offset
+    ser = {}
+    for s in AMBIG_STORES:
+        rows = set()
+        for i, c in enumerate(ctxs):
+            rows |= {int(r) + soff[s][i] for r in c["ser"].get(s, set())}
+        ser[s] = rows
+    merged["ser"] = ser
+    return merged
+
+
+def batch_xpacked(xpacked_list, node_off, comp_off):
+    """Merge per-feeder xpacked structs (from _pack_isolated_xfmr) into ONE, offsetting
+    node/comp indices to the batched (PyG-concatenated) graph. Same-signature classes
+    across samples concatenate along the group axis, so the whole batch's isolated
+    transformers solve in one bmm per signature.
+
+    node_off[i] / comp_off[i] = the batch's node / transformer-comp offset for sample i
+    (as batch_plans computes them). KN and DND are node indices (+node_off); CI indexes
+    out["transformer"] rows (+comp_off); POS/SI/Pr/Pi are within-group and unchanged."""
+    acc = {}
+    for i, xp in enumerate(xpacked_list or []):
+        for cls in xp:
+            sig = (cls["nk"], cls["ndir"], cls["L"], cls["Nx"], cls["rows"], cls["POS"].shape[1])
+            a = acc.setdefault(sig, {k: [] for k in
+                ("KN", "Pr", "Pi", "DND", "DYR", "DYI", "POS", "CI", "SI")})
+            a["KN"].append(cls["KN"] + node_off[i])
+            a["Pr"].append(cls["Pr"]); a["Pi"].append(cls["Pi"])
+            if cls["ndir"]:
+                a["DND"].append(cls["DND"] + node_off[i])
+                a["DYR"].append(cls["DYR"]); a["DYI"].append(cls["DYI"])
+            a["POS"].append(cls["POS"]); a["SI"].append(cls["SI"])
+            a["CI"].append(cls["CI"] + comp_off[i])
+    out = []
+    for sig, a in acc.items():
+        nk, ndir, L, Nx, rows, npos = sig
+        out.append({"nk": nk, "ndir": ndir, "L": L, "Nx": Nx, "rows": rows,
+                    "KN": torch.cat(a["KN"]), "Pr": torch.cat(a["Pr"]), "Pi": torch.cat(a["Pi"]),
+                    "DND": torch.cat(a["DND"]) if ndir else None,
+                    "DYR": torch.cat(a["DYR"]) if ndir else None,
+                    "DYI": torch.cat(a["DYI"]) if ndir else None,
+                    "POS": torch.cat(a["POS"]), "CI": torch.cat(a["CI"]), "SI": torch.cat(a["SI"])})
+    return out
+
+
+def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=None, grounds=None):
     """Batched equivalent of _apply_xfmr_system for ISOLATED transformers: same math,
     but same-signature groups are solved as one bmm instead of a python loop. Any
     non-isolated group (bridge/cut/kvl -- IEEE30, autotransformers) falls back to the
     original per-group path. `packed` is the _pack_isolated_xfmr precompute (built once
     and reused across variants/steps); if None it is built on the fly."""
-    if "transformer" not in out or not groups:
+    if "transformer" not in out:
         return
+    # `groups` may be empty in the BATCHED model path (packed pre-merged by batch_xpacked
+    # across samples, with no per-sample group objects). `other` is the non-isolated
+    # leftover per-group path -- empty when groups is empty.
+    other = _pack_isolated_xfmr(groups)[1] if groups else []
     if packed is None:
-        packed, other = _pack_isolated_xfmr(groups)
-    else:
-        _iso, other = _pack_isolated_xfmr(groups)   # only need the leftover list here
-    # zero every unknown before the residual (all groups, both paths)
-    for g in groups:
+        packed, _ = _pack_isolated_xfmr(groups)
+    if not packed and not other:
+        return
+    # zero every unknown before the residual. Isolated unknowns come from the packed
+    # CI/SI (works even with no group objects); non-isolated ones from their scatter.
+    for st in ("transformer",):
+        if st not in out:
+            continue
+        Ar, Ai = out[st]
+        for pk in packed:
+            ci = pk["CI"].reshape(-1); si = pk["SI"].reshape(-1)
+            Ar = Ar.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ar.dtype))
+            Ai = Ai.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ai.dtype))
+        out[st] = (Ar, Ai)
+    for g in other:
         for st, (pos, ci, si) in g["scatter"].items():
             if st in out:
                 Ar, Ai = out[st]
                 out[st] = (Ar.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ar.dtype)),
                            Ai.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ai.dtype)))
-    r0 = _full_residual(data, out, n)
+    r0 = _full_residual(data, out, n, grounds=grounds)
     vrd, vid = vr.double(), vi.double()
     Ar, Ai = out["transformer"]
     for pk in packed:
@@ -1126,20 +1310,26 @@ def _slack_xfmrsec_roots(data):
     return slack, xsec
 
 
-def _full_residual(data, out, n):
+def _full_residual(data, out, n, grounds=None):
     r = torch.zeros(n, 2, dtype=torch.float64)
     for s, (Ir, Ii) in out.items():
         comp, col, node = _inj_index(data, s)
         if comp.numel():
             r = r.index_add(0, node, torch.stack([Ir[comp, col], Ii[comp, col]], 1))
-    r[0] = 0.0
+    # Ground residual is discarded (ground return current is not an unknown). In a BATCHED
+    # graph every sample has its OWN ground (node_off[i]); zeroing only global node 0 leaves
+    # the others' residuals to leak into the xfmr KCL rhs (measured: 6e-3 cross-feeder error).
+    if grounds is None:
+        r[0] = 0.0
+    else:
+        r[grounds] = 0.0
     return r
 
 
-def _set_terminals_by_kcl(data, out, store, terminals, n):
+def _set_terminals_by_kcl(data, out, store, terminals, n, grounds=None):
     """Set a store's terminal-conductor currents so nodal KCL closes at their
     nodes (each is the lone unknown there): I -= residual(node)."""
-    r = _full_residual(data, out, n)
+    r = _full_residual(data, out, n, grounds=grounds)
     Ir, Ii = out[store]
     for t in terminals:
         rel = (store, f"bus{t}", "node")
@@ -1365,6 +1555,11 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     topology precompute across a feeder's variants."""
     if ctx is None:
         ctx = build_recon_ctx(data)
+    elif ctx.get("batched"):
+        # A batched ctx (batch_recon_ctx) is assembled FRESH per batch from each sample's
+        # own ctx, so there is no stale-Y risk to guard against; its maps already match
+        # the batched data by construction.
+        pass
     else:
         # A ctx carries transformer maps built from a SPECIFIC Y. Variants retap the
         # transformers, so a ctx reused blind decodes at the wrong turns ratio -- and
@@ -1481,7 +1676,8 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         if "transformer" in out:
             _apply_xfmr_batched(data, out, xmaps, vr, vi, n,
                                 cs=(csr, csi) if vr is not None else None,
-                                kvl=ctx.get("kvl"), packed=ctx.get("xpacked"))
+                                kvl=ctx.get("kvl"), packed=ctx.get("xpacked"),
+                                grounds=ctx.get("grounds"))
             bkeep = {s: (out[s][0][c, col].clone(), out[s][1][c, col].clone())
                      for s, (c, col, _nd) in binj.items() if s in out}
     # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
@@ -1491,14 +1687,14 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     # -- never V1-V2 -- so no Y@V stiffness. Required for a FOUNDATION model: the
     # radial assumption must not be baked into the physics.
     if "line" in out and ctx.get("Eline") is not None:
-        mesh_correct(data, out, ltree, ctx["Eline"])
+        mesh_correct(data, out, ltree, ctx["Eline"], grounds=ctx.get("grounds"))
     # vsource <- nodal KCL at slack (last, once lines have converged). Its bus2 is
     # always ground in practice (vsource.py _is_ground_like_bus2), so it behaves as
     # a SHUNT at the slack: a series source branch with I_bus2 = -I_bus1
     # (vsource.tex: I1 = y(V1-V2) - yE, Icomp1 ~ yE, Icomp2 ~ -yE). The grounded
     # terminal carries no edge, so KCL can't set it -- mirror it from bus1.
     if "vsource" in out:
-        _set_terminals_by_kcl(data, out, "vsource", (1,), n)
+        _set_terminals_by_kcl(data, out, "vsource", (1,), n, grounds=ctx.get("grounds"))
         vr_, vi_ = out["vsource"]
         vr_[:, FC:2 * FC] = -vr_[:, 0:FC]
         vi_[:, FC:2 * FC] = -vi_[:, 0:FC]
@@ -1678,7 +1874,7 @@ def build_kvl_rows(data, E, ltree):
     return live, W, chords
 
 
-def mesh_correct(data, out, tree, E):
+def mesh_correct(data, out, tree, E, grounds=None):
     """GENERAL loop (mesh) correction -- makes the decoder valid on NON-RADIAL
     networks, not just radial ones.
 
@@ -1700,7 +1896,12 @@ def mesh_correct(data, out, tree, E):
     # branch set = every live series conductor-edge (tree + chords), ANY store.
     # NOT just lines: a reactor/capacitor can close a loop too, and a chord that is
     # filtered out here never gets a current at all -- it stays silently ZERO.
-    live = [i for i, e in enumerate(E) if e[2] != 0 and e[3] != 0]
+    # `grounds` excludes ground-touching edges; in a BATCHED graph each sample's ground
+    # sits at node_off[i] (not just 0), so the bare `!= 0` test would wrongly keep them.
+    gnd = set() if grounds is None else {0} | {int(x) for x in grounds}
+    if not gnd:
+        gnd = {0}
+    live = [i for i, e in enumerate(E) if e[2] not in gnd and e[3] not in gnd]
     bidx = {e: k for k, e in enumerate(live)}
     nb, nl = len(live), len(chords)
     # fundamental loop matrix M [nb, nl]
