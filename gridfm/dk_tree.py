@@ -1156,7 +1156,51 @@ def batch_xpacked(xpacked_list, node_off, comp_off):
     return out
 
 
-def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=None, grounds=None):
+def recon_ctx_to(ctx, device, dtype):
+    """Move/cast a batched recon ctx to the model's device+dtype ONCE per batch.
+
+    The ctx is built on CPU in fp64 (numpy pinv). Casting at each use site inside the Jacobi
+    loop would copy Pr/Pi for every group on every iteration. Index tensors stay long; only
+    real-valued maps take `dtype`. Structure (counts, python lists) is shared unchanged.
+    """
+    def mv(t, dt=None):
+        return t.to(device=device, dtype=dt) if torch.is_tensor(t) else t
+    out = dict(ctx)
+    out["ltree"] = {k: (mv(v, dtype) if torch.is_tensor(v) and v.is_floating_point() else mv(v))
+                    for k, v in ctx["ltree"].items()} if isinstance(ctx.get("ltree"), dict) else ctx.get("ltree")
+    if ctx.get("grounds") is not None:
+        out["grounds"] = mv(ctx["grounds"])
+    out["inj"] = {s: tuple(mv(x) for x in v) for s, v in (ctx.get("inj") or {}).items()}
+    packed = []
+    for pk in (ctx.get("xpacked") or []):
+        p = dict(pk)
+        for k in ("KN", "POS", "CI", "SI", "DND"):
+            if pk.get(k) is not None:
+                p[k] = mv(pk[k])
+        for k in ("Pr", "Pi", "DYR", "DYI"):
+            if pk.get(k) is not None:
+                p[k] = mv(pk[k], dtype)
+        packed.append(p)
+    out["xpacked"] = packed
+    groups = []
+    for g in (ctx.get("xmaps") or []):
+        q = dict(g)
+        q["knodes"] = mv(g["knodes"])
+        q["cutnodes"] = [mv(c) for c in g.get("cutnodes", [])]
+        q["dirs"] = [(mv(nd), mv(yr, dtype), mv(yi, dtype)) for (nd, yr, yi) in g["dirs"]]
+        q["bridge_cm"] = [(mv(a, dtype), mv(b, dtype), mv(c, dtype), mv(d, dtype), mv(n1), mv(n2))
+                          for (a, b, c, d, n1, n2) in g.get("bridge_cm", [])]
+        q["scatter"] = {st: (mv(p_), mv(ci), mv(si)) for st, (p_, ci, si) in g["scatter"].items()}
+        q["Pr"] = mv(g["Pr"], dtype); q["Pi"] = mv(g["Pi"], dtype)
+        if g.get("kvl_W") is not None:
+            q["kvl_W"] = mv(g["kvl_W"])
+        groups.append(q)
+    out["xmaps"] = groups
+    return out
+
+
+def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=None,
+                        grounds=None, inj=None):
     """Batched equivalent of _apply_xfmr_system for ISOLATED transformers: same math,
     but same-signature groups are solved as one bmm instead of a python loop. Any
     non-isolated group (bridge/cut/kvl -- IEEE30, autotransformers) falls back to the
@@ -1180,21 +1224,22 @@ def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=
         Ar, Ai = out[st]
         for pk in packed:
             ci = pk["CI"].reshape(-1); si = pk["SI"].reshape(-1)
-            Ar = Ar.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ar.dtype))
-            Ai = Ai.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ai.dtype))
+            zc = torch.zeros(ci.numel(), dtype=Ar.dtype, device=Ar.device)
+            Ar = Ar.index_put((ci, si), zc); Ai = Ai.index_put((ci, si), zc)
         out[st] = (Ar, Ai)
     for g in other:
         for st, (pos, ci, si) in g["scatter"].items():
             if st in out:
                 Ar, Ai = out[st]
-                out[st] = (Ar.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ar.dtype)),
-                           Ai.index_put((ci, si), torch.zeros(ci.numel(), dtype=Ai.dtype)))
-    r0 = _full_residual(data, out, n, grounds=grounds)
-    vrd, vid = vr.double(), vi.double()
+                zc = torch.zeros(ci.numel(), dtype=Ar.dtype, device=Ar.device)
+                out[st] = (Ar.index_put((ci, si), zc), Ai.index_put((ci, si), zc))
+    r0 = _full_residual(data, out, n, grounds=grounds, inj=inj)
     Ar, Ai = out["transformer"]
+    dt, dev = Ar.dtype, Ar.device
+    vrd, vid = vr.to(dt), vi.to(dt)
     for pk in packed:
         G, nk, ndir, Nx, rows = pk["Pr"].shape[0], pk["nk"], pk["ndir"], pk["Nx"], pk["rows"]
-        br = torch.zeros(G, rows, dtype=torch.float64); bi = torch.zeros(G, rows, dtype=torch.float64)
+        br = torch.zeros(G, rows, dtype=dt, device=dev); bi = torch.zeros(G, rows, dtype=dt, device=dev)
         if nk:
             br[:, :nk] = -r0[pk["KN"], 0]; bi[:, :nk] = -r0[pk["KN"], 1]
         if ndir:
@@ -1205,7 +1250,7 @@ def _apply_xfmr_batched(data, out, groups, vr, vi, n, cs=None, kvl=None, packed=
         xr = torch.bmm(pk["Pr"], br.unsqueeze(-1)).squeeze(-1) - torch.bmm(pk["Pi"], bi.unsqueeze(-1)).squeeze(-1)
         xi_ = torch.bmm(pk["Pr"], bi.unsqueeze(-1)).squeeze(-1) + torch.bmm(pk["Pi"], br.unsqueeze(-1)).squeeze(-1)
         # scatter x[POS] -> out["transformer"][CI, SI], flattened
-        gi = torch.arange(G).unsqueeze(1).expand(-1, pk["POS"].shape[1])
+        gi = torch.arange(G, device=Ar.device).unsqueeze(1).expand(-1, pk["POS"].shape[1])
         xr_sel = xr[gi, pk["POS"]]; xi_sel = xi_[gi, pk["POS"]]
         Ar = Ar.index_put((pk["CI"].reshape(-1), pk["SI"].reshape(-1)), xr_sel.reshape(-1).to(Ar.dtype))
         Ai = Ai.index_put((pk["CI"].reshape(-1), pk["SI"].reshape(-1)), xi_sel.reshape(-1).to(Ai.dtype))
@@ -1318,10 +1363,15 @@ def _slack_xfmrsec_roots(data):
     return slack, xsec
 
 
-def _full_residual(data, out, n, grounds=None):
-    r = torch.zeros(n, 2, dtype=torch.float64)
+def _full_residual(data, out, n, grounds=None, inj=None):
+    # dtype/device follow the CURRENTS, so this runs unchanged in fp64 on CPU (the
+    # validation reference) AND in fp32 on GPU inside the model forward.
+    ref = next(iter(out.values()))[0]
+    r = torch.zeros(n, 2, dtype=ref.dtype, device=ref.device)
     for s, (Ir, Ii) in out.items():
-        comp, col, node = _inj_index(data, s)
+        # `inj` = precomputed (comp,col,node) per store. Recomputing _inj_index here re-ran
+        # terminal_slot/unique_consecutive on EVERY Jacobi iteration -- pure overhead.
+        comp, col, node = (inj or {}).get(s) or _inj_index(data, s)
         if comp.numel():
             r = r.index_add(0, node, torch.stack([Ir[comp, col], Ii[comp, col]], 1))
     # Ground residual is discarded (ground return current is not an unknown). In a BATCHED
@@ -1334,10 +1384,10 @@ def _full_residual(data, out, n, grounds=None):
     return r
 
 
-def _set_terminals_by_kcl(data, out, store, terminals, n, grounds=None):
+def _set_terminals_by_kcl(data, out, store, terminals, n, grounds=None, inj=None):
     """Set a store's terminal-conductor currents so nodal KCL closes at their
     nodes (each is the lone unknown there): I -= residual(node)."""
-    r = _full_residual(data, out, n, grounds=grounds)
+    r = _full_residual(data, out, n, grounds=grounds, inj=inj)
     Ir, Ii = out[store]
     for t in terminals:
         rel = (store, f"bus{t}", "node")
@@ -1384,11 +1434,13 @@ def _line_charging(data, vr, vi):
     st = data["line"]
     # Yh now comes DIRECTLY from the corpus (Yh_i_pu, purely susceptive) instead of
     # the old Yh = A+B cancellation off the fused 8x8 -- exact by construction.
-    Yh_i = st["Yh_i_pu"].reshape(-1, 4, 4).double()
+    # dtype/device follow V so this runs in fp64/CPU (reference) and fp32/GPU (model).
+    _dt, _dev = vr.dtype, vr.device
+    Yh_i = st["Yh_i_pu"].reshape(-1, 4, 4).to(device=_dev, dtype=_dt)
     Yh_r = torch.zeros_like(Yh_i)
     nl = Yh_i.shape[0]
-    V1r = torch.zeros(nl, 4, dtype=torch.float64); V1i = torch.zeros(nl, 4, dtype=torch.float64)
-    V2r = torch.zeros(nl, 4, dtype=torch.float64); V2i = torch.zeros(nl, 4, dtype=torch.float64)
+    V1r = torch.zeros(nl, 4, dtype=_dt, device=_dev); V1i = torch.zeros(nl, 4, dtype=_dt, device=_dev)
+    V2r = torch.zeros(nl, 4, dtype=_dt, device=_dev); V2i = torch.zeros(nl, 4, dtype=_dt, device=_dev)
     for t, (Vr_, Vi_) in ((1, (V1r, V1i)), (2, (V2r, V2i))):
         rel = ("line", f"bus{t}", "node")
         if rel not in data.edge_types or not data[rel].edge_index.numel():
@@ -1396,7 +1448,7 @@ def _line_charging(data, vr, vi):
         ei = data[rel].edge_index
         comp, node = ei[0], ei[1]
         slot = terminal_slot(comp)
-        Vr_[comp, slot] = vr[node].double(); Vi_[comp, slot] = vi[node].double()
+        Vr_[comp, slot] = vr[node].to(_dt); Vi_[comp, slot] = vi[node].to(_dt)
     Vsr = (V1r + V2r).unsqueeze(-1); Vsi = (V1i + V2i).unsqueeze(-1)
     sr = 0.5 * (torch.bmm(Yh_r, Vsr) - torch.bmm(Yh_i, Vsi)).squeeze(-1)
     si = 0.5 * (torch.bmm(Yh_r, Vsi) + torch.bmm(Yh_i, Vsr)).squeeze(-1)
@@ -1581,7 +1633,11 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
                 "built from (variants change taps). Rebuild per variant with "
                 "build_recon_ctx(data, topo=ctx) -- topology is reused, maps are not.")
     n = ctx["n"]
-    out = {s: (cur[s][0].double().clone(), cur[s][1].double().clone()) for s in cur}
+    # dtype/device follow the CURRENTS: fp64/CPU for the validation reference, fp32/GPU
+    # inside the model forward. Nothing below may hardcode float64 or the default device.
+    _ref = cur[next(iter(cur))][0]
+    _dt, _dev = _ref.dtype, _ref.device
+    out = {s: (cur[s][0].to(_dt).clone(), cur[s][1].to(_dt).clone()) for s in cur}
     for s in ("line", "transformer", "vsource"):  # always-series: zero placeholders
         if s in out:
             z = torch.zeros_like(out[s][0]); out[s] = (z, z.clone())
@@ -1595,15 +1651,16 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         sers = ctx["ser"].get(s, set())
         if s not in out or not sers:
             continue
-        rows = torch.tensor(sorted(sers), dtype=torch.long)
+        rows = torch.tensor(sorted(sers), dtype=torch.long, device=_dev)
         Or, Oi = out[s]
         cm_r = 0.5 * (Or[rows, :FC] + Or[rows, FC:2 * FC])
         cm_i = 0.5 * (Oi[rows, :FC] + Oi[rows, FC:2 * FC])
         Or[rows] = 0.0; Oi[rows] = 0.0
-        Or[rows[:, None], torch.arange(FC)] = cm_r
-        Or[rows[:, None], torch.arange(FC, 2 * FC)] = cm_r
-        Oi[rows[:, None], torch.arange(FC)] = cm_i
-        Oi[rows[:, None], torch.arange(FC, 2 * FC)] = cm_i
+        _a1 = torch.arange(FC, device=_dev); _a2 = torch.arange(FC, 2 * FC, device=_dev)
+        Or[rows[:, None], _a1] = cm_r
+        Or[rows[:, None], _a2] = cm_r
+        Oi[rows[:, None], _a1] = cm_i
+        Oi[rows[:, None], _a2] = cm_i
         out[s] = (Or, Oi)
         ser_cm[s] = (rows, cm_r, cm_i)
     ltree = ctx["ltree"]
@@ -1619,7 +1676,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     # The line's OWN charging is a KNOWN nodal injection at both of its terminals
     # (it cancels in I1-I2 but not in I1+I2). It must enter q, or every subtree sum
     # is off by the charging accumulated below it.
-    q_charge = torch.zeros(n, 2, dtype=torch.float64)
+    q_charge = torch.zeros(n, 2, dtype=_dt, device=_dev)
     if vr is not None and "line" in out:
         for t in (1, 2):
             rel = ("line", f"bus{t}", "node")
@@ -1641,7 +1698,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
             comp, col, node = ctx["inj"][s]
             if comp.numel():
                 Ir, Ii = src[s]
-                q = q.index_add(0, node, torch.stack([Ir[comp, col].double(), Ii[comp, col].double()], 1))
+                q = q.index_add(0, node, torch.stack([Ir[comp, col].to(_dt), Ii[comp, col].to(_dt)], 1))
         return q
 
     # Fixed point: LV lines need the transformer current, the transformer
@@ -1675,7 +1732,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
         for s, (c, col, nd) in binj.items():
             if s in out:
                 Ar, Ai = out[s]
-                q = q.index_add(0, nd, torch.stack([Ar[c, col].double(), Ai[c, col].double()], 1))
+                q = q.index_add(0, nd, torch.stack([Ar[c, col].to(_dt), Ai[c, col].to(_dt)], 1))
         _add_series_flow(_subtree_sum(q, ltree), ltree, out, only=TREE_STORES)
         # transformers + bridges: ONE joint solve per group (shared-node KCL rows,
         # bridge I1+I2=Yh(V1+V2) rows, per-Y constraint rows). Replaces "set
@@ -1685,7 +1742,7 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
             _apply_xfmr_batched(data, out, xmaps, vr, vi, n,
                                 cs=(csr, csi) if vr is not None else None,
                                 kvl=ctx.get("kvl"), packed=ctx.get("xpacked"),
-                                grounds=ctx.get("grounds"))
+                                grounds=ctx.get("grounds"), inj=ctx.get("inj"))
             bkeep = {s: (out[s][0][c, col].clone(), out[s][1][c, col].clone())
                      for s, (c, col, _nd) in binj.items() if s in out}
     # NON-RADIAL networks: subtree-KCL is L equations short (L = independent loops)
@@ -1702,7 +1759,8 @@ def reconstruct_full(data, cur, vr=None, vi=None, ctx=None):
     # (vsource.tex: I1 = y(V1-V2) - yE, Icomp1 ~ yE, Icomp2 ~ -yE). The grounded
     # terminal carries no edge, so KCL can't set it -- mirror it from bus1.
     if "vsource" in out:
-        _set_terminals_by_kcl(data, out, "vsource", (1,), n, grounds=ctx.get("grounds"))
+        _set_terminals_by_kcl(data, out, "vsource", (1,), n, grounds=ctx.get("grounds"),
+                              inj=ctx.get("inj"))
         vr_, vi_ = out["vsource"]
         vr_[:, FC:2 * FC] = -vr_[:, 0:FC]
         vi_[:, FC:2 * FC] = -vi_[:, 0:FC]
