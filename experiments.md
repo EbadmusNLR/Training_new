@@ -546,3 +546,47 @@ pinv least-squares the disagreement into unknowns that were already exact.
 Lesson: I restored 131 uncommitted lines from an attic snapshot and committed them as
 "WIP -- not a fix". They were worse than not a fix; they were a regression, and only a
 full re-validation caught it. Unvalidated work is not neutral.
+
+## 15. new_dss_data (864 feeders): first full validation
+
+Corpus totals now (training_data/aa.md): SMART-DS_1000 1000 feeders/100k, dss_data 84/8.4k,
+minimal_component 2000/200k, new_dss_data 864/86.4k = **3948 feeders / 394,800 snapshots**.
+
+First sweep of new_dss_data (849 feeders reduced, 75,530 variants):
+
+```
+  AGGREGATE WAPE = 2.538e-05      (line 2.076e-05, vsource 1.103e-04, xfmr 2.716e-07)
+  feeders mean WAPE > 1e-6: 93 / 893      refused: 1
+```
+
+Bucketed (`|I|` tells the three apart, they are NOT the same problem):
+```
+  |I| ~ 0 (DE-ENERGIZED, like W): 27   <- data defect, exclude
+  WAPE ~1.0 with real |I|:         0
+  genuinely partial error:        66   <- real decoder gaps
+```
+Family incidence among the 66: vsource 66, line 39, transformer 30, reactor 4.
+vsource is bad in ALL 66 -- it is computed LAST by KCL at the slack, so it is a SYMPTOM
+(everything upstream lands there), never the cause. Do not chase it.
+
+The genuine ones cluster by NAME: `TestAuto`, `AutoTrans`, `AutoHLT` = OpenDSS
+AUTOTRANSFORMER cases, a winding topology the corpus never contained before.
+  * AutoTrans/AutoHLT: ~1.5e-05 with |I| = 1.1e+04 (large-|I| transmission cases)
+  * TestAuto: 3.99e-01 -- the worst genuine class
+
+TestAuto__32ce4da47eca dissected:
+```
+  line 9.987e-01 (|I| 8.9e-03)   reactor 2.236e-04   transformer 9.613e-11   vsource 9.983e-01
+  bridges: [('reactor', 0, 4, 8)]     <- the BRIDGE IS A REACTOR, not a line
+  group unknowns: transformer(0,{0,1,4,5}) + reactor(0,{0,4})
+  line c0: rec_zero=False    <- WRONG, not silently zero
+```
+The transformer is EXACT, so the autotransformer's Y is handled. The failure is the
+SERIES REACTOR acting as a bridge: `build_kvl_rows` only ever considers `ltree["bridges"]`
+whose loop it closes with LINE impedance, and `_bridge_inj`/bridge rows assume the bridge
+carries line charging (`I1+I2 = Yh(V1+V2)`) -- a reactor has no `Yh` entry in that table.
+NOT yet fixed. Note this is a DIFFERENT bug from IEEE 30 Bus (which is pure-line loops).
+
+STATUS: full re-validation of all four corpora launched with the current decoder
+(`gridfm/val_final.sbatch`, fresh `runs/final_<corpus>` dirs -- the older runs/ dirs
+straddled the cut-set retraction and are untrustworthy).
