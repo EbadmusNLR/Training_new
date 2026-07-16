@@ -630,3 +630,32 @@ Note the three failure shapes are distinguished ONLY by |I|, never by WAPE:
    v_skill. Loss weighting is a MEASURED dead end. cond(Ybus)=1.25e18 caps local relaxation
    at skill 0.59; the ladder sweep converges on 96% of samples but diverges on the
    stiff-reactor tail. Architecture is the only live lever.
+
+## 18. FIXED the autotransformer failures: reactor-as-bridge (new_dss_data 4 x 0.40 -> 2e-10)
+
+The 4 genuinely-broken new_dss_data feeders (TestAuto, WAPE 0.40) were autotransformers
+with a SERIES REACTOR bridging two rooted components -- a reactor BRIDGE, a topology no
+prior corpus had. TWO bugs, both from code that silently assumed every bridge is a LINE:
+
+1. Bridge-row RHS looked up the LINE charging table indexed by the bridge's own comp id
+   -> garbage for a reactor. Fixed with `_series_ycm` (common-mode CM1=A+Bᵀ, CM2=B+D from
+   the element's OWN primitive; line->Yh(V1+V2), series reactor->0, no type branch).
+2. DOUBLE COUNT: `binj` injected the reactor bridge current, but `build_q` already injects
+   it (reactor in line_stores) -> line current doubled (0.006 vs 0.003). `binj` now covers
+   only bridges whose store is NOT in line_stores (i.e. LINE bridges).
+
+Result (all four corpora re-validated, fresh dirs, NO regression):
+| corpus | before | after | mean>1e-6 |
+|---|---|---|---|
+| new_dss_data      | 2.183e-05 | **2.964e-06** | 76/814 |
+| dss_data          | 1.657e-07 | 1.657e-07 | 0/83 (+IEEE30 refused) |
+| SMART-DS_1000     | 6.050e-08 | 6.050e-08 | 2/1000 |
+| minimal_component | 9.293e-10 | 9.293e-10 | 0/2000 |
+
+The remaining new_dss_data tail (76 feeders ~1e-5, vsource-dominated) is a BENIGN floor,
+NOT a structural gap: identical at JACOBI 6/20/50 (so not under-convergence), every other
+family machine-exact, and the corpus AGGREGATE is 2.96e-6. vsource is computed LAST by KCL
+at the slack and carries little current on these PV-heavy feeders, so a tiny ABSOLUTE
+mismatch inflates into ~1e-5 RELATIVE. Not worth chasing versus the port (5.9e-01).
+
+Fast parallel probe added: `gridfm/dbg_many.py` (many feeders, one srun, worker pool).
