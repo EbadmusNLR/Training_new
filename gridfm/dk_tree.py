@@ -938,8 +938,14 @@ def _pack_isolated_xfmr(groups):
     whole cost of the model port. Returns (batched_classes, leftover_groups)."""
     iso, other = [], []
     for g in groups:
+        # batchable only if: no loop/bridge/cut rows, transformer-only unknowns, AND all
+        # dir rows share one act length (a group coupling transformers with different
+        # active-slot counts -- e.g. IEEE9500 -- has mixed dir lengths that cannot stack;
+        # those go to the exact per-group loop).
+        dir_lens = {d[0].numel() for d in g["dirs"]}
         if g["nbridge"] == 0 and g.get("ncut", 0) == 0 and g.get("nkvl", 0) == 0 \
-                and len(g["scatter"]) == 1 and "transformer" in g["scatter"]:
+                and len(g["scatter"]) == 1 and "transformer" in g["scatter"] \
+                and len(dir_lens) <= 1:
             iso.append(g)
         else:
             other.append(g)
