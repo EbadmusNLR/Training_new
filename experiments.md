@@ -767,3 +767,36 @@ PER-FEEDER DECODER VERIFIED UNAFFECTED by all of the above (defaults preserve ol
 behaviour): 37Bus 5.706e-11, trans_3w_center_tap 6.508e-11 -- both exactly at baseline.
 
 gridfm/ tidied 61 -> 29 files; 32 one-off probes moved to gridfm/probes/ (README there).
+
+### 21b. Narrowing the batched-recon bug (in progress)
+
+Measured with `gridfm/probes/dbg_batch_iso.py` (explicit feeder dirs, no corpus scan):
+
+```
+batch of 1  (p1rdt10307: 472 xfmr, 471 groups, 1 COUPLED group, 0 chords)  -> EXACT
+batch of 2  (idt740: 113 xfmr + 3 CHORDS)  +  (p1rdt10307)                 -> EXACT
+batch of 6  (first 6 alphabetical)  -> ONLY feeder1 wrong:
+     line        diff 1.07e-02  227/483 rows   (values wrong, NOT zero)
+     transformer diff 4.55e-03   67/119 rows
+     vsource     diff 1.07e-02    1/1
+```
+So: the merge + apply are CORRECT in isolation (batch-of-1 exact, including a coupled
+group), and mesh + coupled merging work across 2 feeders. The bug is CROSS-FEEDER and hits
+only SOME feeders -- not a uniform offset error.
+
+LEAD (unverified, probe queued): `dk_physics.store_size()` falls back to `I_r_bus1_pu` when
+`{prefix}_r_pu` is absent:
+```
+for f in (f"{prefix}_r_pu", "I_r_bus1_pu"):
+    if f in st: return st[f].shape[0]
+```
+but PyG offsets a store by `st.num_nodes`, which both dk_data.__getitem__ and the probes set
+from `{prefix}_r_pu` ONLY. If any store takes the fallback path, `soff` (from store_size)
+advances while PyG's offset does not -> later feeders index the wrong rows. That matches the
+symptom exactly (fine at N<=2, one feeder corrupted at N=6). Check: runs/p2.sbatch prints any
+store where store_size != the {prefix}_r_pu row count.
+
+If that is NOT the cause, the next probe is `gridfm/probes/dbg_offsets.py`, which diffs MY
+merged `ctx["inj"]` against `_inj_index(batched_graph)` per store -- reconstruct_full uses
+BOTH (build_q uses ctx["inj"]; _full_residual recomputes _inj_index), so any disagreement
+between them corrupts the residual.
