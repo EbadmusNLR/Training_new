@@ -1848,16 +1848,23 @@ def _series_yeff(data, store, cache):
 
 
 def _branch_Z(data, E, live, bidx=None, cdt=torch.complex128, dev=None):
-    """Branch impedance over `live`, BLOCK-diagonal per ELEMENT so an element's own
-    conductors stay coupled (phase mutual impedance is included, not dropped)."""
+    """Branch impedance over `live` as a SPARSE (COO) matrix.
+
+    Z is block-diagonal per ELEMENT (an element's own conductors stay coupled, so phase
+    mutual impedance is kept). The old DENSE [nb, nb] build is fine per feeder but is fatal
+    batched: nb is the sum over the batch, so a 2048-feeder batch would need an nb^2 matrix
+    of millions^2. Sparse costs O(sum of block^2) -- i.e. linear in elements -- and torch.
+    sparse mm keeps `Z @ x` exact. Z is a CONSTANT w.r.t. V (built from Y + topology only),
+    so it needs no autograd.
+    """
     if bidx is None:
         bidx = {e: k for k, e in enumerate(live)}
     nb = len(live)
-    Z = torch.zeros(nb, nb, dtype=cdt, device=dev)
     by_elem = defaultdict(list)
     for ei in live:
         by_elem[(E[ei][0], E[ei][1])].append(ei)
     yeff = {}
+    rows, cols, vals = [], [], []
     for (store, cmp_), eids in by_elem.items():
         Y = _series_yeff(data, store, yeff)[cmp_]
         slots = [E[e][4] % FC for e in eids]
@@ -1866,10 +1873,17 @@ def _branch_Z(data, E, live, bidx=None, cdt=torch.complex128, dev=None):
             Zsub = torch.linalg.inv(sub)
         except Exception:
             Zsub = torch.linalg.pinv(sub)
-        for a, ea in enumerate(eids):
-            for b, eb in enumerate(eids):
-                Z[bidx[ea], bidx[eb]] = Zsub[a, b]
-    return Z
+        Zsub = Zsub.to(cdt)
+        idx = torch.tensor([bidx[e] for e in eids], dtype=torch.long)
+        m = len(eids)
+        rows.append(idx.repeat_interleave(m)); cols.append(idx.repeat(m))
+        vals.append(Zsub.reshape(-1))
+    if not rows:
+        return torch.sparse_coo_tensor(torch.zeros(2, 0, dtype=torch.long),
+                                       torch.zeros(0, dtype=cdt), (nb, nb), device=dev)
+    ii = torch.stack([torch.cat(rows), torch.cat(cols)]).to(dev)
+    return torch.sparse_coo_tensor(ii, torch.cat(vals).to(device=dev, dtype=cdt),
+                                   (nb, nb)).coalesce()
 
 
 def _branch_index(E, live, dev=None):
@@ -1986,35 +2000,52 @@ def mesh_correct(data, out, tree, E, grounds=None):
     gnd = set() if grounds is None else {0} | {int(x) for x in grounds}
     if not gnd:
         gnd = {0}
-    live = [i for i, e in enumerate(E) if e[2] not in gnd and e[3] not in gnd]
+    # Build the fundamental loops FIRST, then restrict every array to their SUPPORT.
+    # A branch outside every loop has M-row = 0, so fnew == f and its rewrite is an exact
+    # identity -- computing Z/f for it is pure waste. The old code ran over ALL live branches,
+    # which per feeder is merely slow but BATCHED is fatal: `live` becomes the sum over the
+    # batch, so a 2048-feeder batch paid ~1M element inversions to correct a handful of loops.
+    # Restricting to the support makes mesh_correct cost O(loop branches), not O(batch).
+    loops, support = [], set()
+    for ei in chords:
+        s, comp, n1, n2, ca, cb = E[ei]
+        entries = [(ei, 1.0)]                      # chord, oriented n1->n2
+        up, dn = _tree_path(n2, n1, mt)            # return path n2 -> n1 (cycle tree)
+        for node in up:
+            e2 = mt["parent_edge"][node]
+            entries.append((e2, 1.0 if node == E[e2][2] else -1.0))
+        for node in dn:
+            e2 = mt["parent_edge"][node]
+            entries.append((e2, -1.0 if node == E[e2][2] else 1.0))
+        loops.append(entries)
+        support.update(e for e, _ in entries)
+    live = [i for i in sorted(support) if E[i][2] not in gnd and E[i][3] not in gnd]
+    if not live:
+        return
     bidx = {e: k for k, e in enumerate(live)}
     nb, nl = len(live), len(chords)
     # dtype/device follow the CURRENTS (fp64/CPU reference, fp32/GPU model). The complex
     # work uses the matching complex width so no silent fp64 upcast happens on GPU.
-    _ref = out[E[live[0]][0]][0] if live else None
-    _dt = _ref.dtype if _ref is not None else torch.float64
-    _dev = _ref.device if _ref is not None else torch.device("cpu")
+    _ref = out[E[live[0]][0]][0]
+    _dt, _dev = _ref.dtype, _ref.device
     _cdt = torch.complex64 if _dt == torch.float32 else torch.complex128
     # fundamental loop matrix M [nb, nl]
     M = torch.zeros(nb, nl, dtype=_dt, device=_dev)
-    for c, ei in enumerate(chords):
-        s, comp, n1, n2, ca, cb = E[ei]
-        M[bidx[ei], c] = 1.0                       # chord, oriented n1->n2
-        up, dn = _tree_path(n2, n1, mt)            # return path n2 -> n1 (cycle tree)
-        for node in up:
-            e2 = mt["parent_edge"][node]
-            if e2 in bidx:
-                M[bidx[e2], c] += 1.0 if node == E[e2][2] else -1.0
-        for node in dn:
-            e2 = mt["parent_edge"][node]
-            if e2 in bidx:
-                M[bidx[e2], c] += -1.0 if node == E[e2][2] else 1.0
+    for c, entries in enumerate(loops):
+        for e, sgn in entries:
+            if e in bidx:
+                M[bidx[e], c] += sgn
     Z = _branch_Z(data, E, live, bidx, cdt=_cdt, dev=_dev)
     bidx_of = _branch_index(E, live, _dev)      # per-store gathers, shared by f and write-back
     f = _branch_f(out, E, live, cdt=_cdt, dev=_dev, bidx_of=bidx_of)
-    Mc = M.to(torch.complex128)
-    Zl = Mc.T @ Z @ Mc                                   # [L,L] loop impedance
-    b = Mc.T @ (Z @ f)                                   # [L]
+    Mc = M.to(_cdt)          # match Z/f width (complex64 with fp32, complex128 with fp64)
+    # Z is SPARSE, so always apply it from the LEFT onto a dense operand. M is [nb, nl] with
+    # nl = #chords (tiny), so ZM/Zf stay small; the old `Mc.T @ Z @ Mc` would have densified
+    # Z back to nb^2. torch.sparse.mm backprops into its dense argument, so f keeps its grad.
+    ZM = torch.sparse.mm(Z, Mc)                            # [nb, nl]
+    Zl = Mc.transpose(0, 1) @ ZM                          # [nl, nl] loop impedance
+    Zf = torch.sparse.mm(Z, f.unsqueeze(1)).squeeze(1)    # [nb]
+    b = Mc.transpose(0, 1) @ Zf                           # [nl]
     try:
         J = torch.linalg.solve(Zl, -b)
     except Exception:
