@@ -659,3 +659,44 @@ at the slack and carries little current on these PV-heavy feeders, so a tiny ABS
 mismatch inflates into ~1e-5 RELATIVE. Not worth chasing versus the port (5.9e-01).
 
 Fast parallel probe added: `gridfm/dbg_many.py` (many feeders, one srun, worker pool).
+
+## 19. VOLTAGE: diagnosis + the concrete architecture plan (grounded, not a fluke)
+
+MEASURED state (probe logs, minimal_component): best unseen v_skill ~0.37-0.39; dv=0 null
+= 68.77%. The model captures ~60% of voltage variation, then plateaus. v-only loss (0.37)
+~= mixed v+i+kcl loss (0.39) -- so the broken decoder's gradient into V is NOT the cap
+(it hurts the i metric, not v). The cap is ARCHITECTURAL.
+
+Why pure message passing plateaus: `dk_model.forward` is a feedforward V-predictor -- N
+GRU message-passing steps, then predict dv ONCE. Local MP is relaxation: one hop of
+correction per step. With cond(Ybus)=1.25e18 the corrections propagate O(diameter x cond)
+slowly, so no fixed step count converges. The code comment "no residual to feed back"
+because tree-KCL satisfies KCL structurally is the TRAP: KCL is trivially satisfied, yes,
+but the CONSTITUTIVE/KVL law is NOT, and that is the signal being thrown away.
+
+THE PLAN (do in this order; each is a prerequisite for the next):
+
+A. PORT the exact decoder into the model (`_completed_currents` -> reconstruct_full, not
+   reconstruct_vectorized). MEASURED 5.9e-01 -> 4.6e-08. Mechanism: precompute per-feeder
+   ctx = build_recon_ctx(base) in DKFeeder (alongside self.plan); rebuild the Y-dependent
+   xmaps PER SAMPLE in collate (variants retap transformers -- a stale ctx decodes at the
+   wrong ratio; reconstruct_full raises on a stale yref). Topology half is reused across
+   variants. Batch the pinv-apply (it is per-group, small). Verify: model i_wape drops to
+   ~1e-7 on a smoke batch. This alone fixes every current-based metric.
+
+B. KVL RESIDUAL as a feedback feature (this is the voltage lever). Once currents come from
+   V exactly, per node compute r = V_pred - (V_parent - Z @ I_decoded) -- the backward-
+   forward-sweep residual. Z @ I is WELL-conditioned (not Y @ V), so r is a clean, finite
+   error signal that local MP structurally lacks. Feed r into the next MP step's node
+   input. This turns the model into a LEARNED ladder sweep, which (memory) converges on 96%
+   of samples; the GNN's job shrinks to correcting the stiff-reactor tail where the bare
+   sweep diverges. Expect v_skill well below the 0.59 relaxation cap.
+
+C. Only if B still tails: the stiff-reactor 4% samples. Predict branch-current / v-drop as
+   a first-class state (see [[dgfm-line-current-unrecoverable-from-V]]) so the stiff series
+   drop is represented directly instead of inferred from V.
+
+NOT started tonight -- A and B are multi-session builds needing training runs to verify,
+and a half-built architecture that regresses training is worse than a written plan. The
+decoder is now EXACT and complete across all four corpora, which is exactly the
+precondition A/B need.
