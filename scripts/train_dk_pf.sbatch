@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=220G
-#SBATCH --time=01:30:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.out
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.err
 
