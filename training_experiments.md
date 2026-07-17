@@ -17,7 +17,7 @@ lr 4e-4 anneal, norm-loss, residual gauge, task=random, exact decoder.
 | T07 abl width | 15241730 | hidden=384 | unseen 0.910 | no capacity win at this scale |
 | T08 abl nonorm | 15242531 | mixed loss (NORM=0) | unseen 0.905 FINAL | norm vs mixed indistinguishable in generalization |
 | T09 ddp smoke | 15241743 | 2-rank torchrun, tiny run | QUEUED (QOS) | validates the 4-GPU full path |
-| T10 scale gate | 15246495-97 | feeders 60->240 (random s0/s1 + pf control), 30 ep | RUNNING | THE decision: if unseen skill improves markedly with feeder count, scale closes the gap -> full launch; if flat, architecture/inputs first |
+| T10 scale gate | 15248741-43 (v4) | feeders 60->240 (random s0/s1 + pf control), 30 ep | RUNNING | THE decision: unseen skill responds to feeder count -> full launch; flat -> model work first. v1-v3 died at startup: IEEE30 refusal, bridge-chord collate refusal, 5% gate on a 30-feeder eval split -- all three now handled (loud-skip; train-only gate) |
 
 ## Standing decisions (why the gate config looks like this)
 - **exact decoder in-model** (6.7e-01 -> 3.4e-06 on truth V; vsource was silently zero before)
@@ -28,6 +28,13 @@ lr 4e-4 anneal, norm-loss, residual gauge, task=random, exact decoder.
 - **multi-corpus stratified splits**: naive union under limit = 100% minimal_component
 - **plateau cause**: MP step = Gauss-Jacobi = divergent on Ybus; sweep architecture is the
   path to machine precision (1.23e-12 shown transformer-free; xfmr null-space OPEN)
+
+## Qualified claims (keep these honest)
+- "unseen" currently means unseen RADIAL topologies: meshed/bridge-chord feeders are
+  loudly excluded from train AND eval until batch_recon_ctx merges kvl/binj
+  (the batched-bridge gap). IEEE 30 Bus additionally needs the 3 missing DOF.
+- exclusion counts at 240f: train 2/240 (0.8%), eval 4/30 (13%) -- the vendored corpora
+  are meshed-heavy relative to SMART-DS.
 
 ## Slurm strategy (fast acceptance)
 - Ask the SHORTEST honest walltime: gates finish ~35 min — request 1:00:00, not 4:00:00.
