@@ -150,7 +150,13 @@ class DKFeeder:
                     a = first.get((int(c), int(k) % FC))
                     if a is not None:
                         nbr[a].add(int(n)); nbr[int(n)].add(a)
-        hop = torch.full((self.n_node,), 30.0)
+        # DK_PE_HOPCAP: hop-depth ceiling in the PE. The default 30 saturates on real
+        # feeders -- measured electrical depth reaches 113 on SMART-DS -- so every node
+        # deeper than 30 hops gets an IDENTICAL position signal and the model cannot
+        # tell them apart. Env-switched (not changed in place) so the fix is testable
+        # as a single-variable experiment against the cap-30 baseline.
+        hopcap = float(os.environ.get("DK_PE_HOPCAP", "30"))
+        hop = torch.full((self.n_node,), hopcap)
         srcs = torch.where(self.slack)[0].tolist()
         seen = set(srcs)
         q = collections.deque((s, 0) for s in srcs)
@@ -164,7 +170,7 @@ class DKFeeder:
         maxdeg = float(deg.clamp(min=1).max())
         return torch.stack([
             torch.log1p(deg),
-            hop.clamp(max=30) / 10.0,
+            hop.clamp(max=hopcap) / max(10.0, hopcap / 3.0),
             self.slack.float(),
             self.ground.float(),
             deg / maxdeg,

@@ -43,7 +43,7 @@ class MLP(nn.Sequential):
 
 class DKSolver(nn.Module):
     def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
-                 exact_decoder=True):
+                 exact_decoder=True, fb_points=0):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
@@ -55,6 +55,13 @@ class DKSolver(nn.Module):
         # synthetic cases (minimal_component 4.3e-03), i.e. on 2.8% of the corpus by node
         # count -- it was never right on the real feeders that carry 95% of the gradient.
         self.exact_decoder = exact_decoder
+        # Mid-rollout physics feedback (the iterative-solver design): at fb_points
+        # evenly spaced steps, decode V, reconstruct currents, and feed back the LINE
+        # PRIMITIVE residual r = I_decoded - Y_line@V. That residual is the stiff
+        # mismatch (Y*V amplifies V error ~2e7x on lines), so asinh-squashed it is a
+        # loud, spatially precise where-is-V-wrong signal -- the KCL residual itself is
+        # useless here because the tree reconstruction satisfies KCL by construction.
+        self.fb_points = int(fb_points)
         self.stores = list(STORES)
         self.node_enc = MLP(2 + 2 + 1 + PE_DIM, hidden, hidden)  # v_init, dv*vis, vis, pe
         self.comp_enc = nn.ModuleDict()
@@ -97,7 +104,7 @@ class DKSolver(nn.Module):
         self.node_head = MLP(hidden, 2, hidden, zero_last=True)         # z; dv = dv_std*z
         dv_std = scales.get("dv_std", [1.0, 1.0]) if scales else [1.0, 1.0]
         self.register_buffer("dv_std", torch.tensor(dv_std, dtype=torch.float32))
-        self.kcl_mlp = MLP(2, hidden, hidden, zero_last=True)
+        self.kcl_mlp = MLP(2, hidden, hidden, zero_last=True)   # line-residual feedback
         self.register_buffer("s_kcl", torch.tensor(float(scales["kcl"]) if scales else I_SCALE))
 
     def _iscale(self, s):
@@ -246,6 +253,10 @@ class DKSolver(nn.Module):
             icf = torch.cat([feat(icr, self._iscale(s), self.use_feat) * gate,
                              feat(ici, self._iscale(s), self.use_feat) * gate, gate], 1)
             hc[s] = self.comp_enc[s](torch.cat([yf, icf], 1))
+        fb_at = set()
+        if self.fb_points > 0:
+            stride = max(1, self.steps // (self.fb_points + 1))
+            fb_at = {stride * (k + 1) - 1 for k in range(self.fb_points)}
         for step in range(self.steps):
             node_msg = torch.zeros_like(hn)
             node_deg = torch.zeros(hn.shape[0], 1, device=dev)
@@ -264,6 +275,22 @@ class DKSolver(nn.Module):
             hn = self.node_gru(node_msg / node_deg.clamp(min=1), hn)
             for s in edges:
                 hc[s] = self.comp_gru[s](comp_msg[s] / comp_deg[s].clamp(min=1), hc[s])
+            if step in fb_at and "line" in edges:
+                v_mid = nd.v_init + self._decode_dv(nd, hn)
+                cur_mid = self._completed_currents(batch, edges, hc, v_mid)
+                iyv_r, iyv_i = self._phys_current("line", batch, edges["line"], v_mid)
+                rr_ = cur_mid["line"][0] - iyv_r
+                ri_ = cur_mid["line"][1] - iyv_i
+                node_r = hn.new_zeros(hn.shape[0]); node_i = hn.new_zeros(hn.shape[0])
+                for tterm in edges["line"]:
+                    if tterm is None:
+                        continue
+                    comp, node, col = tterm
+                    node_r.index_add_(0, node, rr_[comp, col])
+                    node_i.index_add_(0, node, ri_[comp, col])
+                sc = self._iscale("line")
+                rfeat = torch.stack([torch.asinh(node_r / sc), torch.asinh(node_i / sc)], 1)
+                hn = hn + self.kcl_mlp(rfeat)
         # currents are exact functions of V now (physics-decode shunts + KCL tree
         # reconstruction, which enforces nodal balance structurally), so there is
         # no residual to feed back: the model is a pure V-predictor and the MP

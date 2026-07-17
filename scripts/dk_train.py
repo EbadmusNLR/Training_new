@@ -181,6 +181,8 @@ def main():
     ap.add_argument("--small-first", action="store_true",
                     help="order each split by static.pt size ascending before --limit-feeders: "
                          "gate runs train on the smallest feeders, where steps are cheap")
+    ap.add_argument("--fb-points", type=int, default=0,
+                    help="mid-rollout line-residual feedback points (0 = off)")
     ap.add_argument("--warmup", type=float, default=0.03,
                     help="warmup fraction of total steps before the cosine decay")
     ap.add_argument("--seed", type=int, default=0,
@@ -240,7 +242,8 @@ def main():
           + " ".join(f"{s}:I={scales['I'][s]:.2e}" for s in STORES if scales['I'][s] > 1e-8), flush=True)
 
     model = DKSolver(hidden=args.hidden, steps=args.steps,
-                     kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales).to(dev)
+                     kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
+                     fb_points=args.fb_points).to(dev)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(
