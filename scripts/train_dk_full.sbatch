@@ -32,6 +32,13 @@ LR="${LR:-4e-4}"
 SPE="${SPE:-32000}"
 SEED="${SEED:-0}"
 TASK="${TASK:-random}"
+# Loss weights default to the vonly winner (T11): the exact decoder makes I=f(V) by
+# construction, so an explicit current loss is redundant AND injects stiff reactor/xfmr
+# WAPE gradients (reactor 1e14%, xfmr 2666%) that fight V. Supervise V; get currents
+# machine-exact from the decoder. Override W_I/W_KCL to re-enable if a run shows otherwise.
+W_I="${W_I:-0.0}"
+W_KCL="${W_KCL:-0.0}"
+WARM="${WARM:-0.03}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_foundation_${SLURM_JOB_ID}}"
 mkdir -p "$OUT" logs
 
@@ -44,6 +51,7 @@ echo "[$(date '+%F %T')] task=$TASK epochs=$EPOCHS hidden=$HIDDEN steps=$STEPS b
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \
   --samples-per-epoch "$SPE" --seed "$SEED" --task "$TASK" \
+  --w-i "$W_I" --w-kcl "$W_KCL" --warmup "$WARM" \
   --norm-loss \
   --workers 12 \
   --out "$OUT"
