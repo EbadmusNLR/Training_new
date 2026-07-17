@@ -188,6 +188,9 @@ def main():
     ap.add_argument("--w-v", type=float, default=10.0)
     ap.add_argument("--w-i", type=float, default=1.0)
     ap.add_argument("--w-kcl", type=float, default=0.1)
+    ap.add_argument("--w-ic", type=float, default=1.0,
+                    help="hidden-Icomp estimate loss. T17 measured estimate->solve V at "
+                         "~100x the V head, so this is the loss that buys V accuracy")
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
@@ -304,7 +307,8 @@ def main():
             batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
             dv, cur, aux = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
-                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss, aux=aux)
+                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
+                             aux=aux, w_ic=args.w_ic)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
             for k, v in m.items():
