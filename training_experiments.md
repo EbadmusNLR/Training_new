@@ -13,9 +13,9 @@ lr 4e-4 anneal, norm-loss, residual gauge, task=random, exact decoder.
 | T03 gates x3 | 15241690-92 | gate config, seeds 0/1/2 | train 0.60/0.71/0.76, unseen 0.92/0.90/0.96 flat; kcl->2e-6, I~2% | NO LAUNCH: learns but does not transfer at 60f — generalization gap, not optimization |
 | T04 abl pf | 15241727 | task=pf | train 0.437, unseen **0.816** (best) | matched conditional wins at small scale; random needs topology diversity to pay off |
 | T05 abl lr | 15241728 | lr=1e-3 | unseen 0.907 | no gain over 4e-4 |
-| T06 abl steps | 15241729 | steps=24 | unseen 1.092 (worst) | deeper recurrence HURT; mid-run 0.905 was noise — never judge mid-run |
+| T06 abl steps | 15241729 | steps=24 | unseen 0.914 FINAL (ep40) | no effect either way; BOTH mid-run reads (0.905@10, 1.092@28) were noise — only finals count |
 | T07 abl width | 15241730 | hidden=384 | unseen 0.910 | no capacity win at this scale |
-| T08 abl nonorm | 15242531 | mixed loss (NORM=0) | unseen 0.911 (@ep33) | norm vs mixed indistinguishable in generalization |
+| T08 abl nonorm | 15242531 | mixed loss (NORM=0) | unseen 0.905 FINAL | norm vs mixed indistinguishable in generalization |
 | T09 ddp smoke | 15241743 | 2-rank torchrun, tiny run | QUEUED (QOS) | validates the 4-GPU full path |
 | T10 scale gate | 15246495-97 | feeders 60->240 (random s0/s1 + pf control), 30 ep | RUNNING | THE decision: if unseen skill improves markedly with feeder count, scale closes the gap -> full launch; if flat, architecture/inputs first |
 
