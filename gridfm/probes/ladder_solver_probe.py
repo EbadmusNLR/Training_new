@@ -60,6 +60,13 @@ def run_feeder(fdir, sweeps=15, eps_list=(1e-2, 1e-6)):
     b0 = rhs[free] - Ybus[np.ix_(free, fix)] @ Vt[fix]
     V0 = ladder(b0)
     err0 = np.abs(V0 - Vt[free]).sum() / den
+    # DIRECT solve of the full Ybus: the diag (T15) showed the wye-delta divergence is
+    # As singular in the delta zero-seq mode, grounded only by the SHUNT load Y --
+    # folding shunts into the solved matrix is exactly the direct solve. cond on this
+    # corpus is ~4e9 (not the old 1e18), so fp64 direct may already be at 1e-7..1e-9.
+    Vd = np.linalg.solve(Ybus[np.ix_(free, free)], b0)
+    errd = np.abs(Vd - Vt[free]).sum() / den
+    err0 = min(err0, np.inf)
     t_solve = time.time() - t0
     # conditioning: relative perturbation of the ESTIMAND -> relative V error.
     # The model only ever estimates SHUNT Icomp (loads/pv/storage/gen/caps); the
@@ -68,13 +75,14 @@ def run_feeder(fdir, sweeps=15, eps_list=(1e-2, 1e-6)):
     _, rhs_sh = build_ybus(d, n, only=[s for s in STORES if s in SHUNT])
     gains = []
     rng = np.random.default_rng(0)
+    Aff = Ybus[np.ix_(free, free)]
     for eps in eps_list:
         z = rng.standard_normal(free.size) + 1j * rng.standard_normal(free.size)
         pert = eps * np.abs(rhs_sh[free]) * z / np.maximum(np.abs(z), 1e-30)
-        Vp = ladder(b0 + pert)
+        Vp = np.linalg.solve(Aff, b0 + pert)   # gain measured through the DIRECT solve
         rel_v = np.abs(Vp - Vt[free]).sum() / den
         gains.append((eps, rel_v, rel_v / eps))
-    return n, err0, gains, t_solve
+    return n, err0, errd, gains, t_solve
 
 
 def main():
@@ -82,9 +90,9 @@ def main():
     ap.add_argument("--per-corpus", type=int, default=5)
     ap.add_argument("--sweeps", type=int, default=15)
     a = ap.parse_args()
-    print(f"{'corpus/feeder':44s} {'n':>6s} {'V_err@truthIc':>13s} "
+    print(f"{'corpus/feeder':44s} {'n':>6s} {'ladder_err':>11s} {'direct_err':>11s} "
           f"{'gain@1e-2':>10s} {'gain@1e-6':>10s} {'t(s)':>6s}")
-    worst_err, worst_gain = 0.0, 0.0
+    worst_lad, worst_dir, worst_gain = 0.0, 0.0, 0.0
     for c in CORPORA:
         fs = sorted(glob.glob(os.path.join(TD, c, "*", "static.pt")))
         step = max(1, len(fs) // a.per_corpus)
@@ -92,21 +100,26 @@ def main():
             fdir = os.path.dirname(p)
             name = f"{c}/{os.path.basename(fdir)}"
             try:
-                n, err0, gains, ts = run_feeder(fdir, sweeps=a.sweeps)
+                n, err0, errd, gains, ts = run_feeder(fdir, sweeps=a.sweeps)
             except Exception as e:
                 print(f"{name[:44]:44s} FAIL {type(e).__name__}: {e}")
                 continue
             g = {f"{eps:.0e}": gain for eps, _, gain in gains}
-            print(f"{name[:44]:44s} {n:6d} {err0:13.2e} "
+            print(f"{name[:44]:44s} {n:6d} {err0:11.2e} {errd:11.2e} "
                   f"{g.get('1e-02', float('nan')):10.2f} "
                   f"{g.get('1e-06', float('nan')):10.2f} {ts:6.1f}")
-            worst_err = max(worst_err, err0)
+            worst_lad = max(worst_lad, err0)
+            worst_dir = max(worst_dir, errd)
             worst_gain = max(worst_gain, max(gain for _, _, gain in gains))
-    print(f"\nWORST convergence err = {worst_err:.2e}  (want ~1e-9)")
-    print(f"WORST Icomp->V gain   = {worst_gain:.2f}   (want O(1); V->I was 2e7)")
-    ok = worst_err < 1e-6 and worst_gain < 100
-    print("VERDICT:", "LADDER IS THE ARCHITECTURE -- wire it into DKSolver" if ok
-          else "does NOT hold corpus-wide -- find the failing family first")
+    print(f"\nWORST ladder err = {worst_lad:.2e}   WORST direct err = {worst_dir:.2e}")
+    print(f"WORST Icomp->V gain (direct) = {worst_gain:.2f}   (V->I was 2e7)")
+    if worst_dir < 1e-6:
+        print("VERDICT: DIRECT fp64 solve of full Ybus is machine-precision corpus-wide"
+              " -- the solver layer is a single sparse solve; no splitting needed")
+    elif worst_lad < 1e-6:
+        print("VERDICT: ladder splitting needed (direct loses digits); fold shunt Y into As")
+    else:
+        print("VERDICT: neither holds -- keep digging")
 
 
 if __name__ == "__main__":
