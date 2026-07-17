@@ -173,8 +173,18 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=4e-4)
     ap.add_argument("--samples-per-epoch", type=int, default=4000)
-    ap.add_argument("--no-feat", action="store_true")
+    ap.add_argument("--no-feat", action="store_true",
+                    help="linear feature normalization instead of asinh compression "
+                         "(same fitted scales; the asinh-ablation flag)")
+    ap.add_argument("--vabs", action="store_true",
+                    help="node head predicts ABSOLUTE V (v_std gauge) instead of dv")
     ap.add_argument("--no-kcl", action="store_true")
+    ap.add_argument("--eval-feeders", type=int, default=48,
+                    help="cap on unseen eval feeders when --limit-feeders is unset. "
+                         "The full corpus has 319 unseen feeders; evaluating all of "
+                         "them x variants x 3 lenses on rank 0 alone blew NCCL's "
+                         "10-min watchdog (job 15256412: rank0 stalled at allreduce "
+                         "5006 while ranks 1-3 entered the next epoch)")
     ap.add_argument("--w-v", type=float, default=10.0)
     ap.add_argument("--w-i", type=float, default=1.0)
     ap.add_argument("--w-kcl", type=float, default=0.1)
@@ -201,7 +211,11 @@ def main():
     world = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if world > 1:
-        torch.distributed.init_process_group("nccl")
+        # Rank 0 runs the whole eval while the other ranks charge into the next
+        # epoch and block on their first allreduce -- that wait is legitimate and
+        # must outlive the watchdog (default 10 min killed the first full launch).
+        from datetime import timedelta
+        torch.distributed.init_process_group("nccl", timeout=timedelta(hours=4))
         torch.cuda.set_device(local_rank)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -228,7 +242,7 @@ def main():
           for k in ("train", "unseen", "test")}
     lim = args.limit_feeders
     tr_dirs = sp["train"][:lim] if lim else sp["train"]
-    un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else len(sp["unseen"]))]
+    un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else args.eval_feeders)]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
     train_ds = build_split(tr_dirs, tv, args.task, use_feat)
     # One unseen feeder set, three EVAL LENSES over it. The foundation objective trains
@@ -248,7 +262,7 @@ def main():
 
     model = DKSolver(hidden=args.hidden, steps=args.steps,
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
-                     fb_points=args.fb_points).to(dev)
+                     fb_points=args.fb_points, vabs=args.vabs).to(dev)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(

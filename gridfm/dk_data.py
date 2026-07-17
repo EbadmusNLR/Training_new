@@ -242,15 +242,18 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
         return t
 
     dvs: list[torch.Tensor] = []
+    vss: list[torch.Tensor] = []
     for f in fsub:
         for v in vsub:
             data = f.sample(v)
             nd = data["node"]
             dv = torch.stack([nd.V_r_pu - nd.V_r_init_pu,
                               nd.V_i_pu - nd.V_i_init_pu], 1)
+            vs = torch.stack([nd.V_r_pu, nd.V_i_pu], 1)
             if dv.shape[0] > cap_per_chunk:
-                dv = dv[torch.randint(0, dv.shape[0], (cap_per_chunk,))]
-            dvs.append(dv)
+                keep = torch.randint(0, dv.shape[0], (cap_per_chunk,))
+                dv = dv[keep]; vs = vs[keep]
+            dvs.append(dv); vss.append(vs)
             for s in f.stores:
                 prefix, nterm, _ = STORES[s]
                 st = data[s]
@@ -275,7 +278,12 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     # deviation from nominal (theirs: voltage_residual_std; see grid_state_pinn.py).
     dv_all = torch.cat(dvs) if dvs else torch.zeros(1, 2)
     dv_std = [max(float(dv_all[:, 0].std()), 1e-6), max(float(dv_all[:, 1].std()), 1e-6)]
-    return {"I": Iscale, "Y": Yscale, "kcl": max(kcl, 1e-9), "dv_std": dv_std}
+    # Gauge for the ABSOLUTE-V head (--vabs): std of the solved V components across
+    # the train sample (phases spread the real/imag parts to O(1)).
+    v_all = torch.cat(vss) if vss else torch.ones(1, 2)
+    v_std = [max(float(v_all[:, 0].std()), 1e-6), max(float(v_all[:, 1].std()), 1e-6)]
+    return {"I": Iscale, "Y": Yscale, "kcl": max(kcl, 1e-9), "dv_std": dv_std,
+            "v_std": v_std}
 
 
 def _ydim(store):

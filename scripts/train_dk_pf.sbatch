@@ -33,6 +33,8 @@ export PYTHONUNBUFFERED=1
 PY=/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python
 
 FEEDERS="${FEEDERS:-200}"
+ROOTS="${ROOTS:-}"        # space-separated corpus roots; empty = all four (stratified)
+EXTRA="${EXTRA:-}"        # extra dk_train flags, e.g. "--vabs --no-feat"
 EPOCHS="${EPOCHS:-20}"
 HIDDEN="${HIDDEN:-256}"
 STEPS="${STEPS:-12}"
@@ -57,11 +59,12 @@ echo "[$(date '+%F %T')] out=$OUT"
 
 "$PY" -u scripts/dk_train.py \
   --limit-feeders "$FEEDERS" \
+  ${ROOTS:+--roots $ROOTS} \
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \
   --samples-per-epoch "$SPE" --seed "$SEED" --task "$TASK" \
   --w-i "$W_I" --w-kcl "$W_KCL" --warmup "$WARM" --fb-points "$FB" \
   ${NORM:+--norm-loss} --small-first \
   --workers "$WORKERS" \
-  --out "$OUT"
+  --out "$OUT" $EXTRA
 echo "[$(date '+%F %T')] exit=$?"

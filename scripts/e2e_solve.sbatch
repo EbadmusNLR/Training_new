@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=e2e_solve
+#SBATCH --account=gogpt
+#SBATCH --partition=shared
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=180G
+#SBATCH --time=01:00:00
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/e2e_solve-%j.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/e2e_solve-%j.err
+# E2E: checkpoint's hidden-Icomp estimates -> ONE direct fp64 Ybus solve -> V,
+# scored against the same checkpoint's V head (see gridfm/probes/direct_solve_e2e.py).
+set -uo pipefail
+cd /kfs2/projects/gogpt/Ebadmus/Training_new
+export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
+CKPT="${CKPT:-runs/fix_lr2e4/last.pt}"
+/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python -u gridfm/probes/direct_solve_e2e.py \
+  --ckpt "$CKPT" --n-feeders "${NF:-8}"

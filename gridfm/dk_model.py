@@ -43,7 +43,7 @@ class MLP(nn.Sequential):
 
 class DKSolver(nn.Module):
     def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
-                 exact_decoder=True, fb_points=0):
+                 exact_decoder=True, fb_points=0, vabs=False):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
@@ -104,6 +104,14 @@ class DKSolver(nn.Module):
         self.node_head = MLP(hidden, 2, hidden, zero_last=True)         # z; dv = dv_std*z
         dv_std = scales.get("dv_std", [1.0, 1.0]) if scales else [1.0, 1.0]
         self.register_buffer("dv_std", torch.tensor(dv_std, dtype=torch.float32))
+        # --vabs: the head predicts ABSOLUTE V (gauge v_std) instead of the residual
+        # dv. Zero-init then means "predict V=0", not "predict dv=0" -- the model must
+        # learn the phase structure v_init already encodes, which is the hypothesis
+        # under test (does residual prediction help or hurt?).
+        self.vabs = bool(vabs)
+        if self.vabs:  # buffer only exists in vabs mode so old ckpts still load strict
+            v_std = scales.get("v_std", [1.0, 1.0]) if scales else [1.0, 1.0]
+            self.register_buffer("v_std", torch.tensor(v_std, dtype=torch.float32))
         self.kcl_mlp = MLP(2, hidden, hidden, zero_last=True)   # line-residual feedback
         self.register_buffer("s_kcl", torch.tensor(float(scales["kcl"]) if scales else I_SCALE))
 
@@ -295,14 +303,22 @@ class DKSolver(nn.Module):
         # reconstruction, which enforces nodal balance structurally), so there is
         # no residual to feed back: the model is a pure V-predictor and the MP
         # depth is the iterative refinement. Reconstruct once at the end.
-        dvp = self.node_head(hn) * self.dv_std
+        dvp = self._pred_dv(nd, hn)
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
         cur = self._completed_currents(batch, edges, hc, v)
         return dvp, cur, self._last_aux
+
+    def _pred_dv(self, nd, hn):
+        """Head output as a dv. In vabs mode the head predicts absolute V and we
+        subtract v_init here, so loss/metrics/decode are unchanged either way."""
+        z = self.node_head(hn)
+        if self.vabs:
+            return z * self.v_std - nd.v_init
+        return z * self.dv_std
 
     def _decode_dv(self, nd, hn, dvp=None):
         """V estimate delta: predicted where masked, pinned to truth where the
         voltage is observed (slack/ground in pf) so physics decode is anchored."""
         if dvp is None:
-            dvp = self.node_head(hn) * self.dv_std
+            dvp = self._pred_dv(nd, hn)
         return torch.where(nd.vis_v.unsqueeze(1), nd.dv, dvp)
