@@ -10,6 +10,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+# The batched recon ctx ships hundreds of small tensors per batch through worker
+# pipes; with fork sharing each is an fd, and 16 workers x prefetch 4 exhausts the
+# limit ("received 0 items of ancdata", killed T12-s1 after ep001). file_system
+# sharing uses /dev/shm files instead of fds.
+torch.multiprocessing.set_sharing_strategy("file_system")
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]

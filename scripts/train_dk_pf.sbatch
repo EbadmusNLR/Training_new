@@ -24,6 +24,7 @@
 #   OUT      run directory
 
 set -uo pipefail
+ulimit -n 65536 2>/dev/null || true
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export PYTHONUNBUFFERED=1
 # .venv is torch+cu130 and the node driver is 12.4 -> CUDA unavailable, silently CPU-only.
