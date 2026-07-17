@@ -10,13 +10,14 @@ lr 4e-4 anneal, norm-loss, residual gauge, task=random, exact decoder.
 |---|---|---|---|---|
 | T01 seed tests | 15237232-34 | PRE-fix: 40f SMART-DS only, mixed loss, no gauge/anneal, 8 ep | unseen v_skill ~1.0 all seeds, train V > null | FAIL — known-bad loss (no norm) + ~10x too short |
 | T02 overfit sweep | 15240844 | ONE fixed batch (6 SMART-DS feeders), 400 Adam steps/config | mixed 0.293; norm 0.51@300 (faster early, worse late); I/V grad ratio 2.1 | optimization works; decoder-pullback theory REFUTED; horizon was the killer |
-| T03 gates x3 | 15241690-92 | gate config, seeds 0/1/2 | RUNNING (~40s/ep) | go/no-go for full launch: all seeds <1.0, trending down, within ~0.1 |
-| T04 abl pf | 15241727 | task=pf | RUNNING | is the foundation objective harder than single-task on the pf lens? |
-| T05 abl lr | 15241728 | lr=1e-3 | RUNNING | LR headroom |
-| T06 abl steps | 15241729 | steps=24 | RUNNING | recurrence depth |
-| T07 abl width | 15241730 | hidden=384 | RUNNING | capacity |
-| T08 abl nonorm | 15242531 | mixed loss (NORM=0) | RUNNING | T02 says mixed wins late on a fixed batch; does it in generalization? |
+| T03 gates x3 | 15241690-92 | gate config, seeds 0/1/2 | train 0.60/0.71/0.76, unseen 0.92/0.90/0.96 flat; kcl->2e-6, I~2% | NO LAUNCH: learns but does not transfer at 60f — generalization gap, not optimization |
+| T04 abl pf | 15241727 | task=pf | train 0.437, unseen **0.816** (best) | matched conditional wins at small scale; random needs topology diversity to pay off |
+| T05 abl lr | 15241728 | lr=1e-3 | unseen 0.907 | no gain over 4e-4 |
+| T06 abl steps | 15241729 | steps=24 | unseen 1.092 (worst) | deeper recurrence HURT; mid-run 0.905 was noise — never judge mid-run |
+| T07 abl width | 15241730 | hidden=384 | unseen 0.910 | no capacity win at this scale |
+| T08 abl nonorm | 15242531 | mixed loss (NORM=0) | unseen 0.911 (@ep33) | norm vs mixed indistinguishable in generalization |
 | T09 ddp smoke | 15241743 | 2-rank torchrun, tiny run | QUEUED (QOS) | validates the 4-GPU full path |
+| T10 scale gate | 15246495-97 | feeders 60->240 (random s0/s1 + pf control), 30 ep | RUNNING | THE decision: if unseen skill improves markedly with feeder count, scale closes the gap -> full launch; if flat, architecture/inputs first |
 
 ## Standing decisions (why the gate config looks like this)
 - **exact decoder in-model** (6.7e-01 -> 3.4e-06 on truth V; vsource was silently zero before)
