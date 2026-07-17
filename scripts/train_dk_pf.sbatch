@@ -5,7 +5,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=220G
-#SBATCH --time=04:00:00
+# WALL env sets walltime. Ask the SHORTEST honest time: short requests backfill
+# into scheduler gaps, a 4h request waits for a 4h hole. Gates run ~35 min.
+#SBATCH --time=01:00:00
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.out
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.err
 
