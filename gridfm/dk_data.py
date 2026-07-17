@@ -254,12 +254,15 @@ def _ydim(store):
 
 
 # ----------------------------------------------------------------------------- masking
-def mask_pf(data):
-    """Power flow: hide non-slack/non-ground voltages and all terminal currents;
-    Y, Icomp, slack V, and every V_init are observed."""
-    nd = data["node"]
-    nd.vis_v = nd.slack | nd.ground            # observed voltages
-    nd.msk_v = ~nd.vis_v                        # targets
+# Every task here is IDENTIFIABLE: the visible fields physically determine the targets
+# (checked by scripts/check_pf_determinacy.py -- Ybus V = sum(Icomp) with the visible
+# voltages pinned is nonsingular on 100% of this corpus). Blind random masking is
+# deliberately absent: jointly hiding Y and Icomp at one operating point leaves the
+# targets underdetermined, and training on arbitrary targets manufactures an
+# architecture mystery out of a data problem (see the 2026-07-12 foundation contract).
+
+
+def _set_comp_masks(data):
     for s in data.node_types:
         if s == "node" or s not in STORES:
             continue
@@ -267,11 +270,45 @@ def mask_pf(data):
         n = st.yr.shape[0]
         st.vis_y = torch.ones(n, dtype=torch.bool)
         st.vis_ic = torch.ones(n, dtype=torch.bool)
-        st.msk_i = torch.ones(n, dtype=torch.bool)   # currents are targets
+        st.msk_i = torch.ones(n, dtype=torch.bool)   # currents are always targets
+
+
+def mask_pf(data, rng=None):
+    """Power flow: hide non-slack/non-ground voltages and all terminal currents;
+    Y, Icomp, slack V, and every V_init are observed."""
+    nd = data["node"]
+    nd.vis_v = nd.slack | nd.ground            # observed voltages
+    nd.msk_v = ~nd.vis_v                        # targets
+    _set_comp_masks(data)
     return data
 
 
-TASKS = {"pf": mask_pf}
+def mask_se(data, rng):
+    """Known-injection state estimation: Y and Icomp visible (the injections are known),
+    plus a random subset of voltage 'measurements'; recover the unmeasured state.
+
+    Strictly easier than pf per sample (more V visible), but a different conditional --
+    the model must USE arbitrary interior measurements, not just the slack boundary.
+    The measured fraction is drawn per sample so one checkpoint spans sparse SCADA
+    (~10%) to dense PMU (~60%) coverage."""
+    nd = data["node"]
+    frac = float(rng.uniform(0.1, 0.6))
+    meas = torch.from_numpy(rng.random(nd.num_nodes) < frac)
+    nd.vis_v = nd.slack | nd.ground | meas
+    nd.msk_v = ~nd.vis_v
+    _set_comp_masks(data)
+    return data
+
+
+def mask_random_safe(data, rng):
+    """Foundation objective: ONE identifiable task per sample, chosen at random --
+    the model learns every conditional (all the interactions), never an
+    underdetermined one. Extend the pool as new heads land (Y-completion, Icomp
+    completion need output heads the solver does not have yet)."""
+    return (mask_pf if rng.random() < 0.5 else mask_se)(data, rng)
+
+
+TASKS = {"pf": mask_pf, "se": mask_se, "random_safe": mask_random_safe}
 
 
 # ----------------------------------------------------------------------------- dataset
@@ -282,13 +319,20 @@ class DKDataset(torch.utils.data.Dataset):
         self.items = [(fi, v) for fi in range(len(feeders)) for v in variants]
         self.task = task
         self.use_feat = use_feat
-        self.rng = np.random.default_rng(seed)
+        self.seed = int(seed)
+        self.epoch = 0
 
     def __len__(self):
         return len(self.items)
 
     def set_epoch(self, epoch):
-        self.rng = np.random.default_rng(1000 + epoch)
+        self.epoch = int(epoch)
+
+    def _item_rng(self, idx):
+        """Per-item generator derived from (seed, epoch, idx). A shared self.rng is
+        wrong under num_workers>0: fork gives every worker a COPY, so all workers
+        draw the SAME mask sequence and 'random' masks repeat across the batch."""
+        return np.random.default_rng((self.seed * 1_000_003 + self.epoch) * 4_294_967_291 + idx)
 
     def __getitem__(self, idx):
         fi, variant = self.items[idx]
@@ -323,7 +367,7 @@ class DKDataset(torch.utils.data.Dataset):
                 st.icr = st.Icomp_r_pu; st.ici = st.Icomp_i_pu
             else:
                 st.icr = torch.zeros(n, FC); st.ici = torch.zeros(n, FC)
-        TASKS[self.task](data)
+        TASKS[self.task](data, self._item_rng(idx))
         # The corpus is fp64 BY DESIGN (generating quality data), but the model
         # trains in fp32. Cast at this boundary -- not in the corpus -- so the
         # reference decoder keeps its fp64 inputs.
