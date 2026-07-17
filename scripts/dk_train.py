@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -122,6 +123,9 @@ def main():
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--small-first", action="store_true",
+                    help="order each split by static.pt size ascending before --limit-feeders: "
+                         "gate runs train on the smallest feeders, where steps are cheap")
     ap.add_argument("--seed", type=int, default=0,
                     help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
@@ -137,6 +141,9 @@ def main():
     # Split is pinned at 42 regardless of --seed: comparing runs across different
     # unseen sets measures the split, not the model.
     sp = split_feeders(feeders, seed=42)
+    if args.small_first:
+        for k in sp:
+            sp[k] = sorted(sp[k], key=lambda d: os.path.getsize(os.path.join(d, "static.pt")))
     lim = args.limit_feeders
     tr_dirs = sp["train"][:lim] if lim else sp["train"]
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else len(sp["unseen"]))]
@@ -156,6 +163,14 @@ def main():
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales).to(dev)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    # Warmup + cosine anneal. Constant LR leaves the last order(s) of magnitude on the
+    # table: the reference PINN's low-error runs annealed (s03_clean68_anneal), and its
+    # 7.5e-08 run trained 400 epochs -- reaching tiny error needs a tiny final LR.
+    steps_total = max(1, args.epochs * max(1, min(args.samples_per_epoch, len(train_ds)) // args.batch_size))
+    warm = max(1, int(0.03 * steps_total))
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda k: (k + 1) / warm if k < warm
+        else 0.5 * (1.0 + np.cos(np.pi * (k - warm) / max(1, steps_total - warm))))
     spe = min(args.samples_per_epoch, len(train_ds))
     sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe)
     tr_collate = make_dk_collate(train_ds.feeders)
@@ -181,7 +196,7 @@ def main():
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                              w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss)
             opt.zero_grad(); loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
         n = max(1, len(train_dl))

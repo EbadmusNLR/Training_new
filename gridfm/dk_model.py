@@ -82,7 +82,14 @@ class DKSolver(nn.Module):
                 ys = ys * Y_SCALE
             self.register_buffer(f"yscale_{s}", ys.clamp(min=1e-9))
         self.node_gru = nn.GRUCell(hidden, hidden)
-        self.node_head = MLP(hidden, 2, hidden, zero_last=True)         # dv (pu)
+        # Standardized-residual gauge: the head predicts z and dv = dv_std * z, so its
+        # output (and its gradients) live at O(1) instead of O(|dv|) ~ 1e-2. This is the
+        # mechanism behind the reference PINN's 7.5e-08 run (train_physics_informed_NN,
+        # "standardized residual voltage-head"); without it the head must learn outputs
+        # two orders below its init scale.
+        self.node_head = MLP(hidden, 2, hidden, zero_last=True)         # z; dv = dv_std*z
+        dv_std = scales.get("dv_std", [1.0, 1.0]) if scales else [1.0, 1.0]
+        self.register_buffer("dv_std", torch.tensor(dv_std, dtype=torch.float32))
         self.kcl_mlp = MLP(2, hidden, hidden, zero_last=True)
         self.register_buffer("s_kcl", torch.tensor(float(scales["kcl"]) if scales else I_SCALE))
 
@@ -224,7 +231,7 @@ class DKSolver(nn.Module):
         # reconstruction, which enforces nodal balance structurally), so there is
         # no residual to feed back: the model is a pure V-predictor and the MP
         # depth is the iterative refinement. Reconstruct once at the end.
-        dvp = self.node_head(hn)
+        dvp = self.node_head(hn) * self.dv_std
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
         cur = self._completed_currents(batch, edges, hc, v)
         return dvp, cur
@@ -233,5 +240,5 @@ class DKSolver(nn.Module):
         """V estimate delta: predicted where masked, pinned to truth where the
         voltage is observed (slack/ground in pf) so physics decode is anchored."""
         if dvp is None:
-            dvp = self.node_head(hn)
+            dvp = self.node_head(hn) * self.dv_std
         return torch.where(nd.vis_v.unsqueeze(1), nd.dv, dvp)

@@ -224,9 +224,16 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
             t = t[torch.randint(0, t.numel(), (cap_per_chunk,))]
         return t
 
+    dvs: list[torch.Tensor] = []
     for f in fsub:
         for v in vsub:
             data = f.sample(v)
+            nd = data["node"]
+            dv = torch.stack([nd.V_r_pu - nd.V_r_init_pu,
+                              nd.V_i_pu - nd.V_i_init_pu], 1)
+            if dv.shape[0] > cap_per_chunk:
+                dv = dv[torch.randint(0, dv.shape[0], (cap_per_chunk,))]
+            dvs.append(dv)
             for s in f.stores:
                 prefix, nterm, _ = STORES[s]
                 st = data[s]
@@ -245,7 +252,13 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     Yscale = {s: {k: _p95(Yb[s][k]) for k in Yb[s]} for s in STORES}
     med = [Iscale[s] for s in STORES if Ib[s]]
     kcl = float(np.median(med)) if med else I_SCALE
-    return {"I": Iscale, "Y": Yscale, "kcl": max(kcl, 1e-9)}
+    # Train-set std of the voltage residual per (re, im): the head's output gauge.
+    # The reference PINN's route to 7.5e-08 ("standardized residual voltage-head")
+    # predicts z with dv = std*z, so the head works at O(1) whatever the corpus's
+    # deviation from nominal (theirs: voltage_residual_std; see grid_state_pinn.py).
+    dv_all = torch.cat(dvs) if dvs else torch.zeros(1, 2)
+    dv_std = [max(float(dv_all[:, 0].std()), 1e-6), max(float(dv_all[:, 1].std()), 1e-6)]
+    return {"I": Iscale, "Y": Yscale, "kcl": max(kcl, 1e-9), "dv_std": dv_std}
 
 
 def _ydim(store):
