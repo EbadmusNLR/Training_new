@@ -161,8 +161,8 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train(); agg = {}
         te = time.time()
-        for batch, plan in train_dl:
-            batch = batch.to(dev); batch.tree_plan = plan
+        for batch, plan, rctx in train_dl:
+            batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
             dv, cur = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                              w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss)
@@ -175,8 +175,8 @@ def main():
         # eval
         model.eval(); ea = {}
         with torch.no_grad():
-            for batch, plan in unseen_dl:
-                batch = batch.to(dev); batch.tree_plan = plan
+            for batch, plan, rctx in unseen_dl:
+                batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
                 dv, cur = model(batch)
                 _, m = losses(batch, dv, cur, scales, use_feat)
                 for k, v in m.items():

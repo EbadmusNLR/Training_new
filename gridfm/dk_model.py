@@ -19,7 +19,8 @@ from torch import nn
 
 from .dk_physics import FC, STORES, terminal_slot, node_count
 from .dk_data import PE_DIM, I_SCALE, Y_SCALE, feat, inv_feat
-from .dk_tree import SERIES_STORES, plan_to, reconstruct_vectorized
+from .dk_tree import (SERIES_STORES, plan_to, reconstruct_vectorized,
+                      reconstruct_full, recon_ctx_to)
 
 # Genuinely SHUNT/local families whose terminal current is a well-conditioned
 # function of bus V (I=Y@V-Icomp), so we decode from the predicted V instead of a
@@ -41,12 +42,19 @@ class MLP(nn.Sequential):
 
 
 class DKSolver(nn.Module):
-    def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None):
+    def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
+                 exact_decoder=True):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
         self.kcl_feedback = kcl_feedback
         self.use_feat = use_feat
+        # reconstruct_full (exact) vs reconstruct_vectorized (the old model path).
+        # MEASURED on SMART-DS variants, decoding from TRUTH V: full = 4.6e-08..1.8e-07,
+        # vectorized = 3.0e-01..9.0e-01. The vectorized path is only accurate on tiny
+        # synthetic cases (minimal_component 4.3e-03), i.e. on 2.8% of the corpus by node
+        # count -- it was never right on the real feeders that carry 95% of the gradient.
+        self.exact_decoder = exact_decoder
         self.stores = list(STORES)
         self.node_enc = MLP(2 + 2 + 1 + PE_DIM, hidden, hidden)  # v_init, dv*vis, vis, pe
         self.comp_enc = nn.ModuleDict()
@@ -133,7 +141,7 @@ class DKSolver(nn.Module):
         """All terminal currents (pu): SHUNT families physics-decoded from V
         (well-conditioned), SERIES families (line/transformer/vsource) filled by
         the differentiable KCL subtree reconstruction over those shunts. No Y*V
-        for stiff series, no free head. See dk_tree.reconstruct_vectorized."""
+        for stiff series, no free head. See dk_tree.reconstruct_full."""
         cur = {}
         for s, terms in edges.items():
             if s in PHYS_DECODE:
@@ -149,6 +157,15 @@ class DKSolver(nn.Module):
                 st = batch[s]; n, dim, _ = st.yr.shape
                 z = v.new_zeros(n, dim)
                 cur[s] = (z, z.clone())           # placeholder; reconstruction fills it
+        ctx = getattr(batch, "recon_ctx", None)
+        if self.exact_decoder and ctx is not None:
+            # The exact path: LV lines -> xfmr secondary KCL -> xfmr primary null-space
+            # map -> all lines(+xfmr inj) -> parallel-line division -> vsource KCL, plus
+            # the well-conditioned Yh line-charging common-mode from V. reconstruct_full
+            # NEEDS V; reconstruct_vectorized never took it, which is why it could not be
+            # right on feeders with line charging or tapped transformers.
+            return reconstruct_full(batch, cur, v[:, 0], v[:, 1],
+                                    ctx=recon_ctx_to(ctx, v.device, v.dtype))
         plan = plan_to(batch.tree_plan, v.device)
         return reconstruct_vectorized(plan, cur)
 

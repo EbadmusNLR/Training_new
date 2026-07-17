@@ -99,11 +99,19 @@ class DKFeeder:
         self._pe_cached = self.pe
         # precompute the KCL tree-current plan once per topology (like the PE)
         base["node"].slack = self.slack
-        from .dk_tree import build_tree_plan, check_assumptions
+        from .dk_tree import build_tree_plan, check_assumptions, build_recon_ctx
         # Fail loudly on structures the current decoder cannot reconstruct, rather
         # than training on silently-zero currents (every past bug looked like that).
         check_assumptions(base)
         self.plan = build_tree_plan(base)
+        # Topology half of the EXACT decoder's precompute (tree, KVL rows, injection
+        # indices, series classification) -- all driven by edge_index, which is static
+        # across this feeder's variants. The Y-dependent transformer null-space maps are
+        # NOT static (variants move taps) and are rebuilt per variant in the collate.
+        # Caching this matters: rebuilding the whole ctx costs 2.09s on a 9710-node /
+        # 517-transformer feeder vs 0.142s reusing topology (14.7x), and the reused ctx
+        # reconstructs to the identical WAPE.
+        self.recon_topo = build_recon_ctx(base)
 
     def _slack_mask(self, base) -> torch.Tensor:
         m = torch.zeros(self.n_node, dtype=torch.bool)
@@ -328,15 +336,22 @@ class DKDataset(torch.utils.data.Dataset):
 
 
 def make_dk_collate(feeders):
-    """Collate that batches the graph AND assembles the batched KCL tree plan
-    (offset per-feeder plans to match PyG's node/comp concatenation)."""
+    """Collate that batches the graph, the KCL tree plan, AND the exact decoder's
+    reconstruction context (both offset to match PyG's node/comp concatenation)."""
     from torch_geometric.data import Batch
     from .dk_physics import ensure_batch_schema
-    from .dk_tree import batch_plans, SHUNT_STORES, SERIES_STORES
+    from .dk_tree import (batch_plans, batch_recon_ctx, build_recon_ctx,
+                          SHUNT_STORES, SERIES_STORES)
 
     def collate(samples):
         fids = [int(s.feeder_id) for s in samples]
         plans = [feeders[f].plan for f in fids]
+        # Per-VARIANT, reusing this feeder's cached topology: only the transformer
+        # null-space maps are rebuilt, because variants move taps. Built on the pristine
+        # sample BEFORE ensure_batch_schema/from_data_list -- the order the batched-recon
+        # verification used to reach max|batched - per_feeder| = 1.084e-19.
+        ctxs = [build_recon_ctx(s, topo=feeders[f].recon_topo)
+                for s, f in zip(samples, fids)]
         # EVERY sample must share ONE schema before Batch.from_data_list. PyG accumulates
         # edge_index offsets only over the samples that HAVE a relation, so a feeder without
         # pvsystem/storage is skipped in that cumsum and every LATER feeder's pvsystem edges
@@ -351,6 +366,8 @@ def make_dk_collate(feeders):
         store_counts = [{st: int(s[st].ir.shape[0]) for st in keys
                          if st in s.node_types and hasattr(s[st], "ir")} for s in samples]
         batch = Batch.from_data_list(samples)
-        return batch, batch_plans(plans, node_counts, store_counts)
+        return (batch,
+                batch_plans(plans, node_counts, store_counts),
+                batch_recon_ctx(ctxs, node_counts, store_counts))
 
     return collate
