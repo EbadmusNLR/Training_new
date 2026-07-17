@@ -40,6 +40,9 @@ LR="${LR:-4e-4}"
 SPE="${SPE:-4000}"      # samples per epoch
 SEED="${SEED:-0}"
 TASK="${TASK:-pf}"
+W_I="${W_I:-1.0}"
+W_KCL="${W_KCL:-0.1}"
+WARM="${WARM:-0.03}"
 NORM="${NORM:-1}"
 WORKERS="${WORKERS:-16}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_pf_probe_${SLURM_JOB_ID}}"
@@ -55,6 +58,7 @@ echo "[$(date '+%F %T')] out=$OUT"
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \
   --samples-per-epoch "$SPE" --seed "$SEED" --task "$TASK" \
+  --w-i "$W_I" --w-kcl "$W_KCL" --warmup "$WARM" \
   ${NORM:+--norm-loss} --small-first \
   --workers "$WORKERS" \
   --out "$OUT"

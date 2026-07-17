@@ -167,7 +167,12 @@ class DKSolver(nn.Module):
                 icomp = None
                 st = batch[s]
                 if hc is not None and hasattr(st, "vis_ic") and not bool(st.vis_ic.all()):
-                    z = self.ic_head[s](hc[s])
+                    # Clamp the estimate's feature z to +-8 before inv_feat: inv_feat is a
+                    # sinh, so an untrained head emitting z~20 decodes to 2.4e8x scale --
+                    # measured ic_wape 16713% in the DDP smoke -- and that explosion drives
+                    # the physics decode on injection samples, wedging whole runs (the T10
+                    # s1 stall pattern). sinh(8)~1490x scale still covers any real Icomp.
+                    z = self.ic_head[s](hc[s]).clamp(-8.0, 8.0)
                     er = inv_feat(z[:, :FC], self._iscale(s), self.use_feat)
                     ei = inv_feat(z[:, FC:], self._iscale(s), self.use_feat)
                     m = st.vis_ic.unsqueeze(1)

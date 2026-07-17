@@ -181,6 +181,8 @@ def main():
     ap.add_argument("--small-first", action="store_true",
                     help="order each split by static.pt size ascending before --limit-feeders: "
                          "gate runs train on the smallest feeders, where steps are cheap")
+    ap.add_argument("--warmup", type=float, default=0.03,
+                    help="warmup fraction of total steps before the cosine decay")
     ap.add_argument("--seed", type=int, default=0,
                     help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
@@ -248,7 +250,7 @@ def main():
     # table: the reference PINN's low-error runs annealed (s03_clean68_anneal), and its
     # 7.5e-08 run trained 400 epochs -- reaching tiny error needs a tiny final LR.
     steps_total = max(1, args.epochs * max(1, min(args.samples_per_epoch, len(train_ds)) // args.batch_size))
-    warm = max(1, int(0.03 * steps_total))
+    warm = max(1, int(args.warmup * steps_total))
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda k: (k + 1) / warm if k < warm
         else 0.5 * (1.0 + np.cos(np.pi * (k - warm) / max(1, steps_total - warm))))
