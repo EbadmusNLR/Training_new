@@ -11,7 +11,7 @@
 #   - seeds agree within ~0.1 of each other (one diverging seed = instability, no launch)
 set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
-TASK="${TASK:-random_safe}"
+TASK="${TASK:-random}"
 for s in 0 1 2; do
   J=$(FEEDERS=60 EPOCHS=40 BS=8 SPE=1600 SEED=$s TASK=$TASK NORM=1 WORKERS=16 \
       OUT=/kfs2/projects/gogpt/Ebadmus/Training_new/runs/gate_${TASK}_s$s \

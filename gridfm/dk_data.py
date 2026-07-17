@@ -356,6 +356,42 @@ def mask_injection(data, rng):
     return data
 
 
+def mask_random(data, rng):
+    """THE pretraining objective: one random conditional per sample over ALL fields.
+
+    No task presets. Independent per-sample rates decide what is visible:
+      V     : slack+ground always, plus a Bernoulli(p_v) subset, p_v ~ U(0, 0.9)
+      Icomp : Bernoulli(p_ic) subset per PC component,        p_ic ~ U(0.4, 1.0)
+      Y     : visible (no Y head yet -- the stated capability boundary)
+    Everything hidden is a target; currents are always targets (they are decoded from
+    the V estimate + Icomp estimate, so they supervise both). The model therefore
+    learns p(hidden | visible) across the whole family of conditionals -- pf
+    (p_v=0, p_ic=1), se (p_v>0, p_ic=1), injection est. (p_v=1, p_ic<1) and every
+    mixture in between are POINTS in this distribution, recovered at inference by
+    choosing the mask, not separate skills.
+
+    Some corners are underdetermined (two hidden Icomps on one node leave only their
+    sum). That is a noise floor on the pretraining loss, not a defect: the model
+    learns the conditional expectation there. What the 2026-07-12 contract actually
+    forbids is CLAIMING identifiability from such corners -- so capability CLAIMS are
+    evaluated on the determinate lenses (pf/se/injection presets below), while
+    training samples the full distribution."""
+    nd = data["node"]
+    p_v = float(rng.uniform(0.0, 0.9))
+    meas = torch.from_numpy(rng.random(int(nd.num_nodes)) < p_v)
+    nd.vis_v = nd.slack | nd.ground | meas
+    nd.msk_v = ~nd.vis_v
+    _set_comp_masks(data)
+    p_ic = float(rng.uniform(0.4, 1.0))
+    for s in PC_STORES:
+        if s not in data.node_types or s not in STORES:
+            continue
+        st = data[s]
+        n = st.yr.shape[0]
+        st.vis_ic = torch.from_numpy(rng.random(n) < p_ic)
+    return data
+
+
 def mask_random_safe(data, rng):
     """Foundation objective: ONE identifiable task per sample, chosen at random --
     the model learns every conditional (all the interactions), never an
@@ -370,7 +406,7 @@ def mask_random_safe(data, rng):
 
 
 TASKS = {"pf": mask_pf, "se": mask_se, "injection": mask_injection,
-         "random_safe": mask_random_safe}
+         "random_safe": mask_random_safe, "random": mask_random}
 
 
 # ----------------------------------------------------------------------------- dataset

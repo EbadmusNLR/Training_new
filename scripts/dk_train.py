@@ -151,7 +151,7 @@ def main():
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--task", default="pf", choices=("pf", "se", "injection", "random_safe"),
+    ap.add_argument("--task", default="pf", choices=("pf", "se", "injection", "random_safe", "random"),
                     help="training objective. Eval stays pf so runs are comparable.")
     ap.add_argument("--small-first", action="store_true",
                     help="order each split by static.pt size ascending before --limit-feeders: "
