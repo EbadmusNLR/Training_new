@@ -160,11 +160,19 @@ def main():
                     help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
+    # DDP under torchrun: one process per GPU. Data-dependent control flow in
+    # reconstruct_full means the autograd graph differs per rank, so
+    # find_unused_parameters is REQUIRED (absent stores also leave unused heads).
+    rank = int(os.environ.get("RANK", "0"))
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if world > 1:
+        torch.distributed.init_process_group("nccl")
+        torch.cuda.set_device(local_rank)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dev = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     use_feat = not args.no_feat
     t0 = time.time()
     # Split PER CORPUS (pinned at 42 regardless of --seed), then interleave round-robin.
@@ -202,6 +210,9 @@ def main():
     model = DKSolver(hidden=args.hidden, steps=args.steps,
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales).to(dev)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
+    if world > 1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank], find_unused_parameters=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     # Warmup + cosine anneal. Constant LR leaves the last order(s) of magnitude on the
     # table: the reference PINN's low-error runs annealed (s03_clean68_anneal), and its
@@ -211,8 +222,11 @@ def main():
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda k: (k + 1) / warm if k < warm
         else 0.5 * (1.0 + np.cos(np.pi * (k - warm) / max(1, steps_total - warm))))
-    spe = min(args.samples_per_epoch, len(train_ds))
-    sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe)
+    spe = min(args.samples_per_epoch, len(train_ds)) // max(1, world)
+    # each rank draws an independent random subset (seeded differently); gradients
+    # are averaged by DDP, so this is plain data parallelism over samples
+    gen = torch.Generator(); gen.manual_seed(args.seed * 7919 + rank)
+    sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe, generator=gen)
     tr_collate = make_dk_collate(train_ds.feeders)
     un_collate = make_dk_collate(unseen_ds.feeders)
     # persistent_workers: without it the pool is re-forked EVERY epoch, and each worker
@@ -241,7 +255,11 @@ def main():
                 agg[k] = agg.get(k, 0.0) + v
         n = max(1, len(train_dl))
         tr = {k: v / n for k, v in agg.items()}
-        # eval
+        # eval + logging on rank 0 only; other ranks proceed to the next epoch
+        if world > 1:
+            torch.distributed.barrier()
+        if rank != 0:
+            continue
         model.eval(); ea = {}
         with torch.no_grad():
             for batch, plan, rctx in unseen_dl:
@@ -257,7 +275,8 @@ def main():
               f"        V skill: train={tr['v_skill']:.3f} unseen={un['v_skill']:.3f} "
               f"(1.000 = no better than dv=0; dv=0 scores v_wape {un['v_base']:.2f}%)\n"
               f"        unseen I/fam: {fam_str}", flush=True)
-        torch.save({"model": model.state_dict(), "args": vars(args), "epoch": epoch, "scales": scales},
+        state = (model.module if world > 1 else model).state_dict()
+        torch.save({"model": state, "args": vars(args), "epoch": epoch, "scales": scales},
                    Path(args.out) / "last.pt")
     return 0
 
