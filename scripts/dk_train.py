@@ -197,7 +197,12 @@ def main():
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else len(sp["unseen"]))]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
     train_ds = build_split(tr_dirs, tv, args.task, use_feat)
+    # One unseen feeder set, three EVAL LENSES over it. The foundation objective trains
+    # on random conditionals; capability is CLAIMED per determinate lens: pf (state from
+    # boundary), se (state from partial measurements), injection (Icomp from state).
     unseen_ds = build_split(un_dirs, ev, "pf", use_feat)
+    lens_ds = {"se": DKDataset(unseen_ds.feeders, ev, task="se", use_feat=use_feat),
+               "inj": DKDataset(unseen_ds.feeders, ev, task="injection", use_feat=use_feat)}
     print(f"feeders train={len(tr_dirs)} unseen={len(un_dirs)}; "
           f"train_samples={len(train_ds)} unseen={len(unseen_ds)}; build={time.time()-t0:.1f}s", flush=True)
 
@@ -239,6 +244,8 @@ def main():
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
                           collate_fn=tr_collate, **dl_kw)
     unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, collate_fn=un_collate, **dl_kw)
+    lens_dl = {k: DataLoader(v, batch_size=args.batch_size, collate_fn=un_collate, **dl_kw)
+               for k, v in lens_ds.items()}
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
@@ -269,12 +276,26 @@ def main():
                 for k, v in m.items():
                     ea[k] = ea.get(k, 0.0) + v
         ne = max(1, len(unseen_dl)); un = {k: v / ne for k, v in ea.items()}
+        lens = {}
+        with torch.no_grad():
+            for lname, dl in lens_dl.items():
+                la = {}
+                for batch, plan, rctx in dl:
+                    batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
+                    dv, cur, aux = model(batch)
+                    _, m = losses(batch, dv, cur, scales, use_feat, aux=aux)
+                    for k, v in m.items():
+                        la[k] = la.get(k, 0.0) + v
+                nl = max(1, len(dl))
+                lens[lname] = {k: v / nl for k, v in la.items()}
         fam_str = " ".join(f"{k[2:]}={un[k]:.1f}" for k in sorted(un) if k.startswith("i_"))
         print(f"ep{epoch:03d} {time.time()-te:.0f}s | train V/I={tr['v_wape']:.3f}%/{tr['i_wape']:.3f}% "
               f"kcl={tr['kcl']:.3e} | unseen V/I={un['v_wape']:.3f}%/{un['i_wape']:.3f}%\n"
               f"        V skill: train={tr['v_skill']:.3f} unseen={un['v_skill']:.3f} "
               f"(1.000 = no better than dv=0; dv=0 scores v_wape {un['v_base']:.2f}%)\n"
-              f"        unseen I/fam: {fam_str}", flush=True)
+              f"        unseen I/fam: {fam_str}\n"
+              f"        lenses: se v_skill={lens['se']['v_skill']:.3f} I={lens['se']['i_wape']:.2f}% | "
+              f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%", flush=True)
         state = (model.module if world > 1 else model).state_dict()
         torch.save({"model": state, "args": vars(args), "epoch": epoch, "scales": scales},
                    Path(args.out) / "last.pt")
