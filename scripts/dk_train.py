@@ -122,7 +122,26 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
 def build_split(feeder_dirs, variants, task, use_feat, limit=None):
     if limit:
         feeder_dirs = feeder_dirs[:limit]
-    feeders = [DKFeeder(d) for d in feeder_dirs]
+    # The decoder REFUSES networks it cannot reconstruct (UnsupportedNetwork: e.g.
+    # meshed pure-line loops leave transformer groups underdetermined -- IEEE 30 Bus
+    # class). Refusing beats silently-zero currents, but one such feeder must not
+    # abort training on thousands of good ones. So: skip LOUDLY -- every exclusion is
+    # named with its reason at startup -- and hard-fail if exclusions exceed 5%, so a
+    # decoder regression cannot quietly hollow out the corpus.
+    from gridfm.dk_tree import UnsupportedNetwork
+    feeders, skipped = [], []
+    for d in feeder_dirs:
+        try:
+            feeders.append(DKFeeder(d))
+        except UnsupportedNetwork as exc:
+            skipped.append((os.path.basename(d), str(exc)[:140]))
+    if skipped:
+        print(f"EXCLUDED {len(skipped)}/{len(feeder_dirs)} feeders (decoder refuses; see reasons):", flush=True)
+        for name, why in skipped:
+            print(f"  - {name}: {why}", flush=True)
+        if len(skipped) > 0.05 * len(feeder_dirs):
+            raise RuntimeError(f"{len(skipped)} of {len(feeder_dirs)} feeders excluded (>5%): "
+                               "decoder coverage regressed; fix that before training")
     return DKDataset(feeders, variants, task=task, use_feat=use_feat)
 
 
