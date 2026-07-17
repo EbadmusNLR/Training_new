@@ -152,10 +152,16 @@ def main():
     sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe)
     tr_collate = make_dk_collate(train_ds.feeders)
     un_collate = make_dk_collate(unseen_ds.feeders)
-    train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, collate_fn=tr_collate,
-                          num_workers=args.workers, multiprocessing_context="fork" if args.workers else None)
-    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, num_workers=args.workers, collate_fn=un_collate,
-                           multiprocessing_context="fork" if args.workers else None)
+    # persistent_workers: without it the pool is re-forked EVERY epoch, and each worker
+    # re-imports torch/PyG (~60s of the epoch). prefetch keeps the GPU fed while a worker
+    # builds the next batch's per-variant recon ctx.
+    dl_kw = dict(num_workers=args.workers,
+                 multiprocessing_context="fork" if args.workers else None)
+    if args.workers:
+        dl_kw.update(persistent_workers=True, prefetch_factor=4)
+    train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
+                          collate_fn=tr_collate, **dl_kw)
+    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, collate_fn=un_collate, **dl_kw)
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
