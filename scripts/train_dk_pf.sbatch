@@ -37,20 +37,23 @@ BS="${BS:-4}"
 LR="${LR:-4e-4}"
 SPE="${SPE:-4000}"      # samples per epoch
 SEED="${SEED:-0}"
+TASK="${TASK:-pf}"
+NORM="${NORM:-1}"
 WORKERS="${WORKERS:-16}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_pf_probe_${SLURM_JOB_ID}}"
 mkdir -p "$OUT" /kfs2/projects/gogpt/Ebadmus/Training_new/logs
 
 echo "[$(date '+%F %T')] host=$(hostname) gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
 "$PY" -c "import torch;assert torch.cuda.is_available(), 'CUDA UNAVAILABLE -- wrong venv or driver';print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
-echo "[$(date '+%F %T')] feeders=$FEEDERS epochs=$EPOCHS hidden=$HIDDEN steps=$STEPS bs=$BS lr=$LR spe=$SPE seed=$SEED"
+echo "[$(date '+%F %T')] feeders=$FEEDERS epochs=$EPOCHS hidden=$HIDDEN steps=$STEPS bs=$BS lr=$LR spe=$SPE seed=$SEED task=$TASK norm=$NORM"
 echo "[$(date '+%F %T')] out=$OUT"
 
 "$PY" -u scripts/dk_train.py \
   --limit-feeders "$FEEDERS" \
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \
-  --samples-per-epoch "$SPE" --seed "$SEED" \
+  --samples-per-epoch "$SPE" --seed "$SEED" --task "$TASK" \
+  ${NORM:+--norm-loss} --small-first \
   --workers "$WORKERS" \
   --out "$OUT"
 echo "[$(date '+%F %T')] exit=$?"

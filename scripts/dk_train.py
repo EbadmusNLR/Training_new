@@ -151,6 +151,8 @@ def main():
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--task", default="pf", choices=("pf", "se", "injection", "random_safe"),
+                    help="training objective. Eval stays pf so runs are comparable.")
     ap.add_argument("--small-first", action="store_true",
                     help="order each split by static.pt size ascending before --limit-feeders: "
                          "gate runs train on the smallest feeders, where steps are cheap")
@@ -186,7 +188,7 @@ def main():
     tr_dirs = sp["train"][:lim] if lim else sp["train"]
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else len(sp["unseen"]))]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
-    train_ds = build_split(tr_dirs, tv, "pf", use_feat)
+    train_ds = build_split(tr_dirs, tv, args.task, use_feat)
     unseen_ds = build_split(un_dirs, ev, "pf", use_feat)
     print(f"feeders train={len(tr_dirs)} unseen={len(un_dirs)}; "
           f"train_samples={len(train_ds)} unseen={len(unseen_ds)}; build={time.time()-t0:.1f}s", flush=True)
