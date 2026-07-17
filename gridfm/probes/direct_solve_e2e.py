@@ -37,9 +37,10 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--n-feeders", type=int, default=8)
     ap.add_argument("--variant", type=int, default=90)  # outside train variants
-    # MUST be a mask that hides Icomp: se/pf leave vis_ic all-True, making the
-    # estimate-scatter a no-op and skill_solve trivially machine-precision.
-    ap.add_argument("--task", default="random")
+    # random hides Icomp (estimate-scatter live, the honest e2e); pf/se leave
+    # vis_ic all-True, so their solve runs at truth Icomp = the zero-learned-params
+    # machine-precision claim, measured through the same pipeline.
+    ap.add_argument("--tasks", nargs="+", default=["random", "pf"])
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     args = ck["args"]
@@ -52,14 +53,20 @@ def main():
     from itertools import zip_longest
     per = [split_feeders(discover_feeders(r), seed=42) for r in ROOTS]
     unseen = [d for tup in zip_longest(*[c["unseen"] for c in per]) for d in tup if d]
-    print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} {'hid_ic%':>8s}")
+    for task in a.tasks:
+        print(f"\n=== lens: {task} ===")
+        print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} {'hid_ic%':>8s}")
+        run_lens(a, args, model, unseen, task)
+
+
+def run_lens(a, args, model, unseen, task):
     for fdir in unseen[: a.n_feeders * 3]:
         try:
             fd = DKFeeder(fdir)
         except UnsupportedNetwork as e:
             print(f"{os.path.basename(fdir)[:44]:44s} SKIP {e}")
             continue
-        ds = DKDataset([fd], [a.variant], task=a.task,
+        ds = DKDataset([fd], [a.variant], task=task,
                        use_feat=not args.get("no_feat", False))
         item = ds[0]
         batch, plan, rctx = make_dk_collate([fd])([item])
