@@ -9,7 +9,7 @@
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.out
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.err
 
-# PF probe on the datakit corpus with the EXACT decoder wired in.
+# PF training over ALL FOUR corpora (stratified splits; see dk_train.py --roots).
 #
 # Baseline question: where does v_skill actually sit on the NEW corpus? The ~0.37 plateau
 # was measured on the old data and blamed on cond(Ybus)=1.25e18 -- but this corpus
@@ -38,7 +38,6 @@ LR="${LR:-4e-4}"
 SPE="${SPE:-4000}"      # samples per epoch
 SEED="${SEED:-0}"
 WORKERS="${WORKERS:-16}"
-ROOT_CORPUS="${ROOT_CORPUS:-/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_pf_probe_${SLURM_JOB_ID}}"
 mkdir -p "$OUT" /kfs2/projects/gogpt/Ebadmus/Training_new/logs
 
@@ -48,7 +47,6 @@ echo "[$(date '+%F %T')] feeders=$FEEDERS epochs=$EPOCHS hidden=$HIDDEN steps=$S
 echo "[$(date '+%F %T')] out=$OUT"
 
 "$PY" -u scripts/dk_train.py \
-  --root "$ROOT_CORPUS" \
   --limit-feeders "$FEEDERS" \
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \

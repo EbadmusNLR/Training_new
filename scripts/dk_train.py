@@ -105,7 +105,12 @@ def build_split(feeder_dirs, variants, task, use_feat, limit=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000")
+    ap.add_argument("--roots", nargs="+", default=[
+        "/kfs2/projects/gogpt/Ebadmus/training_data/dss_data",
+        "/kfs2/projects/gogpt/Ebadmus/training_data/minimal_component",
+        "/kfs2/projects/gogpt/Ebadmus/training_data/new_dss_data",
+        "/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000",
+    ], help="corpora to train over; splits are stratified per corpus")
     ap.add_argument("--limit-feeders", type=int, default=None)
     ap.add_argument("--train-variants", type=int, default=80)
     ap.add_argument("--eval-variants", type=int, default=10)
@@ -137,13 +142,23 @@ def main():
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_feat = not args.no_feat
     t0 = time.time()
-    feeders = discover_feeders(args.root)
-    # Split is pinned at 42 regardless of --seed: comparing runs across different
-    # unseen sets measures the split, not the model.
-    sp = split_feeders(feeders, seed=42)
-    if args.small_first:
-        for k in sp:
-            sp[k] = sorted(sp[k], key=lambda d: os.path.getsize(os.path.join(d, "static.pt")))
+    # Split PER CORPUS (pinned at 42 regardless of --seed), then interleave round-robin.
+    # Foundation training must not fit one corpus: a union split under --limit-feeders
+    # would be dominated by whatever sorts first (63% of the union by count is
+    # minimal_component; by static.pt size the smallest files all are), so any gate run
+    # would quietly become a synthetic-only run. Interleaving guarantees every limit
+    # takes a balanced mix of all four corpora, and per-corpus hashing keeps the split
+    # feeder-disjoint within each.
+    from itertools import zip_longest
+    per_corpus = []
+    for root in args.roots:
+        spr = split_feeders(discover_feeders(root), seed=42)
+        if args.small_first:
+            for k in spr:
+                spr[k] = sorted(spr[k], key=lambda d: os.path.getsize(os.path.join(d, "static.pt")))
+        per_corpus.append(spr)
+    sp = {k: [d for tup in zip_longest(*[c[k] for c in per_corpus]) for d in tup if d]
+          for k in ("train", "unseen", "test")}
     lim = args.limit_feeders
     tr_dirs = sp["train"][:lim] if lim else sp["train"]
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else len(sp["unseen"]))]
