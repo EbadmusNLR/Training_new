@@ -112,6 +112,17 @@ class DKFeeder:
         # 517-transformer feeder vs 0.142s reusing topology (14.7x), and the reused ctx
         # reconstructs to the identical WAPE.
         self.recon_topo = build_recon_ctx(base)
+        # batch_recon_ctx does not merge kvl/binj yet, so a feeder with bridge chords
+        # (meshed/transmission loops; 0 in SMART-DS) dies at COLLATE time, past the
+        # loud-skip in build_split. Refuse here instead, where the exclusion is named,
+        # counted and capped at 5%. This is a deferred capability, not a policy: the
+        # feeders return the moment batch_recon_ctx merges kvl/binj (tracked in the
+        # experiment ledger as the batched-bridge gap).
+        if self.recon_topo.get("bridges"):
+            from .dk_tree import UnsupportedNetwork
+            raise UnsupportedNetwork(
+                f"{len(self.recon_topo['bridges'])} bridge chords: batched recon does not "
+                "merge kvl/binj yet (meshed/transmission loops; SMART-DS has none)")
 
     def _slack_mask(self, base) -> torch.Tensor:
         m = torch.zeros(self.n_node, dtype=torch.bool)
