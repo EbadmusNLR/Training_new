@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -121,13 +122,20 @@ def main():
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=0,
+                    help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_feat = not args.no_feat
     t0 = time.time()
     feeders = discover_feeders(args.root)
+    # Split is pinned at 42 regardless of --seed: comparing runs across different
+    # unseen sets measures the split, not the model.
     sp = split_feeders(feeders, seed=42)
     lim = args.limit_feeders
     tr_dirs = sp["train"][:lim] if lim else sp["train"]

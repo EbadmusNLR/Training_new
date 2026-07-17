@@ -72,66 +72,82 @@ def sweep_tables(d):
         dim = nterm * FC
         Yr, Yi = _y_full(d[s], prefix, dim, torch.float64, store=s)
         Y = Yr.numpy() + 1j * Yi.numpy()
-        tab[s] = dict(A=Y[:, :FC, :FC], B=Y[:, :FC, FC:2 * FC], sn=slot_nodes(d, s, nterm))
+        tab[s] = dict(A=Y[:, :FC, :FC], B=Y[:, :FC, FC:2 * FC],
+                      C=Y[:, FC:2 * FC, :FC], D=Y[:, FC:2 * FC, FC:2 * FC],
+                      sn=slot_nodes(d, s, nterm))
     return tab
 
 
-def _push(d, s, ci, cur, Vn, known, tab):
-    """One element: V_bus2 = B^-1 (I_bus1 - A@V_bus1). Returns True if it wrote."""
+def _push(s, ci, cur, Vn, solved, tab):
+    """Push V from whichever side is SOLVED into the unsolved side.
+
+    Direction is not optional. Pushing bus1->bus2 unconditionally runs a transformer whose
+    bus2 is the HV side UP its turns ratio (~52 for 12470/240V) on every pass, so the
+    iteration explodes (measured 6.6e+06 -> 2.6e+99 == 52^~70). Only the solved->unsolved
+    direction is contractive.
+
+        forward : I1 = A V1 + B V2  ->  V2 = B^-1 I1 - (B^-1 A) V1
+        backward: I2 = C V1 + D V2  ->  V1 = C^-1 I2 - (C^-1 D) V2
+
+    Both are factored rather than evaluated as B^-1 (I1 - A V1): A@V1 is O(Ys) and I1 is
+    O(1), so that subtraction rounds the current away entirely.
+    """
     T = tab.get(s)
     if T is None:
         return False
     sn = T["sn"]
-    # Only the ACTIVE slots. A 3-phase line populates slots 0,1,2 and has no neutral
-    # slot 3, so requiring all FC slots skipped nearly every line and the sweep silently
-    # wrote nothing (error frozen at the flat-start 4.6%).
+    # ACTIVE slots only: a 3-phase line has slots 0,1,2 and no neutral slot 3, and
+    # demanding all FC slots skipped nearly every line (error froze at the flat start).
     act1 = [a for a in range(FC) if (ci, a) in sn]
     act2 = [a for a in range(FC) if (ci, FC + a) in sn]
     if not act1 or len(act1) != len(act2):
         return False
     n1 = [sn[(ci, a)] for a in act1]
     n2 = [sn[(ci, FC + a)] for a in act2]
-    A = T["A"][ci][np.ix_(act1, act1)]
-    B = T["B"][ci][np.ix_(act1, act2)]
-    I1 = (cur[s][0][ci, act1].numpy() + 1j * cur[s][1][ci, act1].numpy())
+    s1, s2 = all(solved[x] for x in n1), all(solved[x] for x in n2)
+    if s1 and not s2:
+        src, dst, Msrc, Mdst = n1, n2, T["A"][ci][np.ix_(act1, act1)], T["B"][ci][np.ix_(act1, act2)]
+        Isrc = cur[s][0][ci, act1].numpy() + 1j * cur[s][1][ci, act1].numpy()
+    elif s2 and not s1:
+        src, dst = n2, n1
+        Mdst = T["C"][ci][np.ix_(act2, act1)]
+        Msrc = T["D"][ci][np.ix_(act2, act2)]
+        Isrc = cur[s][0][ci, [FC + a for a in act2]].numpy() + 1j * cur[s][1][ci, [FC + a for a in act2]].numpy()
+    else:
+        return False
     try:
-        V2 = np.linalg.solve(B, I1 - A @ Vn[n1])
+        M = np.linalg.solve(Mdst, Msrc)
+        BiI = np.linalg.solve(Mdst, Isrc)
     except np.linalg.LinAlgError:
         return False
-    wrote = False
-    for j, a in enumerate(act2):
-        if not known[n2[j]]:
-            Vn[n2[j]] = V2[j]; wrote = True
-    return wrote
+    Vd = BiI - M @ Vn[src]
+    for j, nd in enumerate(dst):
+        Vn[nd] = Vd[j]
+        solved[nd] = True
+    return True
 
 
-def forward_sweep(d, ltree, cur, V, known, tab, layers=6):
-    """V_child = B^-1 (I_bus1 - A@V_parent), level by level from the roots.
+def forward_sweep(d, ltree, cur, V, known, tab):
+    """Grow the solved frontier from the slack outward, pushing only solved->unsolved.
 
-    Pure accumulation along the rooted tree: each level only reads voltages its parents
-    already hold, so one pass propagates the slack boundary condition to every leaf.
-
-    TREE_STORES is ("line","reactor","capacitor") -- transformers are NOT tree edges, so
-    the tree is a FOREST rooted at the slack AND at every transformer secondary. Sweeping
-    lines alone leaves everything below a transformer at its flat start (123Bus froze at
-    4.7e-02 that way). Transformers are pushed between line passes, which feeds the next
-    subtree's root; `layers` covers the sub->primary->secondary nesting depth.
+    Transformers are NOT tree edges (TREE_STORES is line/reactor/capacitor), so the tree is
+    a forest rooted at the slack AND at every transformer secondary. A frontier sweep
+    covers both without needing the tree's own level order, and cannot push an element
+    backwards.
     """
-    sid = ltree["sid"].numpy(); comp = ltree["comp"].numpy()
-    level = ltree["level"].numpy()
     Vn = V.copy()
-    order = {}
-    for e in range(level.size):
-        s = _SID_INV[int(sid[e])]
-        if s in SERIES_2T:
-            order.setdefault(int(level[e]), set()).add((s, int(comp[e])))
-    nx = store_size(d, "transformer") if "transformer" in d.node_types else 0
-    for _ in range(layers):
-        for lv in sorted(order):
-            for s, ci in order[lv]:
-                _push(d, s, ci, cur, Vn, known, tab)
-        for ci in range(nx):
-            _push(d, "transformer", ci, cur, Vn, known, tab)
+    solved = known.copy()
+    elems = []
+    for s in SERIES_2T:
+        if s in d.node_types and store_size(d, s) > 0:
+            elems += [(s, c) for c in range(store_size(d, s))]
+    for _ in range(len(elems) + 2):
+        progress = False
+        for s, ci in elems:
+            if _push(s, ci, cur, Vn, solved, tab):
+                progress = True
+        if not progress:
+            break
     return Vn
 
 

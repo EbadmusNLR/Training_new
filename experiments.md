@@ -848,3 +848,83 @@ REMAINING BLOCKERS before wiring into the model:
    chunk; must re-measure on GPU/fp32 before it can sit in a training step.
 Only then: wire `_completed_currents` -> reconstruct_full behind a flag, then the
 KVL-residual feedback for voltage (section 19).
+
+---
+
+## 25. Decoder port + the plateau diagnosis (2026-07-17)
+
+### Corpus is finally trustworthy
+- 3190 distinct networks x 100 variants = 319,000 snapshots; SMART-DS 1000 (true 1000).
+- 151 duplicate NETWORKS retired (IEEE123 x12, ckt5 x10, SMART-DS scenario twins). Identity
+  is the unperturbed baseline SOLVE (dynamic row 0), NOT DSS text: text over-merged (5
+  civanlar copies hashed identical, one had 2664 vs 2360 columns -- a different circuit)
+  and under-merged (missed 51 dupes + all 5 cross-corpus groups).
+- **PF determinacy 100% on all four corpora.** DG_FM_Training's headline blocker
+  ("smartds_gso12 ~0%, grounding/neutral export") is GONE. |Ybus.Vtrue - Icomp| = 1e-09.
+
+### The exact decoder is now IN the model  (6.7e-01 -> 3.4e-06)
+End-to-end through DKFeeder -> collate -> DKSolver on truth V:
+
+    store         reconstruct_vectorized   reconstruct_full
+    line                       6.758e-01          3.346e-06
+    transformer                8.430e-01          7.556e-06
+    vsource                    1.000e+00          2.769e-06   <- exactly 1.0 = silently ZERO
+    TOTAL                      6.731e-01          3.437e-06
+
+Gradients flow (34280/34376 nonzero). Affordable via topology caching in DKFeeder
+(2.09s -> 0.142s per variant on a 9710-node/517-xfmr feeder, identical WAPE).
+Confirmed in training: unseen I now TRACKS V (3.6% vs 3.85%) across every family.
+
+### The v_skill plateau is the ITERATION OPERATOR (three refuted assumptions)
+1. NOT receptive field. Max BFS depth from slack = 4 on a 7092-node feeder; steps=12
+   reaches 100%. But ground (node 0) is a hub of degree 985-5815 -- that 4 is a shortcut
+   through one node's hidden vector (oversquashing). True electrical depth 49-113; tree
+   depth 47-110.
+   => attention / a global node adds NOTHING: ground already is one.
+2. NOT conditioning. cond(Ybus) hits 2.74e18, but:
+
+     feeder  cond      Gauss-Jacobi@60   Gauss-Seidel@60   LAD@3     LAD@10    rho_lad
+     P1R     4.26e+09         3.03e+10          2.20e-02   2.39e-07  2.85e-09    0.049
+     P31U    2.74e+18         2.82e+12          2.07e-02   1.23e-05  4.47e-09    0.146
+
+   Gauss-Jacobi DIVERGES -- and a generic message-passing step IS a Jacobi relaxation on
+   Ybus. That is the ceiling. My old note "cond=1e18 caps local relaxation at skill 0.59"
+   measured the right thing for the WRONG operator.
+3. The LADDER reaches ~1e-09 in 10 sweeps because rho(Yser^-1 Ysh) = 0.03-0.18,
+   independent of cond. "Ladder diverges on the stiff-reactor tail" does not apply:
+   reactors are 99% of minimal_component and 0% of SMART-DS.
+
+=> A 12-step net CAN hit machine precision IF its step is a SWEEP, not a relaxation.
+
+### Tree-only forward sweep: works, does not yet scale  (OPEN)
+Backward half is already exact in the model. Forward half V2 = B^-1(I1 - A V1):
+- case3_delta_gens (no transformer in path): sw1 2.9e-03 -> sw6 1.0e-08 -> **sw12 1.23e-12**
+- 123Bus/H (transformers): frozen at the flat start, because TREE_STORES is
+  (line,reactor,capacitor) -- transformers are NOT tree edges, so the tree is a forest
+  rooted at the slack AND every xfmr secondary.
+- Pushing V through transformers DIVERGES (6.6e+06 -> 2.6e+99). Two hypotheses tested and
+  BOTH REFUTED: (a) cancellation in (I1 - A V1) -- factoring to B^-1 I1 - (B^-1 A) V1 gave
+  bit-identical divergence; (b) wrong direction (running up the turns ratio) -- a directed
+  solved->unsolved frontier gave bit-identical divergence.
+- CONTROL: the MATRIX ladder converges on 123Bus (LAD@10 = 2.84e-10, rho=0.131). So the
+  mechanism is sound and MY SWEEP IS NOT EQUIVALENT TO IT. Prime suspect: the splitting --
+  I push with the element's full A = Ys + Yh (charging in the series step), while the
+  matrix ladder splits Yser/Ysh differently, changing the iteration operator.
+  NEXT: match the splitting exactly, then re-test.
+
+### Speed (profiled, bs=4, 1333-node feeders, H100)
+    DKFeeder build (incl recon_topo) : 1.35 s/feeder (one-time)
+    collate (recon ctx + merge)      : 0.055 s/sample  (parallel over workers)
+    MP only        fwd+bwd           : 0.053 s/sample
+    exact decoder  fwd+bwd           : 0.103 s/sample  <- decoder ~= all 12 MP steps
+Real run ~0.6 s/sample (feeders ~4000 nodes, 3x bigger). GPU 35%: work-bound, not
+launch-bound, so bigger batches do not help. **gpu-h100 nodes have 4 GPUs and we use 1** --
+DDP is the outstanding 4x. Risk: reconstruct_full's data-dependent control flow means the
+autograd graph differs per rank (needs find_unused_parameters, can deadlock).
+
+### Gotchas that cost real time
+- `.venv` is torch+cu130 vs a 12.4 driver -> CUDA silently False, trains on CPU.
+  Use `.venv-train` (cu126). train_dk_pf.sbatch now ASSERTS cuda.is_available().
+- dataloader workers were re-forked every epoch (re-importing torch): persistent_workers.
+- dk_train had no --seed and no manual_seed: runs were not reproducible. Split stays
+  pinned at 42 so --seed measures training variance, not split variance.

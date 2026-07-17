@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=dk_pf_probe
 #SBATCH --account=gogpt
-#SBATCH --partition=gpu-h100
+#SBATCH --partition=gpu-h100s
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=220G
-#SBATCH --time=20:00:00
+#SBATCH --time=01:30:00
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.out
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.err
 
@@ -35,13 +35,16 @@ HIDDEN="${HIDDEN:-256}"
 STEPS="${STEPS:-12}"
 BS="${BS:-4}"
 LR="${LR:-4e-4}"
+SPE="${SPE:-4000}"      # samples per epoch
+SEED="${SEED:-0}"
+WORKERS="${WORKERS:-16}"
 ROOT_CORPUS="${ROOT_CORPUS:-/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_pf_probe_${SLURM_JOB_ID}}"
 mkdir -p "$OUT" /kfs2/projects/gogpt/Ebadmus/Training_new/logs
 
 echo "[$(date '+%F %T')] host=$(hostname) gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
 "$PY" -c "import torch;assert torch.cuda.is_available(), 'CUDA UNAVAILABLE -- wrong venv or driver';print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
-echo "[$(date '+%F %T')] feeders=$FEEDERS epochs=$EPOCHS hidden=$HIDDEN steps=$STEPS bs=$BS lr=$LR"
+echo "[$(date '+%F %T')] feeders=$FEEDERS epochs=$EPOCHS hidden=$HIDDEN steps=$STEPS bs=$BS lr=$LR spe=$SPE seed=$SEED"
 echo "[$(date '+%F %T')] out=$OUT"
 
 "$PY" -u scripts/dk_train.py \
@@ -49,6 +52,7 @@ echo "[$(date '+%F %T')] out=$OUT"
   --limit-feeders "$FEEDERS" \
   --hidden "$HIDDEN" --steps "$STEPS" \
   --epochs "$EPOCHS" --batch-size "$BS" --lr "$LR" \
-  --workers 16 \
+  --samples-per-epoch "$SPE" --seed "$SEED" \
+  --workers "$WORKERS" \
   --out "$OUT"
 echo "[$(date '+%F %T')] exit=$?"
