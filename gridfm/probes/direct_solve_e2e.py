@@ -23,7 +23,8 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new/scripts")
 from core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, node_count
 from gridfm.dk_data import (DKFeeder, DKDataset, make_dk_collate, discover_feeders,
-                            split_feeders, UnsupportedNetwork)
+                            split_feeders)
+from gridfm.dk_tree import UnsupportedNetwork
 from gridfm.dk_model import DKSolver
 from gridfm.tests.test_ladder import build_ybus, SHUNT
 
@@ -36,7 +37,9 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--n-feeders", type=int, default=8)
     ap.add_argument("--variant", type=int, default=90)  # outside train variants
-    ap.add_argument("--task", default="se")
+    # MUST be a mask that hides Icomp: se/pf leave vis_ic all-True, making the
+    # estimate-scatter a no-op and skill_solve trivially machine-precision.
+    ap.add_argument("--task", default="random")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     args = ck["args"]
@@ -49,7 +52,6 @@ def main():
     from itertools import zip_longest
     per = [split_feeders(discover_feeders(r), seed=42) for r in ROOTS]
     unseen = [d for tup in zip_longest(*[c["unseen"] for c in per]) for d in tup if d]
-    collate = make_dk_collate()
     print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} {'hid_ic%':>8s}")
     for fdir in unseen[: a.n_feeders * 3]:
         try:
@@ -60,7 +62,8 @@ def main():
         ds = DKDataset([fd], [a.variant], task=a.task,
                        use_feat=not args.get("no_feat", False))
         item = ds[0]
-        batch = collate([item])
+        batch, plan, rctx = make_dk_collate([fd])([item])
+        batch.tree_plan = plan; batch.recon_ctx = rctx
         with torch.no_grad():
             dv, cur, aux = model(batch)
         nd = batch["node"]
@@ -105,7 +108,7 @@ def main():
         dvn = np.abs(Vt[free] - Vi[free]).sum() + 1e-30
         skill_solve = np.abs(Vs - Vt[free]).sum() / dvn
         # head skill on the SAME sample/mask (hidden-V nodes only, matching trainer)
-        msk = ~nd.vis if hasattr(nd, "vis") else torch.ones(n, dtype=torch.bool)
+        msk = nd.msk_v
         verr = (dv - nd.dv)[msk]
         skill_head = float(verr.abs().sum() / (nd.dv[msk].abs().sum() + 1e-30))
         hid_pct = []
