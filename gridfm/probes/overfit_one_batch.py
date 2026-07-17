@@ -88,7 +88,7 @@ for cfg in CONFIGS:
     print(f"=== {cfg}  (w_v={w_v} w_i={w_i} w_kcl={w_kcl} norm={norm} lr={lr:g})")
 
     # per-term gradient norms at init: what does the optimizer actually hear?
-    dv, cur = model(batch)
+    dv, cur, _aux = model(batch)
     _, m0 = dk_train.losses(batch, dv, cur, scales, w_v=w_v, w_i=w_i, w_kcl=w_kcl, norm=norm)
     nd = batch["node"]; msk = nd.msk_v
     v_mse = ((dv - nd.dv)[msk] ** 2).mean()
@@ -103,7 +103,7 @@ for cfg in CONFIGS:
 
     t0 = time.time()
     for it in range(1, STEPS + 1):
-        dv, cur = model(batch)
+        dv, cur, _aux = model(batch)
         loss, m = dk_train.losses(batch, dv, cur, scales, w_v=w_v, w_i=w_i, w_kcl=w_kcl, norm=norm)
         opt.zero_grad(set_to_none=True)
         loss.backward()

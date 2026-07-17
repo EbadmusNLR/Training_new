@@ -62,10 +62,17 @@ class DKSolver(nn.Module):
         self.edge_mlp = nn.ModuleDict()
         self.comp_gru = nn.ModuleDict()
         self.cur_head = nn.ModuleDict()
+        self.ic_head = nn.ModuleDict()
         for s in self.stores:
             _, nterm, _ = STORES[s]
             dim = nterm * FC
-            self.comp_enc[s] = MLP(2 * dim * dim, hidden, hidden)       # feat(Yr),feat(Yi)
+            # feat(Yr),feat(Yi) + feat(Icomp_r),feat(Icomp_i) (zeroed where hidden) + vis flag.
+            # Icomp must be an ENCODER input, not only a physics constant: injection
+            # estimation hides it, and a model that never sees it cannot miss it.
+            self.comp_enc[s] = MLP(2 * dim * dim + 2 * FC + 1, hidden, hidden)
+            # Icomp estimate head (feat space). Only consulted where vis_ic is False;
+            # visible entries stay pinned to the data, like _decode_dv does for V.
+            self.ic_head[s] = MLP(hidden, 2 * FC, hidden, zero_last=True)
             self.slot_emb[s] = nn.Embedding(dim, hidden // 4)
             self.edge_mlp[s] = MLP(2 * hidden + hidden // 4, hidden, hidden)
             self.comp_gru[s] = nn.GRUCell(hidden, hidden)
@@ -122,10 +129,13 @@ class DKSolver(nn.Module):
             out[s] = terms
         return out
 
-    def _phys_current(self, s, batch, terms, v):
+    def _phys_current(self, s, batch, terms, v, icomp=None):
         """Physics-decoded terminal currents I = Y@V - Icomp from the current V
         estimate, for well-conditioned families (loads/shunts/transformers). V
-        error maps ~linearly to current error here (unlike stiff series lines)."""
+        error maps ~linearly to current error here (unlike stiff series lines).
+        `icomp` overrides the stored compensation: for injection estimation the
+        model's Icomp ESTIMATE must drive the decode, so the current loss and KCL
+        pull the estimate toward truth -- the iterated-unknown pattern."""
         st = batch[s]
         n, dim, _ = st.yr.shape
         Vlr = v.new_zeros(n, dim); Vli = v.new_zeros(n, dim)
@@ -139,9 +149,10 @@ class DKSolver(nn.Module):
         Ii = torch.bmm(st.yr, Vli.unsqueeze(-1)).squeeze(-1) + torch.bmm(st.yi, Vlr.unsqueeze(-1)).squeeze(-1)
         _, _, nic = STORES[s]
         if nic:
-            w = min(nic, dim, st.icr.shape[1])
-            Ir = torch.cat([Ir[:, :w] - st.icr[:, :w], Ir[:, w:]], 1)
-            Ii = torch.cat([Ii[:, :w] - st.ici[:, :w], Ii[:, w:]], 1)
+            icr, ici = (st.icr, st.ici) if icomp is None else icomp
+            w = min(nic, dim, icr.shape[1])
+            Ir = torch.cat([Ir[:, :w] - icr[:, :w], Ir[:, w:]], 1)
+            Ii = torch.cat([Ii[:, :w] - ici[:, :w], Ii[:, w:]], 1)
         return Ir, Ii
 
     def _completed_currents(self, batch, edges, hc, v):
@@ -150,9 +161,22 @@ class DKSolver(nn.Module):
         the differentiable KCL subtree reconstruction over those shunts. No Y*V
         for stiff series, no free head. See dk_tree.reconstruct_full."""
         cur = {}
+        aux = {"ic_est": {}, "ic_msk": {}}
         for s, terms in edges.items():
             if s in PHYS_DECODE:
-                cur[s] = self._phys_current(s, batch, terms, v)
+                icomp = None
+                st = batch[s]
+                if hc is not None and hasattr(st, "vis_ic") and not bool(st.vis_ic.all()):
+                    z = self.ic_head[s](hc[s])
+                    er = inv_feat(z[:, :FC], self._iscale(s), self.use_feat)
+                    ei = inv_feat(z[:, FC:], self._iscale(s), self.use_feat)
+                    m = st.vis_ic.unsqueeze(1)
+                    w = st.icr.shape[1]
+                    icomp = (torch.where(m, st.icr, er[:, :w]),
+                             torch.where(m, st.ici, ei[:, :w]))
+                    aux["ic_est"][s] = (er[:, :w], ei[:, :w])
+                    aux["ic_msk"][s] = ~st.vis_ic
+                cur[s] = self._phys_current(s, batch, terms, v, icomp=icomp)
         # Zero ONLY the always-series stores. `reactor` is AMBIGUOUS: a grounded one is a
         # SHUNT and is physics-decoded exactly, while a both-ends-live one is series. Zeroing
         # the whole store (as before) wiped the decoded shunt reactors and left them at
@@ -164,6 +188,7 @@ class DKSolver(nn.Module):
                 st = batch[s]; n, dim, _ = st.yr.shape
                 z = v.new_zeros(n, dim)
                 cur[s] = (z, z.clone())           # placeholder; reconstruction fills it
+        self._last_aux = aux
         ctx = getattr(batch, "recon_ctx", None)
         if self.exact_decoder and ctx is not None:
             # The exact path: LV lines -> xfmr secondary KCL -> xfmr primary null-space
@@ -208,7 +233,14 @@ class DKSolver(nn.Module):
             n = st.yr.shape[0]
             yst = torch.stack([st.yr, st.yi], -1)              # [n,dim,dim,2]
             yf = feat(yst, self._yscale(s), self.use_feat).reshape(n, -1)
-            hc[s] = self.comp_enc[s](yf)
+            vis_ic = st.vis_ic if hasattr(st, "vis_ic") else torch.ones(n, dtype=torch.bool, device=yf.device)
+            icr = yf.new_zeros(n, FC); ici = yf.new_zeros(n, FC)
+            w = min(FC, st.icr.shape[1])
+            icr[:, :w] = st.icr[:, :w]; ici[:, :w] = st.ici[:, :w]
+            gate = vis_ic.unsqueeze(1).float()
+            icf = torch.cat([feat(icr, self._iscale(s), self.use_feat) * gate,
+                             feat(ici, self._iscale(s), self.use_feat) * gate, gate], 1)
+            hc[s] = self.comp_enc[s](torch.cat([yf, icf], 1))
         for step in range(self.steps):
             node_msg = torch.zeros_like(hn)
             node_deg = torch.zeros(hn.shape[0], 1, device=dev)
@@ -234,7 +266,7 @@ class DKSolver(nn.Module):
         dvp = self.node_head(hn) * self.dv_std
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
         cur = self._completed_currents(batch, edges, hc, v)
-        return dvp, cur
+        return dvp, cur, self._last_aux
 
     def _decode_dv(self, nd, hn, dvp=None):
         """V estimate delta: predicted where masked, pinned to truth where the

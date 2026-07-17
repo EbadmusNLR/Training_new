@@ -41,7 +41,7 @@ def kcl_of(batch, cur):
 
 
 def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
-           norm=False):
+           norm=False, aux=None, w_ic=1.0):
     nd = batch["node"]
     msk = nd.msk_v
     # voltage: MSE on dv (small) + report WAPE
@@ -77,6 +77,27 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
         inum = inum + fnum; iden = iden + fden
         fam[f"i_{s}"] = float(100.0 * fnum / (fden + EPS))
     i_wape = 100.0 * inum / (iden + EPS)
+    # injection estimation: loss on the Icomp ESTIMATE at hidden components (feat
+    # space, like currents). The estimate also drove the physics decode, so i_mse and
+    # kcl already pull on it; this term is the direct supervision.
+    ic_mse = dv.new_zeros(()); icn = dv.new_zeros(()); icd = dv.new_zeros(()); nic_t = 0
+    if aux and aux.get("ic_est"):
+        for s, (er, ei_) in aux["ic_est"].items():
+            st = batch[s]; mm = aux["ic_msk"][s]
+            if not bool(mm.any()):
+                continue
+            sc = scales["I"][s]
+            tr_r, tr_i = st.icr, st.ici
+            fr = (feat(er[mm], sc, use_feat) - feat(tr_r[mm], sc, use_feat)) ** 2
+            fi = (feat(ei_[mm], sc, use_feat) - feat(tr_i[mm], sc, use_feat)) ** 2
+            term = fr.mean() + fi.mean()
+            if norm:
+                term = term / ((feat(tr_r[mm], sc, use_feat) ** 2).mean()
+                               + (feat(tr_i[mm], sc, use_feat) ** 2).mean() + EPS)
+            ic_mse = ic_mse + term; nic_t += 1
+            icn = icn + (er[mm] - tr_r[mm]).abs().sum() + (ei_[mm] - tr_i[mm]).abs().sum()
+            icd = icd + tr_r[mm].abs().sum() + tr_i[mm].abs().sum()
+    ic_term = ic_mse / max(nic_t, 1)
     res = kcl_of(batch, cur)
     kcl = torch.asinh(res / scales["kcl"]).abs().mean()
     # The V term was ~100-800x smaller than the current term (w_v*v_mse ~ 8e-3 vs
@@ -88,8 +109,10 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # still carried ~7x the weight of the single V term even after normalisation
     # (measured: mc norm-mixed 0.685 vs mc V-only 0.443 at the same epoch).
     i_term = i_mse / max(nfam, 1) if norm else i_mse
-    loss = w_v * v_term + w_i * i_term + w_kcl * kcl
-    m = {"v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
+    loss = w_v * v_term + w_i * i_term + w_kcl * kcl + w_ic * ic_term
+    ic_wape = 100.0 * float(icn) / (float(icd) + 1e-30) if nic_t else 0.0
+    m = {"ic_wape": ic_wape,
+         "v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
          "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
          "kcl": float(kcl)}
     m.update(fam)
@@ -207,9 +230,9 @@ def main():
         te = time.time()
         for batch, plan, rctx in train_dl:
             batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
-            dv, cur = model(batch)
+            dv, cur, aux = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
-                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss)
+                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss, aux=aux)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
             for k, v in m.items():
@@ -221,8 +244,8 @@ def main():
         with torch.no_grad():
             for batch, plan, rctx in unseen_dl:
                 batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
-                dv, cur = model(batch)
-                _, m = losses(batch, dv, cur, scales, use_feat)
+                dv, cur, aux = model(batch)
+                _, m = losses(batch, dv, cur, scales, use_feat, aux=aux)
                 for k, v in m.items():
                     ea[k] = ea.get(k, 0.0) + v
         ne = max(1, len(unseen_dl)); un = {k: v / ne for k, v in ea.items()}

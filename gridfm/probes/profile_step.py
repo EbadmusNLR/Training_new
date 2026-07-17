@@ -83,12 +83,12 @@ for exact in (False, True):
     tag = "exact decoder " if exact else "MP only (no rf)"
 
     def fwd():
-        return model(batch)
+        return model(batch)[:2]
     t_f = timeit(fwd)
 
     def fwd_bwd():
         model.zero_grad(set_to_none=True)
-        dv, cur = model(batch)
+        dv, cur, _aux = model(batch)
         loss = dv.pow(2).mean() + sum(c[0].pow(2).mean() + c[1].pow(2).mean() for c in cur.values())
         loss.backward()
     t_fb = timeit(fwd_bwd)

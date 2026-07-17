@@ -313,15 +313,64 @@ def mask_se(data, rng):
     return data
 
 
+PC_STORES = ("load", "generator", "pvsystem", "storage")
+
+
+def mask_injection(data, rng):
+    """Injection estimation: full state visible (all V), Y visible; hide Icomp on a
+    random subset of power-conversion components and recover it.
+
+    Identifiability needs AT MOST ONE hidden-Icomp component per node: KCL at a node
+    determines the sum of its terminal currents, so one unknown Icomp per node is pinned
+    (I_term = -(sum of others), Icomp = Y@V - I_term) while two hidden on one node leave
+    only their sum determined. Masking respects that constraint by construction."""
+    nd = data["node"]
+    nd.vis_v = torch.ones(nd.num_nodes, dtype=torch.bool)
+    nd.msk_v = ~nd.vis_v                       # no voltage targets
+    _set_comp_masks(data)
+    taken = np.zeros(int(nd.num_nodes), dtype=bool)
+    for s in PC_STORES:
+        if s not in data.node_types or s not in STORES:
+            continue
+        st = data[s]
+        n = st.yr.shape[0]
+        rel = (s, "bus1", "node")
+        if rel not in data.edge_types or not data[rel].edge_index.numel():
+            continue
+        ei = data[rel].edge_index
+        comp_nodes = [[] for _ in range(n)]
+        for c, nd_i in zip(ei[0].tolist(), ei[1].tolist()):
+            comp_nodes[c].append(nd_i)
+        vis = torch.ones(n, dtype=torch.bool)
+        order = rng.permutation(n)
+        for c in order:
+            if rng.random() > 0.35:
+                continue
+            nodes = comp_nodes[int(c)]
+            if not nodes or any(taken[x] for x in nodes):
+                continue
+            vis[int(c)] = False
+            for x in nodes:
+                taken[x] = True
+        st.vis_ic = vis
+    return data
+
+
 def mask_random_safe(data, rng):
     """Foundation objective: ONE identifiable task per sample, chosen at random --
     the model learns every conditional (all the interactions), never an
-    underdetermined one. Extend the pool as new heads land (Y-completion, Icomp
-    completion need output heads the solver does not have yet)."""
-    return (mask_pf if rng.random() < 0.5 else mask_se)(data, rng)
+    underdetermined one. Extend the pool as new heads land (one-entry Y completion
+    still needs a Y head)."""
+    r = rng.random()
+    if r < 1 / 3:
+        return mask_pf(data, rng)
+    if r < 2 / 3:
+        return mask_se(data, rng)
+    return mask_injection(data, rng)
 
 
-TASKS = {"pf": mask_pf, "se": mask_se, "random_safe": mask_random_safe}
+TASKS = {"pf": mask_pf, "se": mask_se, "injection": mask_injection,
+         "random_safe": mask_random_safe}
 
 
 # ----------------------------------------------------------------------------- dataset
