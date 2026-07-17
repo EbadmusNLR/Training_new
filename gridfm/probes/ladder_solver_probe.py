@@ -27,7 +27,7 @@ from gridfm.dk_physics import STORES, node_count
 from gridfm.tests.test_ladder import build_ybus, SHUNT
 
 TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
-CORPORA = ["SMART-DS_1000", "new_dss_data", "opendss_repo_networks", "synthetic_networks"]
+CORPORA = ["SMART-DS_1000", "new_dss_data", "dss_data", "minimal_component"]
 
 
 def run_feeder(fdir, sweeps=15, eps_list=(1e-2, 1e-6)):
@@ -61,12 +61,16 @@ def run_feeder(fdir, sweeps=15, eps_list=(1e-2, 1e-6)):
     V0 = ladder(b0)
     err0 = np.abs(V0 - Vt[free]).sum() / den
     t_solve = time.time() - t0
-    # conditioning: relative perturbation of the Icomp rhs -> relative V error
+    # conditioning: relative perturbation of the ESTIMAND -> relative V error.
+    # The model only ever estimates SHUNT Icomp (loads/pv/storage/gen/caps); the
+    # vsource head current is a known boundary, so perturbing it (first probe
+    # version) measured a sensitivity the model never exposes (P10U gain 497).
+    _, rhs_sh = build_ybus(d, n, only=[s for s in STORES if s in SHUNT])
     gains = []
     rng = np.random.default_rng(0)
     for eps in eps_list:
         z = rng.standard_normal(free.size) + 1j * rng.standard_normal(free.size)
-        pert = eps * np.abs(rhs[free]) * z / np.maximum(np.abs(z), 1e-30)
+        pert = eps * np.abs(rhs_sh[free]) * z / np.maximum(np.abs(z), 1e-30)
         Vp = ladder(b0 + pert)
         rel_v = np.abs(Vp - Vt[free]).sum() / den
         gains.append((eps, rel_v, rel_v / eps))
