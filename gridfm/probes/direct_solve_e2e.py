@@ -74,7 +74,10 @@ def main():
     model = DKSolver(hidden=args["hidden"], steps=args["steps"],
                      kcl_feedback=not args.get("no_kcl", False),
                      use_feat=not args.get("no_feat", False), scales=ck["scales"],
-                     fb_points=args.get("fb_points", 0), vabs=args.get("vabs", False))
+                     fb_points=args.get("fb_points", 0), vabs=args.get("vabs", False),
+                     four_mask=args.get("task") in ("random4", "param"),
+                     use_pe=not args.get("no_pe", False),
+                     ctx_points=int(args.get("ctx_points", 0) or 0))
     model.load_state_dict(ck["model"]); model.eval(); model.skip_current = True
     # same unseen split the trainer uses (pinned seed 42, per corpus, interleaved)
     from itertools import zip_longest
@@ -113,10 +116,11 @@ def run_lens(a, args, model, unseen, task):
         except UnsupportedNetwork as e:
             print(f"{os.path.basename(fdir)[:44]:44s} SKIP {e}")
             continue
+        ctxp = int(args.get("ctx_points", 0) or 0)
         ds = DKDataset([fd], [a.variant], task=task,
-                       use_feat=not args.get("no_feat", False))
+                       use_feat=not args.get("no_feat", False), ctx_points=ctxp)
         item = ds[0]
-        batch, plan, rctx = make_dk_collate([fd], need_ctx=False)([item])
+        batch, plan, rctx = make_dk_collate([fd], need_ctx=ctxp > 0)([item])
         batch.tree_plan = plan; batch.recon_ctx = rctx
         with torch.no_grad():
             dv, cur, aux = model(batch)
