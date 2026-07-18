@@ -150,8 +150,18 @@ def run_lens(a, args, model, unseen, task):
             A1p = np.linalg.pinv(A1)
             PE = E - A1 @ (A1p @ E)
             Pb = bj - A1 @ (A1p @ bj)
-            delta, *_ = np.linalg.lstsq(PE, Pb, rcond=None) if E.shape[1] else (np.zeros(0, dtype=np.complex128),)
-            vh = A1p @ (bj - E @ delta) if E.shape[1] else A1p @ bj
+            # rcond truncation: stiff-Y families (reactor/xfmr) give PE a broad
+            # singular spectrum; unregularized lstsq pours huge delta into
+            # near-nullspace directions for negligible residual gain (measured:
+            # reactor 0.46 -> 981). Directions the physics cannot resolve keep
+            # the model estimate (delta=0) instead of fitting fp64 noise.
+            if E.shape[1]:
+                delta, *_ = np.linalg.lstsq(PE, Pb, rcond=1e-8)
+                if np.abs(E @ delta).sum() > 10 * np.abs(bj).sum():
+                    delta = np.zeros(E.shape[1], dtype=np.complex128)  # unstable -> plain
+                vh = A1p @ (bj - E @ delta)
+            else:
+                vh = A1p @ bj
             Vj = Vt.copy(); Vj[hidnodes] = vh
             skill_joint = float(np.abs(Vj[free] - Vt[free]).sum() / dvn)
         hid_pct = []
