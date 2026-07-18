@@ -214,6 +214,8 @@ def main():
     ap.add_argument("--subset-seed", type=int, default=401)
     ap.add_argument("--wp", type=float, default=1e-3,
                     help="delta-prior weight: trust in the model's Icomp estimate")
+    ap.add_argument("--clean-input", action="store_true",
+                    help="optimistic mode: model sees CLEAN visible V features")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     args = ck["args"]
@@ -232,7 +234,8 @@ def main():
     unseen = [d for tup in zip_longest(*pools) for d in tup if d]
 
     print(f"=== noisy-se: task={a.task} sigma={a.sigma} gross={a.gross_frac} "
-          f"subset-seed={a.subset_seed} wp={a.wp} ckpt={a.ckpt} ===")
+          f"subset-seed={a.subset_seed} wp={a.wp} "
+          f"input={'CLEAN' if a.clean_input else 'noisy'} ckpt={a.ckpt} ===")
     print(f"{'feeder':44s} {'n':>6s} {'floor':>9s} {'naive':>9s} {'wls':>9s} "
           f"{'ns':>9s} {'robust':>9s} {'clean':>9s} {'flag P/R':>9s}")
     rows = []
@@ -250,16 +253,12 @@ def main():
         item = ds[0]
         batch, plan, rctx = make_dk_collate([fd], need_ctx=False)([item])
         batch.tree_plan = plan; batch.recon_ctx = rctx
-        with torch.no_grad():
-            dv, cur, aux = model(batch)
         nd = batch["node"]
         d = FeederScenarios(fdir)[a.variant]
         n = node_count(d)
         if n > 4000:
             print(f"{os.path.basename(fdir)[:44]:44s} SKIP n={n} (dense cap)")
             continue
-        Ybus, _ = build_ybus(d, n)
-        rhs, hid_slot_nodes = build_rhs(d, batch, aux, n)
         Vt = d["node"].V_r_pu.double().numpy() + 1j * d["node"].V_i_pu.double().numpy()
         Vi = (d["node"].V_r_init_pu.double().numpy()
               + 1j * d["node"].V_i_init_pu.double().numpy())
@@ -275,7 +274,10 @@ def main():
         visI = np.where(vis_np & ~fixm)[0]          # interior measurements
         dvn = np.abs(Vt[free] - Vi[free]).sum() + 1e-30
 
-        # plant corruption (per-feeder deterministic)
+        # plant corruption (per-feeder deterministic) BEFORE the model forward:
+        # the estimator must see the same noisy measurements the solver sees
+        # (the model consumes visible V as nd.dv * vis). --clean-input keeps
+        # the optimistic clean-features mode for comparison.
         frng = np.random.default_rng(
             [a.subset_seed, zlib.crc32(os.path.basename(fdir).encode())])
         medv = float(np.median(np.abs(Vt[free]))) or 1.0
@@ -289,6 +291,14 @@ def main():
         Vm[visI[gidx]] += 0.2 * medv * np.exp(2j * np.pi * frng.random(ngross))
         planted = np.zeros(visI.size, dtype=bool); planted[gidx] = True
         floor = float(np.abs(Vm[visI] - Vt[visI]).sum() / dvn)
+        if not a.clean_input:
+            pert = Vm - Vt
+            nd.dv = nd.dv + torch.from_numpy(
+                np.stack([pert.real, pert.imag], 1)).to(nd.dv.dtype)
+        with torch.no_grad():
+            dv, cur, aux = model(batch)
+        Ybus, _ = build_ybus(d, n)
+        rhs, hid_slot_nodes = build_rhs(d, batch, aux, n)
 
         def skill(V):
             return float(np.abs(V[free] - Vt[free]).sum() / dvn)
