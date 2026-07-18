@@ -354,8 +354,17 @@ def main():
     lim = args.limit_feeders
     tr_dirs = sp["train"]
     if args.subset_seed is not None:
+        # STRATIFIED shuffle: permute within each corpus, then re-interleave, so a
+        # random subset keeps the per-corpus balance. Shuffling the interleaved
+        # list (first version) made subsets ~63% minimal_component by count and
+        # produced a train/eval domain shift (measured: unseen 2.13 vs 0.83).
         rs = np.random.default_rng(args.subset_seed)
-        tr_dirs = list(tr_dirs); rs.shuffle(tr_dirs)
+        shuffled = []
+        for c in per_corpus:
+            lst = list(c["train"])
+            rs.shuffle(lst)
+            shuffled.append(lst)
+        tr_dirs = [d for tup in zip_longest(*shuffled) for d in tup if d]
     tr_dirs = tr_dirs[:lim] if lim else tr_dirs
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else args.eval_feeders)]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
