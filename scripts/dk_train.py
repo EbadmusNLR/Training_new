@@ -137,7 +137,11 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                     te_ = torch.cat([feat(tr_r[mm_l], sc, use_feat),
                                      feat(tr_i[mm_l], sc, use_feat)], -1)
                     cos = torch.nn.functional.cosine_similarity(pe_, te_, dim=-1)
-                    term = ((1.0 - cos) ** 2).mean()
+                    # HYBRID: direction (SCE) + light magnitude anchor. Pure SCE left
+                    # magnitudes unmoored (T26b: ic 170k-982k%) -- estimates feed a
+                    # physics solve in real units, so amplitude must stay supervised.
+                    mag_anchor = ((pe_.norm(dim=-1) - te_.norm(dim=-1)) ** 2).mean()
+                    term = ((1.0 - cos) ** 2).mean() + 0.1 * mag_anchor
                 else:
                     term = fr.mean() + fi.mean()
                     if norm:
