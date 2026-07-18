@@ -25,8 +25,8 @@ import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from core.scenario_store import FeederScenarios
-from gridfm.dk_physics import STORES
-from gridfm.dk_data import discover_feeders, split_feeders
+from gridfm.dk_physics import STORES, FC
+from gridfm.dk_data import discover_feeders, split_feeders, store_yfull
 
 ROOTS = ["/kfs2/projects/gogpt/Ebadmus/training_data/" + c for c in
          ("SMART-DS_1000", "new_dss_data", "dss_data", "minimal_component")]
@@ -59,13 +59,14 @@ def main():
             print(f"{os.path.basename(fdir)[:44]:44s} SKIP {e}")
             continue
         nf += 1
-        for s, (prefix, _, _) in STORES.items():
-            fr, fi = f"{prefix}_r_pu", f"{prefix}_i_pu"
-            if s not in d.node_types or fr not in d[s]:
+        for s, (prefix, nterm, _) in STORES.items():
+            if s not in d.node_types or f"{prefix}_r_pu" not in d[s]:
                 continue
-            Y = (d[s][fr].double().numpy()
-                 + 1j * d[s][fi].double().numpy())
-            if Y.ndim < 3 or not Y.shape[0]:
+            # raw fields are FLAT [n, dim*dim]; the line keeps physical blocks
+            # (Ys + Yh) -- store_yfull rebuilds the full [n,dim,dim] either way.
+            yr, yi = store_yfull(d[s], s, FC * nterm)
+            Y = yr.double().numpy() + 1j * yi.double().numpy()
+            if not Y.shape[0]:
                 continue
             n = Y.shape[0]
             flat = Y.reshape(n, -1)
