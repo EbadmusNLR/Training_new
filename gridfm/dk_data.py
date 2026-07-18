@@ -342,7 +342,13 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
             n_, sm, sq = e[0], e[2], e[3]
             mean = sm / n_
             var = max(sq / n_ - mean * mean, 0.0)
-            ls.append([mean, max(var ** 0.5, 0.5)])   # floor std at 0.5 nat
+            # std floored at 0.5 nat (single-member families decode) and CAPPED
+            # at 2.0 nat: some patterns (vsource/reactor) merge components spanning
+            # ~10 decades (T31), so an uncapped std lets exp(mean+std*tanh(z)) reach
+            # millions when misclassified, destroying the magnitude-WAPE. Beyond
+            # ~2 nat the scale is snapshot-unidentifiable anyway (T22) -> clamp to
+            # the family mean and eat a bounded 7x error, not 6e4x (v5.2).
+            ls.append([mean, min(max(var ** 0.5, 0.5), 2.0)])
         Ycb_ls[s] = torch.tensor(ls, dtype=torch.float32)   # [K, 2]
     return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb, "Ycb_ls": Ycb_ls,
             "kcl": max(kcl, 1e-9), "dv_std": dv_std, "v_std": v_std}

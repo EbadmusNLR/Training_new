@@ -161,6 +161,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # space, per-family scales). Same pattern as ic_term; the general four-array
     # mask makes Y a first-class target.
     y_mse = dv.new_zeros(()); yn = dv.new_zeros(()); yd = dv.new_zeros(()); ny_t = 0
+    y_per = {}   # per-store [err_sum, mag_sum] for a WAPE breakdown (diagnostic)
     if aux and aux.get("y_est"):
         for s, (eyr, eyi) in aux["y_est"].items():
             st = batch[s]; mm = aux["y_msk"][s]
@@ -193,7 +194,9 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                     else z.new_zeros(())
                 y_mse = y_mse + ce + lsm; ny_t += 1
                 es = torch.stack([eyr[mm], eyi[mm]], -1)
-                yn = yn + (es - tr_st).abs().sum(); yd = yd + tr_st.abs().sum()
+                en = (es - tr_st).abs().sum(); em = tr_st.abs().sum()
+                yn = yn + en; yd = yd + em
+                y_per[s] = [float(en), float(em)]
                 continue
             # FEAT space, like the ic loss: pu-space Y spans ~12 orders, so a pu MSE
             # is owned by the stiffest entries and the sinh decode explodes its
@@ -215,7 +218,9 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             y_mse = y_mse + term; ny_t += 1
             es = torch.stack([eyr[mm], eyi[mm]], -1)
             tr = torch.stack([st.yr[mm], st.yi[mm]], -1)
-            yn = yn + (es - tr).abs().sum(); yd = yd + tr.abs().sum()
+            en = (es - tr).abs().sum(); em = tr.abs().sum()
+            yn = yn + en; yd = yd + em
+            y_per[s] = [float(en), float(em)]
     y_term = y_mse / max(ny_t, 1)
     res = kcl_of(batch, cur)
     kcl = torch.asinh(res / scales["kcl"]).abs().mean()
@@ -232,6 +237,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     ic_wape = 100.0 * float(icn) / (float(icd) + 1e-30) if nic_t else 0.0
     y_wape = 100.0 * float(yn) / (float(yd) + 1e-30) if ny_t else 0.0
     m = {"ic_wape": ic_wape, "y_wape": y_wape,
+         **{f"y_wape_{s}": 100.0 * v[0] / (v[1] + 1e-30) for s, v in y_per.items()},
          "v_skill_C": v_skill_C, "v_skill_D": v_skill_D,
          "ic_wapeB": 100.0 * icc["B"][0] / (icc["B"][1] + 1e-30) if icc["B"][1] else float("nan"),
          "ic_wapeD": 100.0 * icc["D"][0] / (icc["D"][1] + 1e-30) if icc["D"][1] else float("nan"),
@@ -572,6 +578,8 @@ def main():
               f"        lenses: se v_skill={lens['se']['v_skill']:.3f} I={lens['se']['i_wape']:.2f}% | "
               f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%"
               + (f" | par y_wape={lens['par']['y_wape']:.2f}%" if "par" in lens else "")
+              + (("  [" + " ".join(f"{k[7:]}:{lens['par'][k]:.0f}" for k in sorted(lens['par'])
+                                   if k.startswith("y_wape_")) + "]") if "par" in lens else "")
               + ((f"\n        rnd-lens classes: v_skill C={lens['rnd'].get('v_skill_C', float('nan')):.3f} "
                   f"D={lens['rnd'].get('v_skill_D', float('nan')):.3f} | "
                   f"ic_wape B={lens['rnd'].get('ic_wapeB', float('nan')):.1f}% "
