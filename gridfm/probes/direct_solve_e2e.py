@@ -141,8 +141,18 @@ def run_lens(a, args, model, unseen, task):
                 if rowidx[na] >= 0:
                     E[rowidx[na], j] = -1.0
             bj = rhs[rows_ok] - Ybus[np.ix_(rows_ok.nonzero()[0], visnodes)] @ Vt[visnodes]
-            x, *_ = np.linalg.lstsq(np.concatenate([A1, E], axis=1), bj, rcond=None)
-            Vj = Vt.copy(); Vj[hidnodes] = x[: len(hidnodes)]
+            # Two-stage min-||delta||: naive lstsq on [V_hid, delta] min-norms V TOO,
+            # pulling V toward zero on underdetermined samples (measured: 11.9 vs
+            # plain solve 0.044). Instead: V is determined by KCL for ANY delta via
+            # A1's pseudoinverse, so pick delta minimizing the projected residual
+            # (ties -> min ||delta||, i.e. stay at the model estimate; delta=0
+            # recovers the plain solve, so joint can never be worse).
+            A1p = np.linalg.pinv(A1)
+            PE = E - A1 @ (A1p @ E)
+            Pb = bj - A1 @ (A1p @ bj)
+            delta, *_ = np.linalg.lstsq(PE, Pb, rcond=None) if E.shape[1] else (np.zeros(0, dtype=np.complex128),)
+            vh = A1p @ (bj - E @ delta) if E.shape[1] else A1p @ bj
+            Vj = Vt.copy(); Vj[hidnodes] = vh
             skill_joint = float(np.abs(Vj[free] - Vt[free]).sum() / dvn)
         hid_pct = []
         for s in aux.get("ic_msk", {}):
