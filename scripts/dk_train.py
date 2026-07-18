@@ -46,7 +46,7 @@ def kcl_of(batch, cur):
 
 
 def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
-           norm=False, aux=None, w_ic=1.0, w_y=1.0, ic_d_only=False):
+           norm=False, aux=None, w_ic=1.0, w_y=1.0, ic_d_only=False, ic_sce=False):
     nd = batch["node"]
     msk = nd.msk_v
     # voltage: MSE on dv (small) + report WAPE
@@ -129,10 +129,20 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             fr = (feat(er[mm_l], sc, use_feat) - feat(tr_r[mm_l], sc, use_feat)) ** 2 if mm_l is not None else None
             fi = (feat(ei_[mm_l], sc, use_feat) - feat(tr_i[mm_l], sc, use_feat)) ** 2 if mm_l is not None else None
             if fr is not None:
-                term = fr.mean() + fi.mean()
-                if norm:
-                    term = term / ((feat(tr_r[mm_l], sc, use_feat) ** 2).mean()
-                                   + (feat(tr_i[mm_l], sc, use_feat) ** 2).mean() + EPS)
+                if ic_sce:
+                    # GraphMAE scaled cosine error: magnitude-robust (the measured
+                    # failure mode of every magnitude loss on these heads)
+                    pe_ = torch.cat([feat(er[mm_l], sc, use_feat),
+                                     feat(ei_[mm_l], sc, use_feat)], -1)
+                    te_ = torch.cat([feat(tr_r[mm_l], sc, use_feat),
+                                     feat(tr_i[mm_l], sc, use_feat)], -1)
+                    cos = torch.nn.functional.cosine_similarity(pe_, te_, dim=-1)
+                    term = ((1.0 - cos) ** 2).mean()
+                else:
+                    term = fr.mean() + fi.mean()
+                    if norm:
+                        term = term / ((feat(tr_r[mm_l], sc, use_feat) ** 2).mean()
+                                       + (feat(tr_i[mm_l], sc, use_feat) ** 2).mean() + EPS)
                 ic_mse = ic_mse + term; nic_t += 1
             icn = icn + (er[mm] - tr_r[mm]).abs().sum() + (ei_[mm] - tr_i[mm]).abs().sum()
             icd = icd + tr_r[mm].abs().sum() + tr_i[mm].abs().sum()
@@ -305,6 +315,9 @@ def main():
                          "same feeder attached per PC component as (Icomp, V_loc) "
                          "pairs -- the identifiability mechanism for the class-B "
                          "Icomp split (single-snapshot ic_wape floor ~100%%)")
+    ap.add_argument("--ic-sce", action="store_true",
+                    help="GraphMAE-style scaled cosine error for the ic loss "
+                         "(magnitude-robust; direction-first supervision)")
     ap.add_argument("--ic-d-only", action="store_true",
                     help="restrict the ic loss to class-D comps (node V hidden too). "
                          "Class-B supervision trains amplitude-guessing on a task that "
@@ -472,7 +485,7 @@ def main():
                 loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                                  w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
                                  aux=aux, w_ic=args.w_ic, w_y=args.w_y,
-                                 ic_d_only=args.ic_d_only)
+                                 ic_d_only=args.ic_d_only, ic_sce=args.ic_sce)
             if prof is not None:
                 torch.cuda.synchronize(); prof["fwd"] += time.time() - t_mark; t_mark = time.time()
             opt.zero_grad(); loss.backward()
