@@ -291,21 +291,36 @@ class DKSolver(nn.Module):
         if self.fb_points > 0:
             stride = max(1, self.steps // (self.fb_points + 1))
             fb_at = {stride * (k + 1) - 1 for k in range(self.fb_points)}
+        # flatten each store's terminals once; reused by all MP steps
+        merged = {}
+        for s, terms in edges.items():
+            cs = [t[0] for t in terms if t is not None]
+            if not cs:
+                merged[s] = None
+                continue
+            comp = torch.cat(cs)
+            node = torch.cat([t[1] for t in terms if t is not None])
+            col = torch.cat([t[2] for t in terms if t is not None])
+            merged[s] = (comp, node, col, torch.ones(comp.shape[0], 1, device=dev))
         for step in range(self.steps):
             node_msg = torch.zeros_like(hn)
             node_deg = torch.zeros(hn.shape[0], 1, device=dev)
             comp_msg = {s: torch.zeros_like(hc[s]) for s in edges}
             comp_deg = {s: torch.zeros(hc[s].shape[0], 1, device=dev) for s in edges}
-            for s, terms in edges.items():
-                for ti, t in enumerate(terms):
-                    if t is None:
-                        continue
-                    comp, node, col = t
-                    e = self.edge_mlp[s](torch.cat([hc[s][comp], hn[node], self.slot_emb[s](col)], 1))
-                    node_msg.index_add_(0, node, e)
-                    node_deg.index_add_(0, node, torch.ones(e.shape[0], 1, device=dev))
-                    comp_msg[s].index_add_(0, comp, e)
-                    comp_deg[s].index_add_(0, comp, torch.ones(e.shape[0], 1, device=dev))
+            for s in edges:
+                mg = merged.get(s)
+                if mg is None:
+                    continue
+                comp, node, col, ones = mg
+                # ONE edge-MLP call per store per step (terminals concatenated):
+                # index_add accumulates identically to the old per-terminal loop,
+                # so this is math-equivalent -- it only cuts kernel launches (the
+                # profiled bottleneck: fwd+bwd 97% of step at ~135ms for 8M params).
+                e = self.edge_mlp[s](torch.cat([hc[s][comp], hn[node], self.slot_emb[s](col)], 1))
+                node_msg.index_add_(0, node, e)
+                node_deg.index_add_(0, node, ones)
+                comp_msg[s].index_add_(0, comp, e)
+                comp_deg[s].index_add_(0, comp, ones)
             hn = self.node_gru(node_msg / node_deg.clamp(min=1), hn)
             for s in edges:
                 hc[s] = self.comp_gru[s](comp_msg[s] / comp_deg[s].clamp(min=1), hc[s])
