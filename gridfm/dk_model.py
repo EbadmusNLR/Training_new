@@ -43,7 +43,7 @@ class MLP(nn.Sequential):
 
 class DKSolver(nn.Module):
     def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
-                 exact_decoder=True, fb_points=0, vabs=False, four_mask=False):
+                 exact_decoder=True, fb_points=0, vabs=False, four_mask=False, use_pe=True):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
@@ -63,6 +63,9 @@ class DKSolver(nn.Module):
         # useless here because the tree reconstruction satisfies KCL by construction.
         self.fb_points = int(fb_points)
         self.stores = list(STORES)
+        # --no-pe ablation zeroes the PE features (width unchanged for ckpt compat):
+        # T13 pe150 showed MORE positional info memorizes (train 0.554 -> unseen 1.182)
+        self.use_pe = bool(use_pe)
         self.node_enc = MLP(2 + 2 + 1 + PE_DIM, hidden, hidden)  # v_init, dv*vis, vis, pe
         self.comp_enc = nn.ModuleDict()
         self.slot_emb = nn.ModuleDict()
@@ -268,7 +271,8 @@ class DKSolver(nn.Module):
         edges = self._edges(batch)
         # node encode
         vis = nd.vis_v.unsqueeze(1).float()
-        node_in = torch.cat([nd.v_init, nd.dv * vis, vis, nd.pe], 1)
+        node_in = torch.cat([nd.v_init, nd.dv * vis, vis,
+                             nd.pe if self.use_pe else torch.zeros_like(nd.pe)], 1)
         hn = self.node_enc(node_in)
         # component encode from asinh(Y)
         hc = {}

@@ -254,6 +254,8 @@ def main():
                          "backward+step (adds cuda syncs; probe-only)")
     ap.add_argument("--compile", action="store_true",
                     help="torch.compile(reduce-overhead, dynamic=True) on the model")
+    ap.add_argument("--no-pe", action="store_true",
+                    help="zero the positional-encoding features (ablation; T13 pe150 memorized)")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
     if args.no_cur:
@@ -326,7 +328,7 @@ def main():
     model = DKSolver(hidden=args.hidden, steps=args.steps,
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
                      fb_points=args.fb_points, vabs=args.vabs,
-                     four_mask=args.four_mask).to(dev)
+                     four_mask=args.four_mask, use_pe=not args.no_pe).to(dev)
     model.skip_current = args.no_cur
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", dynamic=True)
