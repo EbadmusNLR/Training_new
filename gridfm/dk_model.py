@@ -363,6 +363,10 @@ class DKSolver(nn.Module):
                 z = self.y_head[s](hc[s]).clamp(-8.0, 8.0).reshape(n_, dim, dim, 2)
                 ypu = inv_feat(z, self._yscale(s), self.use_feat)
                 self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
+                self._last_aux["y_feat"] = self._last_aux.get("y_feat", {})
+                self._last_aux["y_feat"][s] = z          # feat space, for the loss
+                self._last_aux["y_scale"] = self._last_aux.get("y_scale", {})
+                self._last_aux["y_scale"][s] = self._yscale(s)
                 self._last_aux["y_msk"][s] = ~st.vis_y
         return dvp, cur, self._last_aux
 

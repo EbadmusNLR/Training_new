@@ -112,11 +112,18 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             st = batch[s]; mm = aux["y_msk"][s]
             if not bool(mm.any()):
                 continue
-            tr = torch.stack([st.yr[mm], st.yi[mm]], -1)
-            es = torch.stack([eyr[mm], eyi[mm]], -1)
-            sc = tr.abs().mean().clamp(min=1e-9)
-            term = (((es - tr) / sc) ** 2).mean()
+            # FEAT space, like the ic loss: pu-space Y spans ~12 orders, so a pu MSE
+            # is owned by the stiffest entries and the sinh decode explodes its
+            # gradients (measured: par y_wape 1730% -- WORSE than predicting zero).
+            # feat(inv_feat(z)) == z, so compare the head's z to feat(truth) directly.
+            zt = feat(torch.stack([st.yr[mm], st.yi[mm]], -1), aux["y_scale"][s], use_feat)
+            ze = aux["y_feat"][s][mm]
+            term = ((ze - zt) ** 2).mean()
+            if norm:
+                term = term / ((zt ** 2).mean() + EPS)
             y_mse = y_mse + term; ny_t += 1
+            es = torch.stack([eyr[mm], eyi[mm]], -1)
+            tr = torch.stack([st.yr[mm], st.yi[mm]], -1)
             yn = yn + (es - tr).abs().sum(); yd = yd + tr.abs().sum()
     y_term = y_mse / max(ny_t, 1)
     res = kcl_of(batch, cur)
