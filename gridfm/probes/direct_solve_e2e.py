@@ -57,10 +57,19 @@ def main():
         print(f"\n=== lens: {task} ===")
         print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} "
               f"{'skill_joint':>11s} {'hid_ic%':>8s}")
-        run_lens(a, args, model, unseen, task)
+        rows = run_lens(a, args, model, unseen, task)
+        if rows:
+            hd, so, jo = (np.array([r[k] for r in rows]) for k in (0, 1, 2))
+            jo = jo[~np.isnan(jo)]
+            print(f"--- {task} over {len(rows)} feeders: "
+                  f"head med/mean/max {np.median(hd):.3f}/{hd.mean():.3f}/{hd.max():.3f} | "
+                  f"solve {np.median(so):.2e}/{so.mean():.2e}/{so.max():.2e} | "
+                  f"joint {np.median(jo):.2e}/{jo.mean():.2e}/{jo.max():.2e}"
+                  if jo.size else f"--- {task}: no joint rows")
 
 
 def run_lens(a, args, model, unseen, task):
+    rows = []
     for fdir in unseen[: a.n_feeders * 3]:
         try:
             fd = DKFeeder(fdir)
@@ -170,7 +179,9 @@ def run_lens(a, args, model, unseen, task):
             hid_pct.append(float(m.float().mean()) * 100)
         print(f"{os.path.basename(fdir)[:44]:44s} {n:6d} {skill_head:10.3f} "
               f"{skill_solve:11.3f} {skill_joint:11.2e} "
-              f"{np.mean(hid_pct) if hid_pct else 0:8.1f}")
+              f"{np.mean(hid_pct) if hid_pct else 0:8.1f}", flush=True)
+        rows.append((skill_head, skill_solve, skill_joint))
+    return rows
 
 
 if __name__ == "__main__":
