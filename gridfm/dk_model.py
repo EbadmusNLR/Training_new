@@ -75,6 +75,11 @@ class DKSolver(nn.Module):
         # becomes maskable with its own estimate head. Old checkpoints predate these
         # modules, so the extra widths/heads exist only when four_mask=True.
         self.four_mask = bool(four_mask)
+        # skip_current: do NOT physics-decode/reconstruct currents in forward. The
+        # vonly/four-array losses never read them, and the decode (host physics +
+        # recon ctx) dominates step time. ic/y estimates still run -- they are the
+        # supervised outputs. Requires w_i=0, w_kcl=0, fb_points=0.
+        self.skip_current = False
         self.y_head = nn.ModuleDict()
         for s in self.stores:
             _, nterm, _ = STORES[s]
@@ -326,7 +331,23 @@ class DKSolver(nn.Module):
         # depth is the iterative refinement. Reconstruct once at the end.
         dvp = self._pred_dv(nd, hn)
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
-        cur = self._completed_currents(batch, edges, hc, v)
+        if self.skip_current:
+            aux = {"ic_est": {}, "ic_msk": {}}
+            for s in edges:
+                if s not in PHYS_DECODE:
+                    continue
+                st = batch[s]
+                if hasattr(st, "vis_ic") and not bool(st.vis_ic.all()):
+                    z = self.ic_head[s](hc[s]).clamp(-8.0, 8.0)
+                    er = inv_feat(z[:, :FC], self._iscale(s), self.use_feat)
+                    ei = inv_feat(z[:, FC:], self._iscale(s), self.use_feat)
+                    w = st.icr.shape[1]
+                    aux["ic_est"][s] = (er[:, :w], ei[:, :w])
+                    aux["ic_msk"][s] = ~st.vis_ic
+            self._last_aux = aux
+            cur = {}
+        else:
+            cur = self._completed_currents(batch, edges, hc, v)
         if self.four_mask:
             # Y estimates for hidden components (feat space -> pu via yscale).
             # NOTE: the current-decode path above still uses TRUTH Y internally;

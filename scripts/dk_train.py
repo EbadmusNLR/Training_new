@@ -226,8 +226,19 @@ def main():
                     help="warmup fraction of total steps before the cosine decay")
     ap.add_argument("--seed", type=int, default=0,
                     help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
+    ap.add_argument("--no-cur", action="store_true",
+                    help="FAST path: skip current decode + recon-ctx entirely "
+                         "(requires w_i=0, w_kcl=0, fb_points=0; the dominant CPU "
+                         "cost feeds outputs those losses never read)")
+    ap.add_argument("--bf16", action="store_true",
+                    help="autocast forward+loss to bfloat16 (H100); no GradScaler needed")
+    ap.add_argument("--eval-every", type=int, default=1,
+                    help="run the (expensive) eval+lenses every N epochs")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
+    if args.no_cur:
+        assert args.w_i == 0.0 and (args.no_kcl or args.w_kcl == 0.0) and args.fb_points == 0, \
+            "--no-cur skips current reconstruction; w_i/w_kcl/fb_points must be 0"
     # four-array architecture (I_bus inputs, Y head) follows the objective; stored
     # in the ckpt args so evaluators rebuild the right encoder widths.
     args.four_mask = args.task in ("random4", "param")
@@ -246,6 +257,9 @@ def main():
         torch.cuda.set_device(local_rank)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    # H100: TF32 matmuls are ~2x fp32 at negligible loss for O(1) feature nets;
+    # the physics that needs precision runs in fp64 outside the model.
+    torch.set_float32_matmul_precision("high")
 
     dev = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     use_feat = not args.no_feat
@@ -293,11 +307,16 @@ def main():
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
                      fb_points=args.fb_points, vabs=args.vabs,
                      four_mask=args.four_mask).to(dev)
+    model.skip_current = args.no_cur
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[local_rank], find_unused_parameters=True)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    try:
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01,
+                                fused=torch.cuda.is_available())
+    except (RuntimeError, TypeError):
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     # Warmup + cosine anneal. Constant LR leaves the last order(s) of magnitude on the
     # table: the reference PINN's low-error runs annealed (s03_clean68_anneal), and its
     # 7.5e-08 run trained 400 epochs -- reaching tiny error needs a tiny final LR.
@@ -311,8 +330,8 @@ def main():
     # are averaged by DDP, so this is plain data parallelism over samples
     gen = torch.Generator(); gen.manual_seed(args.seed * 7919 + rank)
     sampler = torch.utils.data.RandomSampler(train_ds, num_samples=spe, generator=gen)
-    tr_collate = make_dk_collate(train_ds.feeders)
-    un_collate = make_dk_collate(unseen_ds.feeders)
+    tr_collate = make_dk_collate(train_ds.feeders, need_ctx=not args.no_cur)
+    un_collate = make_dk_collate(unseen_ds.feeders, need_ctx=not args.no_cur)
     # persistent_workers: without it the pool is re-forked EVERY epoch, and each worker
     # re-imports torch/PyG (~60s of the epoch). prefetch keeps the GPU fed while a worker
     # builds the next batch's per-variant recon ctx.
@@ -332,10 +351,11 @@ def main():
         te = time.time()
         for batch, plan, rctx in train_dl:
             batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
-            dv, cur, aux = model(batch)
-            loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
-                             w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
-                             aux=aux, w_ic=args.w_ic, w_y=args.w_y)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+                dv, cur, aux = model(batch)
+                loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
+                                 w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
+                                 aux=aux, w_ic=args.w_ic, w_y=args.w_y)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
             for k, v in m.items():
@@ -346,6 +366,15 @@ def main():
         if world > 1:
             torch.distributed.barrier()
         if rank != 0:
+            continue
+        if epoch % args.eval_every and epoch != args.epochs:
+            # skipped-eval epoch: still checkpoint (crash safety) + short train line
+            state = (model.module if world > 1 else model).state_dict()
+            torch.save({"model": state, "args": vars(args), "epoch": epoch, "scales": scales},
+                       Path(args.out) / "last.pt")
+            print(f"ep{epoch:03d} {time.time()-te:.0f}s | train V={tr['v_wape']:.3f}% "
+                  f"skill={tr['v_skill']:.3f} ic_wape={tr['ic_wape']:.1f}% "
+                  f"y_wape={tr['y_wape']:.1f}% (eval skipped)", flush=True)
             continue
         model.eval(); ea = {}
         with torch.no_grad():

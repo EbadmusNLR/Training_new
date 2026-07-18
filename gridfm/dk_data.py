@@ -560,13 +560,25 @@ class DKDataset(torch.utils.data.Dataset):
         return data
 
 
-def make_dk_collate(feeders):
+def make_dk_collate(feeders, need_ctx=True):
     """Collate that batches the graph, the KCL tree plan, AND the exact decoder's
-    reconstruction context (both offset to match PyG's node/comp concatenation)."""
+    reconstruction context (both offset to match PyG's node/comp concatenation).
+
+    need_ctx=False (the FAST path): skip plan/ctx entirely. The recon-ctx build is
+    the dominant CPU cost per batch, and it only feeds the current decode -- which
+    the vonly/four-array losses (w_i=0, w_kcl=0) never read. Returns (batch, None,
+    None); the model must run with skip_current=True."""
     from torch_geometric.data import Batch
     from .dk_physics import ensure_batch_schema
     from .dk_tree import (batch_plans, batch_recon_ctx, build_recon_ctx,
                           SHUNT_STORES, SERIES_STORES)
+
+    def collate_fast(samples):
+        ensure_batch_schema(samples)
+        return Batch.from_data_list(samples), None, None
+
+    if not need_ctx:
+        return collate_fast
 
     def collate(samples):
         fids = [int(s.feeder_id) for s in samples]
