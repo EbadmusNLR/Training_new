@@ -234,6 +234,7 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     vsub = (variants[:max_variants] if variants else [0])
     Ib: dict[str, list] = {s: [] for s in STORES}
     Yb: dict[str, dict] = {s: {"r_diag": [], "r_off": [], "i_diag": [], "i_off": []} for s in STORES}
+    Yp: dict[str, list] = {s: [] for s in STORES}   # per-position |Y| samples [n,dim,dim,2]
 
     def _keep(t):
         t = t.flatten()
@@ -267,9 +268,25 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
                 Yb[s]["r_off"].append(_keep(yr[:, ~eye].abs()))
                 Yb[s]["i_diag"].append(_keep(yi[:, eye].abs()))
                 Yb[s]["i_off"].append(_keep(yi[:, ~eye].abs()))
+                ys = torch.stack([yr.abs(), yi.abs()], -1)     # [n,dim,dim,2]
+                if ys.shape[0] > 256:
+                    ys = ys[torch.randint(0, ys.shape[0], (256,))]
+                Yp[s].append(ys)
 
     Iscale = {s: _p95(Ib[s]) for s in STORES}
     Yscale = {s: {k: _p95(Yb[s][k]) for k in Yb[s]} for s in STORES}
+    # Per-POSITION Y scales [dim,dim,2]: most entries of a component Y are
+    # structural zeros/tiny couplings; one band-p95 scale makes any z-error there
+    # decode to sinh(z)*p95 -- a pu error ~1e5x the entry (measured: par y_wape
+    # 2.4e6% -- the y_head could never beat predict-zero). Position-wise p95 gives
+    # tiny positions tiny scales, so z-errors there decode to negligible pu.
+    Ypos = {}
+    for s in STORES:
+        if not Yp[s]:
+            continue
+        allc = torch.cat(Yp[s])                                # [N,dim,dim,2]
+        q = torch.quantile(allc.reshape(allc.shape[0], -1).float(), 0.95, dim=0)
+        Ypos[s] = q.reshape(allc.shape[1], allc.shape[2], 2).clamp(min=1e-9)
     med = [Iscale[s] for s in STORES if Ib[s]]
     kcl = float(np.median(med)) if med else I_SCALE
     # Train-set std of the voltage residual per (re, im): the head's output gauge.
@@ -282,8 +299,8 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     # the train sample (phases spread the real/imag parts to O(1)).
     v_all = torch.cat(vss) if vss else torch.ones(1, 2)
     v_std = [max(float(v_all[:, 0].std()), 1e-6), max(float(v_all[:, 1].std()), 1e-6)]
-    return {"I": Iscale, "Y": Yscale, "kcl": max(kcl, 1e-9), "dv_std": dv_std,
-            "v_std": v_std}
+    return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "kcl": max(kcl, 1e-9),
+            "dv_std": dv_std, "v_std": v_std}
 
 
 def _ydim(store):

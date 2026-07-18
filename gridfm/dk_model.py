@@ -104,7 +104,9 @@ class DKSolver(nn.Module):
             isc = max(float(scales["I"][s]) if scales else I_SCALE, 1e-9)
             self.register_buffer(f"iscale_{s}", torch.tensor(isc))
             ys = torch.ones(dim, dim, 2)
-            if scales:
+            if scales and s in scales.get("Ypos", {}):
+                ys = scales["Ypos"][s].float().clone()   # per-position p95 (see fit_scales)
+            elif scales:
                 yd = scales["Y"][s]; eye = torch.eye(dim, dtype=torch.bool)
                 ys[..., 0] = torch.where(eye, torch.tensor(float(yd["r_diag"])), torch.tensor(float(yd["r_off"])))
                 ys[..., 1] = torch.where(eye, torch.tensor(float(yd["i_diag"])), torch.tensor(float(yd["i_off"])))
