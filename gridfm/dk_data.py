@@ -477,7 +477,99 @@ def mask_random4(data, rng):
             st.vis_y = torch.from_numpy(rng.random(n) < p_y)
         if s in PC_STORES:
             st.vis_ic = torch.from_numpy(rng.random(n) < p_ic)
+    # T29b (measured): estimators trained on iid masks transfer NEGATIVELY to
+    # contiguous dark regions (region40: joint0 beat joint ~7x on s1). Mix
+    # region patterns in: REGION_MIX of samples additionally hide one connected
+    # ~U(0.1,0.5) region's V + attached Icomp on top of the iid draws.
+    pmix = float(os.environ.get("REGION_MIX", "0"))
+    if pmix > 0 and rng.random() < pmix:
+        reg = _bfs_region(data, rng, float(rng.uniform(0.1, 0.5)))
+        if reg is not None:
+            _hide_region(data, reg)
     return data
+
+
+def _bfs_region(data, rng, frac):
+    """Connected node region of ~frac of the nodes (BFS from a random seed over
+    the multi-terminal component graph); never includes slack/ground. Returns
+    None on degenerate nets where every node is slack/ground (minimal_component
+    vsource-only cases -- crashed the first region-lens submit)."""
+    nd = data["node"]
+    n = int(nd.num_nodes)
+    adj = [[] for _ in range(n)]
+    for s, (_, nterm, _) in STORES.items():
+        if nterm < 2 or s not in data.node_types:
+            continue
+        per = {}
+        for t in range(1, nterm + 1):
+            rel = (s, f"bus{t}", "node")
+            if rel not in data.edge_types or not data[rel].edge_index.numel():
+                continue
+            ei = data[rel].edge_index
+            for c, node in zip(ei[0].tolist(), ei[1].tolist()):
+                per.setdefault(c, []).append(node)
+        for nodes in per.values():
+            for u, v in zip(nodes, nodes[1:]):
+                adj[u].append(v)
+                adj[v].append(u)
+    slack = nd.slack.numpy()
+    ground = nd.ground.numpy()
+    cand = np.where(~slack & ~ground)[0]
+    if not cand.size:
+        return None
+    seed = int(cand[rng.integers(len(cand))])
+    target = max(2, int(frac * n))
+    seen = {seed}
+    frontier = [seed]
+    while frontier and len(seen) < target:
+        nxt = []
+        for u in frontier:
+            for v in adj[u]:
+                if v not in seen and not ground[v] and not slack[v]:
+                    seen.add(v)
+                    nxt.append(v)
+        frontier = nxt
+    reg = torch.zeros(n, dtype=torch.bool)
+    reg[list(seen)] = True
+    return reg
+
+
+def _hide_region(data, reg):
+    """Force V hidden inside the region and Icomp hidden for every PC component
+    attached to it. Composes with masks already set (only ever HIDES more)."""
+    nd = data["node"]
+    nd.vis_v = (nd.vis_v & ~reg) | nd.slack | nd.ground
+    nd.msk_v = ~nd.vis_v
+    regn = reg.numpy()
+    for s in PC_STORES:
+        if s not in data.node_types or s not in STORES:
+            continue
+        st = data[s]
+        nc = st.yr.shape[0]
+        rel = (s, "bus1", "node")
+        hid = np.zeros(nc, dtype=bool)
+        if nc and rel in data.edge_types and data[rel].edge_index.numel():
+            ei = data[rel].edge_index.numpy()
+            np.logical_or.at(hid, ei[0], regn[ei[1]])
+        st.vis_ic = st.vis_ic & torch.from_numpy(~hid)
+    return data
+
+
+def mask_region(frac):
+    """Contiguous-region lens (taxonomy T5, mission: 'whole regions'): everything
+    visible except one connected ~frac dark region (V + attached Icomp hidden).
+    Hidden unknowns are spatially clustered, so identifiability comes only from
+    the boundary -- unlike iid random masks (T29b: measured negative transfer)."""
+    def m(data, rng):
+        nd = data["node"]
+        nd.vis_v = torch.ones(int(nd.num_nodes), dtype=torch.bool)
+        nd.msk_v = ~nd.vis_v
+        _set_comp_masks(data)
+        reg = _bfs_region(data, rng, frac)
+        if reg is not None:
+            _hide_region(data, reg)
+        return data
+    return m
 
 
 def mask_param(data, rng):
@@ -515,7 +607,9 @@ def mask_random_safe(data, rng):
 
 TASKS = {"pf": mask_pf, "se": mask_se, "injection": mask_injection,
          "random_safe": mask_random_safe, "random": mask_random,
-         "random4": mask_random4, "param": mask_param}
+         "random4": mask_random4, "param": mask_param,
+         "region10": mask_region(0.10), "region20": mask_region(0.20),
+         "region40": mask_region(0.40)}
 
 
 # ----------------------------------------------------------------------------- dataset
