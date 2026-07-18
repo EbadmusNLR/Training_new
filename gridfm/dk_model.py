@@ -91,7 +91,13 @@ class DKSolver(nn.Module):
             width = 2 * dim * dim + 2 * FC + 1
             if self.four_mask:
                 width += 1 + 2 * dim + 1          # vis_y flag + I_bus feat + vis_i flag
-                self.y_head[s] = MLP(hidden, 2 * dim * dim, hidden, zero_last=True)
+                # spike-and-slab Y head: [z magnitudes | g gate logits]. Within a
+                # family, a 1-phase comp is zero at positions where 3-phase siblings
+                # are ~1e5, so magnitude-only decode punishes any transient z-error
+                # with sinh(z)*bigscale pu garbage (measured par y_wape 388k% even
+                # with per-position scales). gate*sinh(z) lets structure be learned
+                # as classification (phase presence is visible in connectivity).
+                self.y_head[s] = MLP(hidden, 4 * dim * dim, hidden, zero_last=True)
             self.comp_enc[s] = MLP(width, hidden, hidden)
             # Icomp estimate head (feat space). Only consulted where vis_ic is False;
             # visible entries stay pinned to the data, like _decode_dv does for V.
@@ -377,11 +383,16 @@ class DKSolver(nn.Module):
                 if not hasattr(st, "vis_y") or bool(st.vis_y.all()):
                     continue
                 n_, dim, _ = st.yr.shape
-                z = self.y_head[s](hc[s]).clamp(-8.0, 8.0).reshape(n_, dim, dim, 2)
-                ypu = inv_feat(z, self._yscale(s), self.use_feat)
+                out = self.y_head[s](hc[s]).reshape(n_, dim, dim, 4)
+                z = out[..., :2].clamp(-8.0, 8.0)
+                g = out[..., 2:]                          # gate logits (zero-init -> 0.5)
+                gate = torch.sigmoid(g)
+                ypu = gate * inv_feat(z, self._yscale(s), self.use_feat)
                 self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
                 self._last_aux["y_feat"] = self._last_aux.get("y_feat", {})
                 self._last_aux["y_feat"][s] = z          # feat space, for the loss
+                self._last_aux["y_gate"] = self._last_aux.get("y_gate", {})
+                self._last_aux["y_gate"][s] = g          # logits, for the BCE
                 self._last_aux["y_scale"] = self._last_aux.get("y_scale", {})
                 self._last_aux["y_scale"][s] = self._yscale(s)
                 self._last_aux["y_msk"][s] = ~st.vis_y

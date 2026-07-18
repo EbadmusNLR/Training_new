@@ -116,11 +116,19 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             # is owned by the stiffest entries and the sinh decode explodes its
             # gradients (measured: par y_wape 1730% -- WORSE than predicting zero).
             # feat(inv_feat(z)) == z, so compare the head's z to feat(truth) directly.
-            zt = feat(torch.stack([st.yr[mm], st.yi[mm]], -1), aux["y_scale"][s], use_feat)
+            tr_st = torch.stack([st.yr[mm], st.yi[mm]], -1)
+            zt = feat(tr_st, aux["y_scale"][s], use_feat)
             ze = aux["y_feat"][s][mm]
-            term = ((ze - zt) ** 2).mean()
-            if norm:
-                term = term / ((zt ** 2).mean() + EPS)
+            nz = (tr_st.abs() > 1e-12)                    # structural-zero labels
+            # spike-and-slab: BCE trains the gate on the sparsity pattern; the
+            # magnitude MSE only speaks where the truth is nonzero, so zero
+            # positions cost gate->0 instead of sinh(z)*bigscale pu garbage.
+            gl = aux["y_gate"][s][mm]
+            bce = torch.nn.functional.binary_cross_entropy_with_logits(gl, nz.float())
+            mag = ((ze - zt) ** 2)[nz].mean() if bool(nz.any()) else ze.new_zeros(())
+            if norm and bool(nz.any()):
+                mag = mag / ((zt ** 2)[nz].mean() + EPS)
+            term = mag + bce
             y_mse = y_mse + term; ny_t += 1
             es = torch.stack([eyr[mm], eyi[mm]], -1)
             tr = torch.stack([st.yr[mm], st.yi[mm]], -1)
