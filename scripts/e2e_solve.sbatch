@@ -13,5 +13,6 @@ set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
 CKPT="${CKPT:-runs/fix_lr2e4/last.pt}"
+TASKS="${TASKS:-}"    # e.g. "random pf sw80 sw50 sw20 sw0"
 /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python -u gridfm/probes/direct_solve_e2e.py \
-  --ckpt "$CKPT" --n-feeders "${NF:-8}"
+  --ckpt "$CKPT" --n-feeders "${NF:-8}" ${TASKS:+--tasks $TASKS}

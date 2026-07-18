@@ -21,7 +21,7 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new/scripts")
 from core.scenario_store import FeederScenarios
-from gridfm.dk_physics import STORES, FC, node_count
+from gridfm.dk_physics import STORES, FC, node_count, terminal_slot
 from gridfm.dk_data import (DKFeeder, DKDataset, make_dk_collate, discover_feeders,
                             split_feeders)
 from gridfm.dk_tree import UnsupportedNetwork
@@ -30,6 +30,31 @@ from gridfm.tests.test_ladder import build_ybus, SHUNT
 
 ROOTS = ["/kfs2/projects/gogpt/Ebadmus/training_data/" + c for c in
          ("SMART-DS_1000", "new_dss_data", "dss_data", "minimal_component")]
+
+# Visible-V sweep lenses (identifiability falsification): fixed visible-V fraction
+# with 50% of PC Icomp hidden. Expectation: machine precision must DEGRADE as
+# visible V drops and nullity rises -- if it does not, something is leaking.
+from gridfm.dk_data import TASKS, _set_comp_masks, PC_STORES
+
+
+def _sweep_mask(pv, pic):
+    def m(data, rng):
+        nd = data["node"]
+        meas = torch.from_numpy(rng.random(int(nd.num_nodes)) < pv)
+        nd.vis_v = nd.slack | nd.ground | meas
+        nd.msk_v = ~nd.vis_v
+        _set_comp_masks(data)
+        for s in PC_STORES:
+            if s not in data.node_types or s not in STORES:
+                continue
+            st = data[s]
+            st.vis_ic = torch.from_numpy(rng.random(st.yr.shape[0]) < pic)
+        return data
+    return m
+
+
+for _pv in (0, 20, 50, 80):
+    TASKS[f"sw{_pv}"] = _sweep_mask(_pv / 100.0, 0.5)
 
 
 def main():
@@ -56,16 +81,26 @@ def main():
     for task in a.tasks:
         print(f"\n=== lens: {task} ===")
         print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} "
-              f"{'skill_joint':>11s} {'hid_ic%':>8s}")
+              f"{'skill_joint':>11s} {'joint0':>11s} {'nullity':>7s} {'v%':>5s} {'hid_ic%':>8s}")
         rows = run_lens(a, args, model, unseen, task)
         if rows:
-            hd, so, jo = (np.array([r[k] for r in rows]) for k in (0, 1, 2))
-            jo = jo[~np.isnan(jo)]
-            print(f"--- {task} over {len(rows)} feeders: "
-                  f"head med/mean/max {np.median(hd):.3f}/{hd.mean():.3f}/{hd.max():.3f} | "
-                  f"solve {np.median(so):.2e}/{so.mean():.2e}/{so.max():.2e} | "
-                  f"joint {np.median(jo):.2e}/{jo.mean():.2e}/{jo.max():.2e}"
-                  if jo.size else f"--- {task}: no joint rows")
+            hd, so, jo, j0 = (np.array([r[k] for r in rows]) for k in (0, 1, 2, 3))
+            nul = np.array([r[4] for r in rows])
+            ok = ~np.isnan(jo)
+            jo, j0k, nulk = jo[ok], j0[ok], nul[ok]
+            if jo.size:
+                det = nulk == 0
+                print(f"--- {task} over {len(rows)} feeders: "
+                      f"head med {np.median(hd):.3f} | solve med/max {np.median(so):.2e}/{so.max():.2e} | "
+                      f"joint med/max {np.median(jo):.2e}/{jo.max():.2e} | "
+                      f"joint0 med/max {np.median(j0k):.2e}/{j0k.max():.2e}")
+                print(f"--- {task} identifiability: {int(det.sum())}/{det.size} nullity-0 "
+                      f"(joint med {np.median(jo[det]):.2e})" if det.any() else
+                      f"--- {task}: no nullity-0 samples", flush=True)
+                if (~det).any():
+                    print(f"--- {task} nullity>0 ({int((~det).sum())}): joint med "
+                          f"{np.median(jo[~det]):.2e} vs joint0 med {np.median(j0k[~det]):.2e} "
+                          f"(gap = model value)", flush=True)
 
 
 def run_lens(a, args, model, unseen, task):
@@ -86,34 +121,58 @@ def run_lens(a, args, model, unseen, task):
         nd = batch["node"]
         d = FeederScenarios(fdir)[a.variant]
         n = node_count(d)
-        Ybus, rhs = build_ybus(d, n)  # truth rhs; estimated entries replace below
-        # scatter estimate into rhs: for each shunt store, hidden terminals get est
-        hid_slot_nodes = []   # one entry per hidden ic slot: the node it injects at
-        for s in aux.get("ic_est", {}):
-            er, ei = aux["ic_est"][s]
-            st = batch[s]
-            hid = aux["ic_msk"][s]  # [ncomp] bool
-            if not bool(hid.any()):
+        Ybus, _ = build_ybus(d, n)   # Y assembly only; rhs is rebuilt leak-proof below
+        # LEAKAGE-PROOF rhs: built ONLY from visible-truth Icomp and model estimates.
+        # The old form (truth_rhs + scatter(est - truth)) silently kept TRUTH at any
+        # hidden slot the scatter loop missed -- the "one indexing error looks
+        # magical" failure mode. Hidden truth is NaN-poisoned BEFORE estimates are
+        # written over it: any hidden entry that reaches the system NaNs the solve
+        # and trips the assert instead of silently scoring exact.
+        hid_slot_nodes = []       # node of each hidden ic slot (E-matrix columns)
+        rhs = np.zeros(n, dtype=np.complex128)
+        est_part = np.zeros(n, dtype=np.complex128)   # estimate contribution alone
+        for s in STORES:
+            if s not in d.node_types or "Icomp_r_pu" not in d[s]:
                 continue
             _, nterm, _ = STORES[s]
             dsst = d[s]
-            ic_t = (dsst["Icomp_r_pu"].reshape(er.shape[0], -1).double().numpy()
-                    + 1j * dsst["Icomp_i_pu"].reshape(er.shape[0], -1).double().numpy())
-            ic_e = er.double().numpy() + 1j * ei.double().numpy()
-            delta = ic_e - ic_t  # zero where estimate == truth
+            ncomp = dsst["Icomp_r_pu"].shape[0]
+            if not ncomp:
+                continue
+            ic = (dsst["Icomp_r_pu"].reshape(ncomp, -1).double().numpy()
+                  + 1j * dsst["Icomp_i_pu"].reshape(ncomp, -1).double().numpy()).copy()
+            # hiddenness comes from the EVALUATION mask on the batch, not from the
+            # model's aux: if the model ever skips a hidden store, aux would say
+            # nothing and truth would silently flow in. This way that path NaNs.
+            hid = None
+            if s in batch.node_types and hasattr(batch[s], "vis_ic"):
+                hid_t = ~batch[s].vis_ic
+                if bool(hid_t.any()):
+                    hid = hid_t.numpy()
+                    ic[hid, :] = np.nan                   # sentinel: truth is gone
+                    if s in aux.get("ic_est", {}):
+                        er, ei_ = aux["ic_est"][s]
+                        est = er.double().numpy() + 1j * ei_.double().numpy()
+                        w = min(est.shape[1], ic.shape[1])
+                        ic[np.ix_(np.where(hid)[0], np.arange(w))] = est[hid, :w]
+                        if ic.shape[1] > w:
+                            ic[np.ix_(np.where(hid)[0], np.arange(w, ic.shape[1]))] = 0.0
+                    else:
+                        ic[hid, :] = 0.0   # hidden, no model estimate: zero prior
             for t in range(1, nterm + 1):
                 rel = (s, f"bus{t}", "node")
                 if rel not in d.edge_types or not d[rel].edge_index.numel():
                     continue
                 eidx = d[rel].edge_index
-                from gridfm.dk_physics import terminal_slot
                 kk = terminal_slot(eidx[0])
                 for c, k, node in zip(eidx[0].tolist(), kk.tolist(), eidx[1].tolist()):
-                    if hid[c]:
-                        col = (t - 1) * FC + int(k)
-                        if col < delta.shape[1]:
-                            rhs[node] += delta[c, col]
+                    col = (t - 1) * FC + int(k)
+                    if col < ic.shape[1]:
+                        rhs[node] += ic[c, col]
+                        if hid is not None and hid[c]:
+                            est_part[node] += ic[c, col]
                             hid_slot_nodes.append(node)
+        assert not np.isnan(rhs).any(), "hidden Icomp truth leaked into rhs (sentinel)"
         Vt = d["node"].V_r_pu.double().numpy() + 1j * d["node"].V_i_pu.double().numpy()
         Vi = (d["node"].V_r_init_pu.double().numpy()
               + 1j * d["node"].V_i_init_pu.double().numpy())
@@ -137,7 +196,8 @@ def run_lens(a, args, model, unseen, task):
         # vsource buses (their source current is not modeled). Determinate samples
         # solve exactly; underdetermined corners get the min-norm correction, i.e.
         # "project the model estimate onto the KCL-consistent manifold".
-        skill_joint = float("nan")
+        skill_joint = skill_joint0 = float("nan"); nullity = -1
+        pv_pct = 100.0 * float(nd.vis_v.float().mean())
         if n <= 4000:  # dense complex lstsq (SVD); bigger needs sparse lsqr
             vis_np = nd.vis_v.numpy()
             rows_ok = np.ones(n, dtype=bool); rows_ok[0] = False; rows_ok[fix] = False
@@ -150,6 +210,12 @@ def run_lens(a, args, model, unseen, task):
                 if rowidx[na] >= 0:
                     E[rowidx[na], j] = -1.0
             bj = rhs[rows_ok] - Ybus[np.ix_(rows_ok.nonzero()[0], visnodes)] @ Vt[visnodes]
+            # identifiability audit: nullity of the augmented system. Expectation:
+            # nullity 0 -> machine precision by algebra alone; nullity > 0 -> the
+            # answer depends on the prior (this is the model's estate).
+            nunk = A1.shape[1] + E.shape[1]
+            nullity = int(nunk - np.linalg.matrix_rank(
+                np.concatenate([A1, E], axis=1), tol=1e-8 * max(1.0, float(np.abs(Ybus).max()))))
             # Two-stage min-||delta||: naive lstsq on [V_hid, delta] min-norms V TOO,
             # pulling V toward zero on underdetermined samples (measured: 11.9 vs
             # plain solve 0.044). Instead: V is determined by KCL for ANY delta via
@@ -164,23 +230,31 @@ def run_lens(a, args, model, unseen, task):
             # near-nullspace directions for negligible residual gain (measured:
             # reactor 0.46 -> 981). Directions the physics cannot resolve keep
             # the model estimate (delta=0) instead of fitting fp64 noise.
-            if E.shape[1]:
-                delta, *_ = np.linalg.lstsq(PE, Pb, rcond=1e-8)
-                if np.abs(E @ delta).sum() > 10 * np.abs(bj).sum():
-                    delta = np.zeros(E.shape[1], dtype=np.complex128)  # unstable -> plain
-                vh = A1p @ (bj - E @ delta)
-            else:
-                vh = A1p @ bj
-            Vj = Vt.copy(); Vj[hidnodes] = vh
+            def joint_v(bvec):
+                if E.shape[1]:
+                    dl, *_ = np.linalg.lstsq(PE, bvec - A1 @ (A1p @ bvec), rcond=1e-8)
+                    if np.abs(E @ dl).sum() > 10 * np.abs(bvec).sum():
+                        dl = np.zeros(E.shape[1], dtype=np.complex128)  # unstable -> plain
+                    return A1p @ (bvec - E @ dl)
+                return A1p @ bvec
+
+            Vj = Vt.copy(); Vj[hidnodes] = joint_v(bj)
             skill_joint = float(np.abs(Vj[free] - Vt[free]).sum() / dvn)
+            # zero-prior baseline: same projection with the model estimate REMOVED
+            # (hidden slots = 0). Determinate masks should not care; any gap between
+            # joint and joint0 is the learned model's measured value.
+            bj0 = bj - est_part[rows_ok]
+            V0 = Vt.copy(); V0[hidnodes] = joint_v(bj0)
+            skill_joint0 = float(np.abs(V0[free] - Vt[free]).sum() / dvn)
         hid_pct = []
         for s in aux.get("ic_msk", {}):
             m = aux["ic_msk"][s]
             hid_pct.append(float(m.float().mean()) * 100)
         print(f"{os.path.basename(fdir)[:44]:44s} {n:6d} {skill_head:10.3f} "
-              f"{skill_solve:11.3f} {skill_joint:11.2e} "
+              f"{skill_solve:11.3f} {skill_joint:11.2e} {skill_joint0:11.2e} "
+              f"{nullity:7d} {pv_pct:5.0f} "
               f"{np.mean(hid_pct) if hid_pct else 0:8.1f}", flush=True)
-        rows.append((skill_head, skill_solve, skill_joint))
+        rows.append((skill_head, skill_solve, skill_joint, skill_joint0, nullity))
     return rows
 
 
