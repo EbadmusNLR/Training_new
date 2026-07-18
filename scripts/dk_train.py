@@ -46,7 +46,7 @@ def kcl_of(batch, cur):
 
 
 def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
-           norm=False, aux=None, w_ic=1.0, w_y=1.0):
+           norm=False, aux=None, w_ic=1.0, w_y=1.0, ic_d_only=False):
     nd = batch["node"]
     msk = nd.msk_v
     # voltage: MSE on dv (small) + report WAPE
@@ -122,13 +122,18 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                 continue
             sc = scales["I"][s]
             tr_r, tr_i = st.icr, st.ici
-            fr = (feat(er[mm], sc, use_feat) - feat(tr_r[mm], sc, use_feat)) ** 2
-            fi = (feat(ei_[mm], sc, use_feat) - feat(tr_i[mm], sc, use_feat)) ** 2
-            term = fr.mean() + fi.mean()
-            if norm:
-                term = term / ((feat(tr_r[mm], sc, use_feat) ** 2).mean()
-                               + (feat(tr_i[mm], sc, use_feat) ** 2).mean() + EPS)
-            ic_mse = ic_mse + term; nic_t += 1
+            # loss mask: optionally class-D only (metrics below stay on the full mm)
+            mm_l = (mm & ~comp_nodevis[s]) if (ic_d_only and s in comp_nodevis) else mm
+            if not bool(mm_l.any()):
+                mm_l = None
+            fr = (feat(er[mm_l], sc, use_feat) - feat(tr_r[mm_l], sc, use_feat)) ** 2 if mm_l is not None else None
+            fi = (feat(ei_[mm_l], sc, use_feat) - feat(tr_i[mm_l], sc, use_feat)) ** 2 if mm_l is not None else None
+            if fr is not None:
+                term = fr.mean() + fi.mean()
+                if norm:
+                    term = term / ((feat(tr_r[mm_l], sc, use_feat) ** 2).mean()
+                                   + (feat(tr_i[mm_l], sc, use_feat) ** 2).mean() + EPS)
+                ic_mse = ic_mse + term; nic_t += 1
             icn = icn + (er[mm] - tr_r[mm]).abs().sum() + (ei_[mm] - tr_i[mm]).abs().sum()
             icd = icd + tr_r[mm].abs().sum() + tr_i[mm].abs().sum()
             if s in comp_nodevis:
@@ -194,7 +199,8 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     return loss, m
 
 
-def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train", ctx=0):
+def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train", ctx=0,
+                need_decoder=True):
     if limit:
         feeder_dirs = feeder_dirs[:limit]
     # The decoder REFUSES networks it cannot reconstruct (UnsupportedNetwork: e.g.
@@ -207,7 +213,7 @@ def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train",
     feeders, skipped = [], []
     for d in feeder_dirs:
         try:
-            feeders.append(DKFeeder(d))
+            feeders.append(DKFeeder(d, need_decoder=need_decoder))
         except UnsupportedNetwork as exc:
             skipped.append((os.path.basename(d), str(exc)[:140]))
     if skipped:
@@ -299,6 +305,14 @@ def main():
                          "same feeder attached per PC component as (Icomp, V_loc) "
                          "pairs -- the identifiability mechanism for the class-B "
                          "Icomp split (single-snapshot ic_wape floor ~100%%)")
+    ap.add_argument("--ic-d-only", action="store_true",
+                    help="restrict the ic loss to class-D comps (node V hidden too). "
+                         "Class-B supervision trains amplitude-guessing on a task that "
+                         "is single-snapshot unidentifiable and physics closes exactly "
+                         "(T25: B estimates 789-1215%%, worse than zeros)")
+    ap.add_argument("--with-mesh", action="store_true",
+                    help="include meshed/bridge-chord feeders (requires --no-cur: the "
+                         "tree decoder is the only radial-bound piece)")
     ap.add_argument("--subset-seed", type=int, default=None,
                     help="shuffle the TRAIN feeder list with this seed before "
                          "--limit-feeders, so probes draw different random data "
@@ -306,6 +320,8 @@ def main():
                          "The unseen split stays pinned (seed 42) and feeder-disjoint.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
+    if args.with_mesh:
+        assert args.no_cur, "--with-mesh requires --no-cur (tree decoder is radial-bound)"
     if args.no_cur:
         assert args.w_i == 0.0 and (args.no_kcl or args.w_kcl == 0.0) and args.fb_points == 0, \
             "--no-cur skips current reconstruction; w_i/w_kcl/fb_points must be 0"
@@ -368,11 +384,13 @@ def main():
     tr_dirs = tr_dirs[:lim] if lim else tr_dirs
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else args.eval_feeders)]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
-    train_ds = build_split(tr_dirs, tv, args.task, use_feat, ctx=args.ctx_points)
+    train_ds = build_split(tr_dirs, tv, args.task, use_feat, ctx=args.ctx_points,
+                           need_decoder=not args.with_mesh)
     # One unseen feeder set, three EVAL LENSES over it. The foundation objective trains
     # on random conditionals; capability is CLAIMED per determinate lens: pf (state from
     # boundary), se (state from partial measurements), injection (Icomp from state).
-    unseen_ds = build_split(un_dirs, ev, "pf", use_feat, role="eval", ctx=args.ctx_points)
+    unseen_ds = build_split(un_dirs, ev, "pf", use_feat, role="eval", ctx=args.ctx_points,
+                            need_decoder=not args.with_mesh)
     lens_ds = {"se": DKDataset(unseen_ds.feeders, ev, task="se", use_feat=use_feat, ctx_points=args.ctx_points),
                "inj": DKDataset(unseen_ds.feeders, ev, task="injection", use_feat=use_feat, ctx_points=args.ctx_points)}
     if args.four_mask:
@@ -453,7 +471,8 @@ def main():
                 dv, cur, aux = model(batch)
                 loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                                  w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
-                                 aux=aux, w_ic=args.w_ic, w_y=args.w_y)
+                                 aux=aux, w_ic=args.w_ic, w_y=args.w_y,
+                                 ic_d_only=args.ic_d_only)
             if prof is not None:
                 torch.cuda.synchronize(); prof["fwd"] += time.time() - t_mark; t_mark = time.time()
             opt.zero_grad(); loss.backward()

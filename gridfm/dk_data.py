@@ -65,7 +65,8 @@ def split_feeders(feeders: list[str], train_frac=0.8, val_frac=0.1, seed=42):
 class DKFeeder:
     """Cached per-topology structure for one feeder + its variant reader."""
 
-    def __init__(self, feeder_dir: str):
+    def __init__(self, feeder_dir: str, need_decoder: bool = True):
+        self.need_decoder = need_decoder
         self.dir = feeder_dir
         self.scen = FeederScenarios(feeder_dir)
         self.name = os.path.basename(feeder_dir)
@@ -99,6 +100,14 @@ class DKFeeder:
         self._pe_cached = self.pe
         # precompute the KCL tree-current plan once per topology (like the PE)
         base["node"].slack = self.slack
+        # MESH UNLOCK: everything below exists solely for the tree-current decoder,
+        # which the fast path (--no-cur) never runs. Skipping it admits meshed /
+        # bridge-chord feeders -- the Ybus physics is topology-agnostic; only the
+        # radial tree reconstruction ever excluded them.
+        if not need_decoder:
+            self.plan = None
+            self.recon_topo = None
+            return
         from .dk_tree import build_tree_plan, check_assumptions, build_recon_ctx
         # Fail loudly on structures the current decoder cannot reconstruct, rather
         # than training on silently-zero currents (every past bug looked like that).
