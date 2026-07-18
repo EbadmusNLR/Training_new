@@ -83,6 +83,11 @@ def _region_mask(frac):
                     adj[u].append(v); adj[v].append(u)
         slack = nd.slack.numpy(); ground = nd.ground.numpy()
         cand = np.where(~slack & ~ground)[0]
+        if not cand.size:      # degenerate net: every node is slack/ground
+            nd.vis_v = torch.ones(n, dtype=torch.bool)
+            nd.msk_v = ~nd.vis_v
+            _set_comp_masks(data)
+            return data
         seed = int(cand[rng.integers(len(cand))])
         target = max(2, int(frac * n))
         seen = {seed}; frontier = [seed]

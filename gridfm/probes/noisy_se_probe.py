@@ -14,11 +14,15 @@ Per feeder, same leak-proof rhs as direct_solve_e2e (NaN sentinel), then:
   wls    -- visible V kept as SOFT measurement rows; row-normalized KCL rows
             exact-weighted (wk); delta-Ic prior rows (wp) tie hidden slots to
             the model estimate
-  robust -- wls + MAD-normalized residual test on measurement rows, drop
+  ns     -- null-space WLS: KCL imposed as an EQUALITY constraint (SVD
+            elimination), measurements + prior fit on the KCL-consistent
+            manifold (smoke showed weighted-row wls loses to 2.6e-2 clean on
+            stiff feeders -- wk dynamic range; ns is exact by construction)
+  robust -- ns + MAD-normalized residual test on measurement rows, drop
             flagged, re-solve (classic bad-data rejection; precision/recall
             vs the planted gross errors is reported)
-  clean  -- wls at sigma=0 (sanity: must stay ~machine precision or the
-            weighting itself is broken)
+  clean  -- ns at sigma=0 (sanity: must stay ~machine precision or the
+            formulation itself is broken)
 
 floor = sum|planted noise| / dvn: the score of PERFECT hidden reconstruction
 with measurements taken at face value. wls near floor + naive far above it =
@@ -156,6 +160,39 @@ def wls(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI, hid_slot_nodes,
     return V
 
 
+def wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI, hid_slot_nodes,
+           wp=1e-3, drop=None, cache=None):
+    """Null-space WLS: KCL is EXACT physics, so impose it as an equality
+    constraint (SVD elimination: z = zp + N q on the KCL-consistent manifold)
+    and least-squares fit only the soft rows (measurements + delta prior) over
+    q. Removes the wk dynamic-range problem of weighted-row WLS: clean data ->
+    machine precision by construction. Rank truncation at 1e-12 folds physics-
+    unresolvable directions into N, where data/prior decide them -- the same
+    posture as the audited joint solve's rcond truncation."""
+    nfree = free.size
+    nd_ = len(hid_slot_nodes)
+    pos = -np.ones(Ybus.shape[0], dtype=int)
+    pos[free] = np.arange(nfree)
+    if cache is None:
+        M1, E, bk = kcl_blocks(Ybus, rhs, Vt, fix, rows_ok, free, hid_slot_nodes)
+        C = np.concatenate([M1, E], axis=1)
+        U, sv, Vh = np.linalg.svd(C, full_matrices=True)
+        r = int((sv > sv.max() * 1e-12).sum()) if sv.size else 0
+        zp = (Vh[:r].conj().T * (1.0 / sv[:r])) @ (U[:, :r].conj().T @ bk)
+        N = Vh[r:].conj().T
+        cache = (zp, N)
+    zp, N = cache
+    mI = visI if drop is None else visI[~drop]
+    sel = pos[mI]
+    A = np.concatenate([N[sel, :], wp * N[nfree:, :]], axis=0)
+    b = np.concatenate([Vm[mI] - zp[sel], -wp * zp[nfree:]])
+    q, *_ = np.linalg.lstsq(A, b, rcond=None)
+    z = zp + N @ q
+    V = Vt.copy()
+    V[free] = z[:nfree]
+    return V, cache
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
@@ -185,7 +222,7 @@ def main():
     print(f"=== noisy-se: task={a.task} sigma={a.sigma} gross={a.gross_frac} "
           f"subset-seed={a.subset_seed} ckpt={a.ckpt} ===")
     print(f"{'feeder':44s} {'n':>6s} {'floor':>9s} {'naive':>9s} {'wls':>9s} "
-          f"{'robust':>9s} {'clean':>9s} {'flag P/R':>9s}")
+          f"{'ns':>9s} {'robust':>9s} {'clean':>9s} {'flag P/R':>9s}")
     rows = []
     done = 0
     for fdir in unseen:
@@ -246,34 +283,39 @@ def main():
 
         s_naive = skill(naive_joint(Ybus, rhs, Vt, Vm, fix, free, rows_ok,
                                     hidnodes, visnodes, hid_slot_nodes))
-        Vw = wls(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI, hid_slot_nodes)
-        s_wls = skill(Vw)
+        s_wls = skill(wls(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
+                          hid_slot_nodes))
+        Vn, cache = wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
+                           hid_slot_nodes)
+        s_ns = skill(Vn)
         # robust: MAD-normalized measurement residuals, drop > 4 sigma, re-solve
-        r = np.abs(Vw[visI] - Vm[visI])
+        r = np.abs(Vn[visI] - Vm[visI])
         s_ = 1.4826 * np.median(r) + 1e-30
         flag = r > 4.0 * s_
-        s_rob = skill(wls(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
-                          hid_slot_nodes, drop=flag)) if flag.any() else s_wls
-        s_clean = skill(wls(Ybus, rhs, Vt, Vt, fix, free, rows_ok, visI,
-                            hid_slot_nodes))
+        s_rob = skill(wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
+                             hid_slot_nodes, drop=flag, cache=cache)[0]) \
+            if flag.any() else s_ns
+        s_clean = skill(wls_ns(Ybus, rhs, Vt, Vt, fix, free, rows_ok, visI,
+                               hid_slot_nodes, cache=cache)[0])
         tp = int((flag & planted).sum())
         prec = tp / max(int(flag.sum()), 1)
         rec = tp / max(int(planted.sum()), 1)
         print(f"{os.path.basename(fdir)[:44]:44s} {n:6d} {floor:9.2e} "
-              f"{s_naive:9.2e} {s_wls:9.2e} {s_rob:9.2e} {s_clean:9.2e} "
-              f"{prec:4.2f}/{rec:4.2f}", flush=True)
-        rows.append((floor, s_naive, s_wls, s_rob, s_clean, prec, rec,
+              f"{s_naive:9.2e} {s_wls:9.2e} {s_ns:9.2e} {s_rob:9.2e} "
+              f"{s_clean:9.2e} {prec:4.2f}/{rec:4.2f}", flush=True)
+        rows.append((floor, s_naive, s_wls, s_ns, s_rob, s_clean, prec, rec,
                      int(planted.sum())))
         done += 1
 
     if rows:
-        fl, na, wl, ro, cl = (np.array([r[k] for r in rows]) for k in range(5))
-        pr = np.array([r[5] for r in rows]); rc = np.array([r[6] for r in rows])
-        haveg = np.array([r[7] for r in rows]) > 0
+        fl, na, wl, ns_, ro, cl = (np.array([r[k] for r in rows]) for k in range(6))
+        pr = np.array([r[6] for r in rows]); rc = np.array([r[7] for r in rows])
+        haveg = np.array([r[8] for r in rows]) > 0
         print(f"--- noisy-se sigma={a.sigma} gross={a.gross_frac} over {len(rows)} "
               f"feeders: floor med {np.median(fl):.2e} | "
               f"naive med/max {np.median(na):.2e}/{na.max():.2e} | "
               f"wls med/max {np.median(wl):.2e}/{wl.max():.2e} | "
+              f"ns med/max {np.median(ns_):.2e}/{ns_.max():.2e} | "
               f"robust med/max {np.median(ro):.2e}/{ro.max():.2e}")
         print(f"--- clean sanity: wls med/max {np.median(cl):.2e}/{cl.max():.2e} "
               f"(must be ~machine precision)")
