@@ -120,7 +120,10 @@ def run_lens(a, args, model, unseen, task):
         ds = DKDataset([fd], [a.variant], task=task,
                        use_feat=not args.get("no_feat", False), ctx_points=ctxp)
         item = ds[0]
-        batch, plan, rctx = make_dk_collate([fd], need_ctx=ctxp > 0)([item])
+        # need_ctx here = the tree-decoder RECON context (needs decoders), not the
+        # T6 snapshot ctx -- that is built by DKDataset(ctx_points=) on the stores
+        # and rides through the fast collate.
+        batch, plan, rctx = make_dk_collate([fd], need_ctx=False)([item])
         batch.tree_plan = plan; batch.recon_ctx = rctx
         with torch.no_grad():
             dv, cur, aux = model(batch)

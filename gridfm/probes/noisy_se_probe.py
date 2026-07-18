@@ -255,7 +255,7 @@ def main():
         ds = DKDataset([fd], [a.variant], task=a.task,
                        use_feat=not args.get("no_feat", False), ctx_points=ctxp)
         item = ds[0]
-        batch, plan, rctx = make_dk_collate([fd], need_ctx=ctxp > 0)([item])
+        batch, plan, rctx = make_dk_collate([fd], need_ctx=False)([item])
         batch.tree_plan = plan; batch.recon_ctx = rctx
         nd = batch["node"]
         d = FeederScenarios(fdir)[a.variant]
