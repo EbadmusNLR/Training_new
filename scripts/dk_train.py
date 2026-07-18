@@ -61,6 +61,34 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     dvn = nd.dv[msk].abs().sum()
     v_skill = verr[msk].abs().sum() / (dvn + EPS) if msk.any() else torch.zeros((), device=dv.device)
     v_base = 100.0 * dvn / (vt + EPS) if msk.any() else torch.zeros((), device=dv.device)
+    # Class-conditional metrics (mask-taxonomy): a single aggregate mixes tasks of
+    # very different meaning. Node classes for hidden V: C = no co-located hidden
+    # Icomp (state reconstruction), D = hidden Icomp at the node too (joint,
+    # possibly underdetermined). Comp classes for hidden Icomp: B = its node's V
+    # visible (split inference; single-snapshot UNIDENTIFIABLE -> the T6 target),
+    # D = V hidden too.
+    hid_ic_node = torch.zeros(nd.vis_v.shape[0], dtype=torch.bool, device=dv.device)
+    comp_nodevis = {}
+    for s in ("load", "generator", "pvsystem", "storage"):
+        rel = (s, "bus1", "node")
+        if s not in batch.node_types or rel not in batch.edge_types:
+            continue
+        st = batch[s]
+        if not hasattr(st, "vis_ic") or batch[rel].edge_index.numel() == 0:
+            continue
+        ei = batch[rel].edge_index
+        hid_c = ~st.vis_ic
+        if bool(hid_c.any()):
+            emask = hid_c[ei[0]]
+            hid_ic_node[ei[1][emask]] = True
+        nv = torch.ones(st.vis_ic.shape[0], device=dv.device)
+        nv.scatter_reduce_(0, ei[0], nd.vis_v[ei[1]].float(), reduce="amin")
+        comp_nodevis[s] = nv >= 0.5              # comp's node-V all visible?
+    mC = msk & ~hid_ic_node; mD = msk & hid_ic_node
+
+    def _sk(mm):
+        return float(verr[mm].abs().sum() / (nd.dv[mm].abs().sum() + EPS)) if bool(mm.any()) else float("nan")
+    v_skill_C, v_skill_D = _sk(mC), _sk(mD)
     # currents: fitted per-family feature MSE + report pu WAPE (aggregate + per family)
     i_mse = dv.new_zeros(()); inum = dv.new_zeros(()); iden = dv.new_zeros(())
     fam = {}; nfam = 0
@@ -86,6 +114,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # space, like currents). The estimate also drove the physics decode, so i_mse and
     # kcl already pull on it; this term is the direct supervision.
     ic_mse = dv.new_zeros(()); icn = dv.new_zeros(()); icd = dv.new_zeros(()); nic_t = 0
+    icc = {"B": [0.0, 0.0], "D": [0.0, 0.0]}
     if aux and aux.get("ic_est"):
         for s, (er, ei_) in aux["ic_est"].items():
             st = batch[s]; mm = aux["ic_msk"][s]
@@ -102,6 +131,12 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             ic_mse = ic_mse + term; nic_t += 1
             icn = icn + (er[mm] - tr_r[mm]).abs().sum() + (ei_[mm] - tr_i[mm]).abs().sum()
             icd = icd + tr_r[mm].abs().sum() + tr_i[mm].abs().sum()
+            if s in comp_nodevis:
+                for cls, cm in (("B", mm & comp_nodevis[s]), ("D", mm & ~comp_nodevis[s])):
+                    if bool(cm.any()):
+                        icc[cls][0] += float((er[cm] - tr_r[cm]).abs().sum()
+                                             + (ei_[cm] - tr_i[cm]).abs().sum())
+                        icc[cls][1] += float(tr_r[cm].abs().sum() + tr_i[cm].abs().sum())
     ic_term = ic_mse / max(nic_t, 1)
     # parameter estimation: loss on the Y ESTIMATE at hidden components (feature
     # space, per-family scales). Same pattern as ic_term; the general four-array
@@ -149,6 +184,9 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     ic_wape = 100.0 * float(icn) / (float(icd) + 1e-30) if nic_t else 0.0
     y_wape = 100.0 * float(yn) / (float(yd) + 1e-30) if ny_t else 0.0
     m = {"ic_wape": ic_wape, "y_wape": y_wape,
+         "v_skill_C": v_skill_C, "v_skill_D": v_skill_D,
+         "ic_wapeB": 100.0 * icc["B"][0] / (icc["B"][1] + 1e-30) if icc["B"][1] else float("nan"),
+         "ic_wapeD": 100.0 * icc["D"][0] / (icc["D"][1] + 1e-30) if icc["D"][1] else float("nan"),
          "v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
          "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
          "kcl": float(kcl)}
@@ -156,7 +194,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     return loss, m
 
 
-def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train"):
+def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train", ctx=0):
     if limit:
         feeder_dirs = feeder_dirs[:limit]
     # The decoder REFUSES networks it cannot reconstruct (UnsupportedNetwork: e.g.
@@ -185,7 +223,7 @@ def build_split(feeder_dirs, variants, task, use_feat, limit=None, role="train")
         if role == "train" and len(skipped) > 0.05 * len(feeder_dirs):
             raise RuntimeError(f"{len(skipped)} of {len(feeder_dirs)} feeders excluded (>5%): "
                                "decoder coverage regressed; fix that before training")
-    return DKDataset(feeders, variants, task=task, use_feat=use_feat)
+    return DKDataset(feeders, variants, task=task, use_feat=use_feat, ctx_points=ctx)
 
 
 def main():
@@ -256,6 +294,16 @@ def main():
                     help="torch.compile(reduce-overhead, dynamic=True) on the model")
     ap.add_argument("--no-pe", action="store_true",
                     help="zero the positional-encoding features (ablation; T13 pe150 memorized)")
+    ap.add_argument("--ctx-points", type=int, default=0,
+                    help="T6 multi-snapshot context: K other operating points of the "
+                         "same feeder attached per PC component as (Icomp, V_loc) "
+                         "pairs -- the identifiability mechanism for the class-B "
+                         "Icomp split (single-snapshot ic_wape floor ~100%)")
+    ap.add_argument("--subset-seed", type=int, default=None,
+                    help="shuffle the TRAIN feeder list with this seed before "
+                         "--limit-feeders, so probes draw different random data "
+                         "subsets (protocol: winners must replicate across subsets). "
+                         "The unseen split stays pinned (seed 42) and feeder-disjoint.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
     if args.no_cur:
@@ -304,18 +352,26 @@ def main():
     sp = {k: [d for tup in zip_longest(*[c[k] for c in per_corpus]) for d in tup if d]
           for k in ("train", "unseen", "test")}
     lim = args.limit_feeders
-    tr_dirs = sp["train"][:lim] if lim else sp["train"]
+    tr_dirs = sp["train"]
+    if args.subset_seed is not None:
+        rs = np.random.default_rng(args.subset_seed)
+        tr_dirs = list(tr_dirs); rs.shuffle(tr_dirs)
+    tr_dirs = tr_dirs[:lim] if lim else tr_dirs
     un_dirs = sp["unseen"][:max(2, (lim // 8) if lim else args.eval_feeders)]
     tv = list(range(args.train_variants)); ev = list(range(args.train_variants, args.train_variants + args.eval_variants))
-    train_ds = build_split(tr_dirs, tv, args.task, use_feat)
+    train_ds = build_split(tr_dirs, tv, args.task, use_feat, ctx=args.ctx_points)
     # One unseen feeder set, three EVAL LENSES over it. The foundation objective trains
     # on random conditionals; capability is CLAIMED per determinate lens: pf (state from
     # boundary), se (state from partial measurements), injection (Icomp from state).
-    unseen_ds = build_split(un_dirs, ev, "pf", use_feat, role="eval")
-    lens_ds = {"se": DKDataset(unseen_ds.feeders, ev, task="se", use_feat=use_feat),
-               "inj": DKDataset(unseen_ds.feeders, ev, task="injection", use_feat=use_feat)}
+    unseen_ds = build_split(un_dirs, ev, "pf", use_feat, role="eval", ctx=args.ctx_points)
+    lens_ds = {"se": DKDataset(unseen_ds.feeders, ev, task="se", use_feat=use_feat, ctx_points=args.ctx_points),
+               "inj": DKDataset(unseen_ds.feeders, ev, task="injection", use_feat=use_feat, ctx_points=args.ctx_points)}
     if args.four_mask:
-        lens_ds["par"] = DKDataset(unseen_ds.feeders, ev, task="param", use_feat=use_feat)
+        lens_ds["par"] = DKDataset(unseen_ds.feeders, ev, task="param", use_feat=use_feat, ctx_points=args.ctx_points)
+    if args.task in ("random", "random4"):
+        # held-out random-mask lens: the class-conditional metrics (C/D, B/D) are
+        # only meaningful under a mask that actually produces those classes
+        lens_ds["rnd"] = DKDataset(unseen_ds.feeders, ev, task=args.task, use_feat=use_feat, ctx_points=args.ctx_points)
     print(f"feeders train={len(tr_dirs)} unseen={len(un_dirs)}; "
           f"train_samples={len(train_ds)} unseen={len(unseen_ds)}; build={time.time()-t0:.1f}s", flush=True)
 
@@ -328,7 +384,8 @@ def main():
     model = DKSolver(hidden=args.hidden, steps=args.steps,
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
                      fb_points=args.fb_points, vabs=args.vabs,
-                     four_mask=args.four_mask, use_pe=not args.no_pe).to(dev)
+                     four_mask=args.four_mask, use_pe=not args.no_pe,
+                     ctx_points=args.ctx_points).to(dev)
     model.skip_current = args.no_cur
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", dynamic=True)
@@ -372,7 +429,7 @@ def main():
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
-        model.train(); agg = {}
+        model.train(); agg = {}; cnt = {}
         te = time.time()
         prof = {"data": 0.0, "h2d": 0.0, "fwd": 0.0, "bwd": 0.0} if args.prof else None
         t_mark = time.time()
@@ -395,13 +452,14 @@ def main():
             if prof is not None:
                 torch.cuda.synchronize(); prof["bwd"] += time.time() - t_mark; t_mark = time.time()
             for k, v in m.items():
-                agg[k] = agg.get(k, 0.0) + v
+                if v == v:                       # skip NaN (class absent in batch)
+                    agg[k] = agg.get(k, 0.0) + v
+                    cnt[k] = cnt.get(k, 0) + 1
         if prof is not None:
             tot = sum(prof.values()) + 1e-9
             print(f"PROF ep{epoch:03d}: " + " ".join(
                 f"{k}={v:.1f}s({100*v/tot:.0f}%)" for k, v in prof.items()), flush=True)
-        n = max(1, len(train_dl))
-        tr = {k: v / n for k, v in agg.items()}
+        tr = {k: v / max(1, cnt.get(k, 1)) for k, v in agg.items()}
         # eval + logging on rank 0 only; other ranks proceed to the next epoch
         if world > 1:
             torch.distributed.barrier()
@@ -416,27 +474,21 @@ def main():
                   f"skill={tr['v_skill']:.3f} ic_wape={tr['ic_wape']:.1f}% "
                   f"y_wape={tr['y_wape']:.1f}% (eval skipped)", flush=True)
             continue
-        model.eval(); ea = {}
-        with torch.no_grad():
-            for batch, plan, rctx in unseen_dl:
-                batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
-                dv, cur, aux = model(batch)
-                _, m = losses(batch, dv, cur, scales, use_feat, aux=aux)
-                for k, v in m.items():
-                    ea[k] = ea.get(k, 0.0) + v
-        ne = max(1, len(unseen_dl)); un = {k: v / ne for k, v in ea.items()}
-        lens = {}
-        with torch.no_grad():
-            for lname, dl in lens_dl.items():
-                la = {}
+        def _eval_dl(dl):
+            acc, c = {}, {}
+            with torch.no_grad():
                 for batch, plan, rctx in dl:
                     batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
                     dv, cur, aux = model(batch)
                     _, m = losses(batch, dv, cur, scales, use_feat, aux=aux)
                     for k, v in m.items():
-                        la[k] = la.get(k, 0.0) + v
-                nl = max(1, len(dl))
-                lens[lname] = {k: v / nl for k, v in la.items()}
+                        if v == v:
+                            acc[k] = acc.get(k, 0.0) + v; c[k] = c.get(k, 0) + 1
+            return {k: v / max(1, c.get(k, 1)) for k, v in acc.items()}
+
+        model.eval()
+        un = _eval_dl(unseen_dl)
+        lens = {lname: _eval_dl(dl) for lname, dl in lens_dl.items()}
         fam_str = " ".join(f"{k[2:]}={un[k]:.1f}" for k in sorted(un) if k.startswith("i_"))
         print(f"ep{epoch:03d} {time.time()-te:.0f}s | train V/I={tr['v_wape']:.3f}%/{tr['i_wape']:.3f}% "
               f"kcl={tr['kcl']:.3e} | unseen V/I={un['v_wape']:.3f}%/{un['i_wape']:.3f}%\n"
@@ -445,7 +497,11 @@ def main():
               f"        unseen I/fam: {fam_str}\n"
               f"        lenses: se v_skill={lens['se']['v_skill']:.3f} I={lens['se']['i_wape']:.2f}% | "
               f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%"
-              + (f" | par y_wape={lens['par']['y_wape']:.2f}%" if "par" in lens else ""),
+              + (f" | par y_wape={lens['par']['y_wape']:.2f}%" if "par" in lens else "")
+              + ((f"\n        rnd-lens classes: v_skill C={lens['rnd'].get('v_skill_C', float('nan')):.3f} "
+                  f"D={lens['rnd'].get('v_skill_D', float('nan')):.3f} | "
+                  f"ic_wape B={lens['rnd'].get('ic_wapeB', float('nan')):.1f}% "
+                  f"D={lens['rnd'].get('ic_wapeD', float('nan')):.1f}%") if "rnd" in lens else ""),
               flush=True)
         state = (model.module if world > 1 else model).state_dict()
         torch.save({"model": state, "args": vars(args), "epoch": epoch, "scales": scales},

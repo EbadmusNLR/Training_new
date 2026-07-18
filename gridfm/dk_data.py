@@ -512,13 +512,20 @@ TASKS = {"pf": mask_pf, "se": mask_se, "injection": mask_injection,
 # ----------------------------------------------------------------------------- dataset
 class DKDataset(torch.utils.data.Dataset):
     def __init__(self, feeders: list[DKFeeder], variants: list[int], task: str = "pf",
-                 use_feat: bool = True, seed: int = 0):
+                 use_feat: bool = True, seed: int = 0, ctx_points: int = 0):
         self.feeders = feeders
         self.items = [(fi, v) for fi in range(len(feeders)) for v in variants]
         self.task = task
         self.use_feat = use_feat
         self.seed = int(seed)
         self.epoch = 0
+        # T6 multi-snapshot context: K OTHER operating points of the same feeder,
+        # attached per PC component as (Icomp, V_loc) pairs. Single-snapshot
+        # class-B (split of YV at known V) is physically unidentifiable -- the
+        # measured ic_wape ~100% floor; the response map V -> Icomp(V) only
+        # becomes learnable across operating points. Ctx variants are drawn from
+        # the TRAIN variant range (0..79) so eval variants stay unseen.
+        self.ctx_points = int(ctx_points)
 
     def __len__(self):
         return len(self.items)
@@ -565,6 +572,31 @@ class DKDataset(torch.utils.data.Dataset):
                 st.icr = st.Icomp_r_pu; st.ici = st.Icomp_i_pu
             else:
                 st.icr = torch.zeros(n, FC); st.ici = torch.zeros(n, FC)
+        if self.ctx_points > 0:
+            for k in range(1, self.ctx_points + 1):
+                vctx = (variant * 31 + 17 * k) % 80
+                d2 = feeder.sample(vctx)
+                v2r = d2["node"].V_r_pu; v2i = d2["node"].V_i_pu
+                for s in PC_STORES:
+                    if s not in data.node_types or s not in STORES:
+                        continue
+                    st = data[s]
+                    n = st.yr.shape[0]
+                    st2 = d2[s]
+                    icr2 = st2.Icomp_r_pu if "Icomp_r_pu" in st2 else torch.zeros(n, FC, dtype=torch.float64)
+                    ici2 = st2.Icomp_i_pu if "Icomp_i_pu" in st2 else torch.zeros(n, FC, dtype=torch.float64)
+                    vr = torch.zeros(n, FC, dtype=torch.float64)
+                    vi = torch.zeros(n, FC, dtype=torch.float64)
+                    rel = (s, "bus1", "node")
+                    if rel in data.edge_types and data[rel].edge_index.numel():
+                        ei = data[rel].edge_index
+                        from .dk_physics import terminal_slot
+                        kk = terminal_slot(ei[0])
+                        vr[ei[0], kk] = v2r[ei[1]]
+                        vi[ei[0], kk] = v2i[ei[1]]
+                    blk = torch.cat([icr2[:, :FC].reshape(n, -1), ici2[:, :FC].reshape(n, -1),
+                                     vr, vi], 1)
+                    st.ctx = blk if k == 1 else torch.cat([st.ctx, blk], 1)
         TASKS[self.task](data, self._item_rng(idx))
         # The corpus is fp64 BY DESIGN (generating quality data), but the model
         # trains in fp32. Cast at this boundary -- not in the corpus -- so the

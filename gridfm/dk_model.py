@@ -18,7 +18,7 @@ import torch
 from torch import nn
 
 from .dk_physics import FC, STORES, terminal_slot, node_count
-from .dk_data import PE_DIM, I_SCALE, Y_SCALE, feat, inv_feat
+from .dk_data import PE_DIM, I_SCALE, Y_SCALE, PC_STORES, feat, inv_feat
 from .dk_tree import (SERIES_STORES, plan_to, reconstruct_vectorized,
                       reconstruct_full, recon_ctx_to)
 
@@ -43,7 +43,8 @@ class MLP(nn.Sequential):
 
 class DKSolver(nn.Module):
     def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
-                 exact_decoder=True, fb_points=0, vabs=False, four_mask=False, use_pe=True):
+                 exact_decoder=True, fb_points=0, vabs=False, four_mask=False, use_pe=True,
+                 ctx_points=0):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
@@ -78,6 +79,7 @@ class DKSolver(nn.Module):
         # becomes maskable with its own estimate head. Old checkpoints predate these
         # modules, so the extra widths/heads exist only when four_mask=True.
         self.four_mask = bool(four_mask)
+        self.ctx_points = int(ctx_points)
         # skip_current: do NOT physics-decode/reconstruct currents in forward. The
         # vonly/four-array losses never read them, and the decode (host physics +
         # recon ctx) dominates step time. ic/y estimates still run -- they are the
@@ -101,6 +103,8 @@ class DKSolver(nn.Module):
                 # with per-position scales). gate*sinh(z) lets structure be learned
                 # as classification (phase presence is visible in connectivity).
                 self.y_head[s] = MLP(hidden, 4 * dim * dim, hidden, zero_last=True)
+            if self.ctx_points and s in PC_STORES:
+                width += self.ctx_points * 4 * FC  # T6 (Icomp, V_loc) context pairs
             self.comp_enc[s] = MLP(width, hidden, hidden)
             # Icomp estimate head (feat space). Only consulted where vis_ic is False;
             # visible entries stay pinned to the data, like _decode_dv does for V.
@@ -298,6 +302,12 @@ class DKSolver(nn.Module):
                 ibf = torch.cat([feat(st.ir, self._iscale(s), self.use_feat) * gi,
                                  feat(st.ii, self._iscale(s), self.use_feat) * gi], 1)
                 parts += [gy, ibf, gi]
+            if self.ctx_points and s in PC_STORES:
+                # ctx layout per point: [icr, ici, vr, vi] each FC wide; ic blocks
+                # normalized with the family iscale (asinh), V blocks are O(1) raw
+                c = st.ctx.reshape(n, self.ctx_points, 4, FC)
+                icc = feat(c[:, :, :2, :], self._iscale(s), self.use_feat)
+                parts.append(torch.cat([icc, c[:, :, 2:, :]], 2).reshape(n, -1))
             hc[s] = self.comp_enc[s](torch.cat(parts, 1))
         fb_at = set()
         if self.fb_points > 0:
