@@ -289,13 +289,16 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
                 sc = Yfull.abs().amax(1).clamp(min=1e-12)
                 normf = (Yfull / sc[:, None]).double()
                 keys = np.round(normf.numpy(), 3)
+                lsc = sc.log().float()             # per-component log(max-abs)
                 for k in range(keys.shape[0]):
                     kb = keys[k].tobytes()
                     e = Ycbc[s].get(kb)
+                    lv = float(lsc[k])
                     if e is None:
-                        Ycbc[s][kb] = [1, normf[k].float()]
+                        # [count, exemplar, sum_ls, sumsq_ls] for per-family scale stats
+                        Ycbc[s][kb] = [1, normf[k].float(), lv, lv * lv]
                     else:
-                        e[0] += 1
+                        e[0] += 1; e[2] += lv; e[3] += lv * lv
 
     Iscale = {s: _p95(Ib[s]) for s in STORES}
     Yscale = {s: {k: _p95(Yb[s][k]) for k in Yb[s]} for s in STORES}
@@ -323,16 +326,25 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     # the train sample (phases spread the real/imag parts to O(1)).
     v_all = torch.cat(vss) if vss else torch.ones(1, 2)
     v_std = [max(float(v_all[:, 0].std()), 1e-6), max(float(v_all[:, 1].std()), 1e-6)]
-    # Y codebook: top-K families per store, most-common first [K, dim, dim, 2].
-    # The head classifies family + regresses log-scale; class K = "other".
-    Ycb = {}
+    # Y codebook: top-K families per store, most-common first [K, dim, dim, 2],
+    # plus per-family log-scale [mean, std] so the head predicts a STANDARDIZED,
+    # bounded residual (v5.1: free log-scale regression let exp() spike y_wape to
+    # 9061% -- T32). std floored so single-member families still decode.
+    Ycb, Ycb_ls = {}, {}
     for s in STORES:
         if not Ycbc[s]:
             continue
         top = sorted(Ycbc[s].values(), key=lambda e: -e[0])[:64]
         dim = STORES[s][1] * FC
         Ycb[s] = torch.stack([e[1] for e in top]).reshape(len(top), dim, dim, 2)
-    return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb,
+        ls = []
+        for e in top:
+            n_, sm, sq = e[0], e[2], e[3]
+            mean = sm / n_
+            var = max(sq / n_ - mean * mean, 0.0)
+            ls.append([mean, max(var ** 0.5, 0.5)])   # floor std at 0.5 nat
+        Ycb_ls[s] = torch.tensor(ls, dtype=torch.float32)   # [K, 2]
+    return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb, "Ycb_ls": Ycb_ls,
             "kcl": max(kcl, 1e-9), "dv_std": dv_std, "v_std": v_std}
 
 

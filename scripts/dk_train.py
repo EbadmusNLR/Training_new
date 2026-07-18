@@ -172,6 +172,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                 # distance on the normalized matrix; no match within tol -> class
                 # K ("other", excluded from the scale loss).
                 cb = aux["y_cb"][s]                       # [K, dim, dim, 2]
+                lsb = aux["y_cb_lsb"][s]                  # [K, 2] mean,std
                 K = cb.shape[0]
                 tr_st = torch.stack([st.yr[mm], st.yi[mm]], -1)
                 flat = tr_st.reshape(tr_st.shape[0], -1)
@@ -181,11 +182,15 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                 mind, lab = dist.min(1)
                 lab = torch.where(mind < 5e-3, lab, torch.full_like(lab, K))
                 logits = aux["y_cb_logits"][s][mm]
-                ls = aux["y_cb_ls"][s][mm]
+                z = aux["y_cb_z"][s][mm]
                 ce = torch.nn.functional.cross_entropy(logits, lab)
                 inb = lab < K
-                lsm = ((ls - sc.log()) ** 2)[inb].mean() if bool(inb.any()) \
-                    else ls.new_zeros(())
+                # standardized-residual target: z* = (log sc - mean)/std of the
+                # TRUE family, so the head learns a bounded correction (v5.1).
+                lin = lab.clamp(max=K - 1)
+                ztgt = (sc.log() - lsb[lin, 0]) / lsb[lin, 1]
+                lsm = ((z - ztgt) ** 2)[inb].mean() if bool(inb.any()) \
+                    else z.new_zeros(())
                 y_mse = y_mse + ce + lsm; ny_t += 1
                 es = torch.stack([eyr[mm], eyi[mm]], -1)
                 yn = yn + (es - tr_st).abs().sum(); yd = yd + tr_st.abs().sum()

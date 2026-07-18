@@ -111,6 +111,12 @@ class DKSolver(nn.Module):
                 if scales and s in scales.get("Ycb", {}):
                     K = scales["Ycb"][s].shape[0]
                     self.register_buffer(f"ycb_{s}", scales["Ycb"][s].float())
+                    # per-family log-scale [mean,std]; head predicts standardized
+                    # residual z, ls = mean + std*tanh(z) -> bounded to +-std of
+                    # the family's observed range, so exp() can never spike (v5.1).
+                    lsb = scales.get("Ycb_ls", {}).get(
+                        s, torch.zeros(K, 2)).float()
+                    self.register_buffer(f"ycbls_{s}", lsb)
                     self.y_cb_head[s] = MLP(hidden, K + 2, hidden, zero_last=True)
             if self.ctx_points and s in PC_STORES:
                 width += self.ctx_points * 4 * FC  # T6 (Icomp, V_loc) context pairs
@@ -412,21 +418,28 @@ class DKSolver(nn.Module):
                 if s in self.y_cb_head:
                     # v5 codebook head: family logits (+"other") + log-scale.
                     cb = getattr(self, f"ycb_{s}")        # [K,dim,dim,2]
+                    lsb = getattr(self, f"ycbls_{s}")     # [K,2] mean,std
                     K = cb.shape[0]
                     out = self.y_cb_head[s](hc[s].detach())
                     logits = out[:, :K + 1]
-                    ls = out[:, K + 1].clamp(-30.0, 30.0)
+                    z = out[:, K + 1]                     # standardized residual
                     cls = logits.argmax(1)
-                    base = cb[cls.clamp(max=K - 1)]       # [n,dim,dim,2]
+                    cin = cls.clamp(max=K - 1)
+                    # ls bounded to family mean +- std*tanh(z): exp() can never
+                    # escape the family's observed magnitude range (v5.1).
+                    ls = lsb[cin, 0] + lsb[cin, 1] * torch.tanh(z)
+                    base = cb[cin]                        # [n,dim,dim,2]
                     keep = (cls < K).float().view(-1, 1, 1, 1)
                     ypu = torch.exp(ls).view(-1, 1, 1, 1) * base * keep
                     self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
                     self._last_aux["y_cb_logits"] = self._last_aux.get("y_cb_logits", {})
                     self._last_aux["y_cb_logits"][s] = logits
-                    self._last_aux["y_cb_ls"] = self._last_aux.get("y_cb_ls", {})
-                    self._last_aux["y_cb_ls"][s] = ls
+                    self._last_aux["y_cb_z"] = self._last_aux.get("y_cb_z", {})
+                    self._last_aux["y_cb_z"][s] = z
                     self._last_aux["y_cb"] = self._last_aux.get("y_cb", {})
                     self._last_aux["y_cb"][s] = cb        # for the label match
+                    self._last_aux["y_cb_lsb"] = self._last_aux.get("y_cb_lsb", {})
+                    self._last_aux["y_cb_lsb"][s] = lsb   # for the residual target
                 else:
                     out = self.y_head[s](hc[s].detach()).reshape(n_, dim, dim, 4)
                     z = out[..., :2].clamp(-8.0, 8.0)
