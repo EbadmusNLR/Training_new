@@ -15,4 +15,5 @@ export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
 CKPT="${CKPT:-runs/dk_foundation_15261953/last.pt}"
 /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python -u gridfm/probes/noisy_se_probe.py \
   --ckpt "$CKPT" --n-feeders "${NF:-16}" --sigma "${SIGMA:-0.01}" \
-  --gross-frac "${GROSS:-0.03}" --subset-seed "${SEED:-401}" --task "${TASK:-random}"
+  --gross-frac "${GROSS:-0.03}" --subset-seed "${SEED:-401}" \
+  --task "${TASK:-random}" --wp "${WP:-1e-3}"

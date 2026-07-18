@@ -176,9 +176,16 @@ def wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI, hid_slot_nodes,
     if cache is None:
         M1, E, bk = kcl_blocks(Ybus, rhs, Vt, fix, rows_ok, free, hid_slot_nodes)
         C = np.concatenate([M1, E], axis=1)
+        # row equilibration: exact for equality constraints (solution set is
+        # unchanged) and collapses the stiff-family sv spread that made the
+        # 1e-12 rank cut drop REAL solution content (clean max 2.6e-2, both
+        # replicate seeds, same feeder).
+        rn = np.linalg.norm(C, axis=1)
+        rn[rn == 0] = 1.0
+        C = C / rn[:, None]
         U, sv, Vh = np.linalg.svd(C, full_matrices=True)
         r = int((sv > sv.max() * 1e-12).sum()) if sv.size else 0
-        zp = (Vh[:r].conj().T * (1.0 / sv[:r])) @ (U[:, :r].conj().T @ bk)
+        zp = (Vh[:r].conj().T * (1.0 / sv[:r])) @ (U[:, :r].conj().T @ (bk / rn))
         N = Vh[r:].conj().T
         cache = (zp, N)
     zp, N = cache
@@ -186,7 +193,10 @@ def wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI, hid_slot_nodes,
     sel = pos[mI]
     A = np.concatenate([N[sel, :], wp * N[nfree:, :]], axis=0)
     b = np.concatenate([Vm[mI] - zp[sel], -wp * zp[nfree:]])
-    q, *_ = np.linalg.lstsq(A, b, rcond=None)
+    # rcond truncation: manifold directions the measurements barely see must
+    # stay at the particular solution + prior, not fit fp64 noise into hidden V
+    # (measured: ns max 9.0e4 on seed 401 without it).
+    q, *_ = np.linalg.lstsq(A, b, rcond=1e-8)
     z = zp + N @ q
     V = Vt.copy()
     V[free] = z[:nfree]
@@ -202,6 +212,8 @@ def main():
     ap.add_argument("--sigma", type=float, default=0.01)
     ap.add_argument("--gross-frac", type=float, default=0.03)
     ap.add_argument("--subset-seed", type=int, default=401)
+    ap.add_argument("--wp", type=float, default=1e-3,
+                    help="delta-prior weight: trust in the model's Icomp estimate")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     args = ck["args"]
@@ -220,7 +232,7 @@ def main():
     unseen = [d for tup in zip_longest(*pools) for d in tup if d]
 
     print(f"=== noisy-se: task={a.task} sigma={a.sigma} gross={a.gross_frac} "
-          f"subset-seed={a.subset_seed} ckpt={a.ckpt} ===")
+          f"subset-seed={a.subset_seed} wp={a.wp} ckpt={a.ckpt} ===")
     print(f"{'feeder':44s} {'n':>6s} {'floor':>9s} {'naive':>9s} {'wls':>9s} "
           f"{'ns':>9s} {'robust':>9s} {'clean':>9s} {'flag P/R':>9s}")
     rows = []
@@ -286,17 +298,17 @@ def main():
         s_wls = skill(wls(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
                           hid_slot_nodes))
         Vn, cache = wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
-                           hid_slot_nodes)
+                           hid_slot_nodes, wp=a.wp)
         s_ns = skill(Vn)
         # robust: MAD-normalized measurement residuals, drop > 4 sigma, re-solve
         r = np.abs(Vn[visI] - Vm[visI])
         s_ = 1.4826 * np.median(r) + 1e-30
         flag = r > 4.0 * s_
         s_rob = skill(wls_ns(Ybus, rhs, Vt, Vm, fix, free, rows_ok, visI,
-                             hid_slot_nodes, drop=flag, cache=cache)[0]) \
+                             hid_slot_nodes, wp=a.wp, drop=flag, cache=cache)[0]) \
             if flag.any() else s_ns
         s_clean = skill(wls_ns(Ybus, rhs, Vt, Vt, fix, free, rows_ok, visI,
-                               hid_slot_nodes, cache=cache)[0])
+                               hid_slot_nodes, wp=a.wp, cache=cache)[0])
         tp = int((flag & planted).sum())
         prec = tp / max(int(flag.sum()), 1)
         rec = tp / max(int(planted.sum()), 1)
@@ -317,7 +329,7 @@ def main():
               f"wls med/max {np.median(wl):.2e}/{wl.max():.2e} | "
               f"ns med/max {np.median(ns_):.2e}/{ns_.max():.2e} | "
               f"robust med/max {np.median(ro):.2e}/{ro.max():.2e}")
-        print(f"--- clean sanity: wls med/max {np.median(cl):.2e}/{cl.max():.2e} "
+        print(f"--- clean sanity: ns med/max {np.median(cl):.2e}/{cl.max():.2e} "
               f"(must be ~machine precision)")
         if haveg.any():
             print(f"--- bad-data detection over {int(haveg.sum())} feeders w/ planted "
