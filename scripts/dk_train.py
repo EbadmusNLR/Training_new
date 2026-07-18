@@ -46,7 +46,7 @@ def kcl_of(batch, cur):
 
 
 def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
-           norm=False, aux=None, w_ic=1.0):
+           norm=False, aux=None, w_ic=1.0, w_y=1.0):
     nd = batch["node"]
     msk = nd.msk_v
     # voltage: MSE on dv (small) + report WAPE
@@ -103,6 +103,22 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             icn = icn + (er[mm] - tr_r[mm]).abs().sum() + (ei_[mm] - tr_i[mm]).abs().sum()
             icd = icd + tr_r[mm].abs().sum() + tr_i[mm].abs().sum()
     ic_term = ic_mse / max(nic_t, 1)
+    # parameter estimation: loss on the Y ESTIMATE at hidden components (feature
+    # space, per-family scales). Same pattern as ic_term; the general four-array
+    # mask makes Y a first-class target.
+    y_mse = dv.new_zeros(()); yn = dv.new_zeros(()); yd = dv.new_zeros(()); ny_t = 0
+    if aux and aux.get("y_est"):
+        for s, (eyr, eyi) in aux["y_est"].items():
+            st = batch[s]; mm = aux["y_msk"][s]
+            if not bool(mm.any()):
+                continue
+            tr = torch.stack([st.yr[mm], st.yi[mm]], -1)
+            es = torch.stack([eyr[mm], eyi[mm]], -1)
+            sc = tr.abs().mean().clamp(min=1e-9)
+            term = (((es - tr) / sc) ** 2).mean()
+            y_mse = y_mse + term; ny_t += 1
+            yn = yn + (es - tr).abs().sum(); yd = yd + tr.abs().sum()
+    y_term = y_mse / max(ny_t, 1)
     res = kcl_of(batch, cur)
     kcl = torch.asinh(res / scales["kcl"]).abs().mean()
     # The V term was ~100-800x smaller than the current term (w_v*v_mse ~ 8e-3 vs
@@ -114,9 +130,10 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # still carried ~7x the weight of the single V term even after normalisation
     # (measured: mc norm-mixed 0.685 vs mc V-only 0.443 at the same epoch).
     i_term = i_mse / max(nfam, 1) if norm else i_mse
-    loss = w_v * v_term + w_i * i_term + w_kcl * kcl + w_ic * ic_term
+    loss = w_v * v_term + w_i * i_term + w_kcl * kcl + w_ic * ic_term + w_y * y_term
     ic_wape = 100.0 * float(icn) / (float(icd) + 1e-30) if nic_t else 0.0
-    m = {"ic_wape": ic_wape,
+    y_wape = 100.0 * float(yn) / (float(yd) + 1e-30) if ny_t else 0.0
+    m = {"ic_wape": ic_wape, "y_wape": y_wape,
          "v_wape": float(v_wape), "i_wape": float(i_wape), "v_skill": float(v_skill),
          "v_base": float(v_base), "v_mse": float(v_mse), "i_mse": float(i_mse),
          "kcl": float(kcl)}
@@ -191,10 +208,14 @@ def main():
     ap.add_argument("--w-ic", type=float, default=1.0,
                     help="hidden-Icomp estimate loss. T17 measured estimate->solve V at "
                          "~100x the V head, so this is the loss that buys V accuracy")
+    ap.add_argument("--w-y", type=float, default=1.0,
+                    help="hidden-Y estimate loss (four-array mask; T22: excitation-"
+                         "limited, so this trains the structural prior)")
     ap.add_argument("--norm-loss", action="store_true",
                     help="scale-free loss terms (fraction of variance unexplained)")
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--task", default="pf", choices=("pf", "se", "injection", "random_safe", "random"),
+    ap.add_argument("--task", default="pf",
+                    choices=("pf", "se", "injection", "random_safe", "random", "random4", "param"),
                     help="training objective. Eval stays pf so runs are comparable.")
     ap.add_argument("--small-first", action="store_true",
                     help="order each split by static.pt size ascending before --limit-feeders: "
@@ -207,6 +228,9 @@ def main():
                     help="model init + data order. The feeder SPLIT stays pinned at 42 so\n                          seeds measure training variance, not split variance.")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
+    # four-array architecture (I_bus inputs, Y head) follows the objective; stored
+    # in the ckpt args so evaluators rebuild the right encoder widths.
+    args.four_mask = args.task in ("random4", "param")
     # DDP under torchrun: one process per GPU. Data-dependent control flow in
     # reconstruct_full means the autograd graph differs per rank, so
     # find_unused_parameters is REQUIRED (absent stores also leave unused heads).
@@ -254,6 +278,8 @@ def main():
     unseen_ds = build_split(un_dirs, ev, "pf", use_feat, role="eval")
     lens_ds = {"se": DKDataset(unseen_ds.feeders, ev, task="se", use_feat=use_feat),
                "inj": DKDataset(unseen_ds.feeders, ev, task="injection", use_feat=use_feat)}
+    if args.four_mask:
+        lens_ds["par"] = DKDataset(unseen_ds.feeders, ev, task="param", use_feat=use_feat)
     print(f"feeders train={len(tr_dirs)} unseen={len(un_dirs)}; "
           f"train_samples={len(train_ds)} unseen={len(unseen_ds)}; build={time.time()-t0:.1f}s", flush=True)
 
@@ -265,7 +291,8 @@ def main():
 
     model = DKSolver(hidden=args.hidden, steps=args.steps,
                      kcl_feedback=not args.no_kcl, use_feat=use_feat, scales=scales,
-                     fb_points=args.fb_points, vabs=args.vabs).to(dev)
+                     fb_points=args.fb_points, vabs=args.vabs,
+                     four_mask=args.four_mask).to(dev)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -308,7 +335,7 @@ def main():
             dv, cur, aux = model(batch)
             loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                              w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
-                             aux=aux, w_ic=args.w_ic)
+                             aux=aux, w_ic=args.w_ic, w_y=args.w_y)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
             for k, v in m.items():
@@ -348,7 +375,9 @@ def main():
               f"(1.000 = no better than dv=0; dv=0 scores v_wape {un['v_base']:.2f}%)\n"
               f"        unseen I/fam: {fam_str}\n"
               f"        lenses: se v_skill={lens['se']['v_skill']:.3f} I={lens['se']['i_wape']:.2f}% | "
-              f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%", flush=True)
+              f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%"
+              + (f" | par y_wape={lens['par']['y_wape']:.2f}%" if "par" in lens else ""),
+              flush=True)
         state = (model.module if world > 1 else model).state_dict()
         torch.save({"model": state, "args": vars(args), "epoch": epoch, "scales": scales},
                    Path(args.out) / "last.pt")

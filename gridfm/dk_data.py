@@ -308,6 +308,7 @@ def _set_comp_masks(data):
         n = st.yr.shape[0]
         st.vis_y = torch.ones(n, dtype=torch.bool)
         st.vis_ic = torch.ones(n, dtype=torch.bool)
+        st.vis_i = torch.zeros(n, dtype=torch.bool)  # I_bus as INPUT: off by default
         st.msk_i = torch.ones(n, dtype=torch.bool)   # currents are always targets
 
 
@@ -417,6 +418,62 @@ def mask_random(data, rng):
     return data
 
 
+def mask_random4(data, rng):
+    """THE GENERAL OBJECTIVE: the reduced format makes the whole grid exactly four
+    arrays -- V, I_bus, Icomp, Y -- and every named task (pf/se/injection/param/...)
+    is just a visibility pattern over them. One random conditional per sample over
+    ALL FOUR:
+      V     : slack+ground always, plus Bernoulli(p_v),  p_v  ~ U(0, 0.9)
+      Icomp : Bernoulli(p_ic) per PC component,          p_ic ~ U(0.4, 1.0)
+      I_bus : Bernoulli(p_ib) per component AS INPUT,    p_ib ~ U(0.0, 0.5)
+              (visible terminal currents are measurements = linear equations;
+               currents remain targets everywhere regardless)
+      Y     : Bernoulli(p_y) per component,              p_y  ~ U(0.7, 1.0)
+              (vsource Y stays visible: hiding the source model is degenerate)
+    Underdetermined corners are the model's estate (learned conditional
+    expectation); capability CLAIMS still come from determinate lenses."""
+    nd = data["node"]
+    p_v = float(rng.uniform(0.0, 0.9))
+    meas = torch.from_numpy(rng.random(int(nd.num_nodes)) < p_v)
+    nd.vis_v = nd.slack | nd.ground | meas
+    nd.msk_v = ~nd.vis_v
+    _set_comp_masks(data)
+    p_ic = float(rng.uniform(0.4, 1.0))
+    p_ib = float(rng.uniform(0.0, 0.5))
+    p_y = float(rng.uniform(0.7, 1.0))
+    for s in data.node_types:
+        if s == "node" or s not in STORES:
+            continue
+        st = data[s]
+        n = st.yr.shape[0]
+        st.vis_i = torch.from_numpy(rng.random(n) < p_ib)
+        if s != "vsource":
+            st.vis_y = torch.from_numpy(rng.random(n) < p_y)
+        if s in PC_STORES:
+            st.vis_ic = torch.from_numpy(rng.random(n) < p_ic)
+    return data
+
+
+def mask_param(data, rng):
+    """Parameter-estimation lens: FULL state visible (all V, all Icomp, all I_bus),
+    hide Y on a random ~30% of non-vsource components; recover Y. Single-snapshot,
+    so identifiability is excitation-limited (T22) -- this lens measures the
+    learned structural prior, not algebra."""
+    nd = data["node"]
+    nd.vis_v = torch.ones(nd.num_nodes, dtype=torch.bool)
+    nd.msk_v = ~nd.vis_v
+    _set_comp_masks(data)
+    for s in data.node_types:
+        if s == "node" or s not in STORES:
+            continue
+        st = data[s]
+        n = st.yr.shape[0]
+        st.vis_i = torch.ones(n, dtype=torch.bool)
+        if s != "vsource":
+            st.vis_y = torch.from_numpy(rng.random(n) >= 0.3)
+    return data
+
+
 def mask_random_safe(data, rng):
     """Foundation objective: ONE identifiable task per sample, chosen at random --
     the model learns every conditional (all the interactions), never an
@@ -431,7 +488,8 @@ def mask_random_safe(data, rng):
 
 
 TASKS = {"pf": mask_pf, "se": mask_se, "injection": mask_injection,
-         "random_safe": mask_random_safe, "random": mask_random}
+         "random_safe": mask_random_safe, "random": mask_random,
+         "random4": mask_random4, "param": mask_param}
 
 
 # ----------------------------------------------------------------------------- dataset

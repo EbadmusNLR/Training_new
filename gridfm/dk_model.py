@@ -43,7 +43,7 @@ class MLP(nn.Sequential):
 
 class DKSolver(nn.Module):
     def __init__(self, hidden=256, steps=12, kcl_feedback=True, use_feat=True, scales=None,
-                 exact_decoder=True, fb_points=0, vabs=False):
+                 exact_decoder=True, fb_points=0, vabs=False, four_mask=False):
         super().__init__()
         self.hidden = hidden
         self.steps = steps
@@ -70,13 +70,24 @@ class DKSolver(nn.Module):
         self.comp_gru = nn.ModuleDict()
         self.cur_head = nn.ModuleDict()
         self.ic_head = nn.ModuleDict()
+        # The GENERAL four-array mask (V, I_bus, Icomp, Y are the WHOLE grid in this
+        # format): I_bus entries become gated encoder inputs (measurements) and Y
+        # becomes maskable with its own estimate head. Old checkpoints predate these
+        # modules, so the extra widths/heads exist only when four_mask=True.
+        self.four_mask = bool(four_mask)
+        self.y_head = nn.ModuleDict()
         for s in self.stores:
             _, nterm, _ = STORES[s]
             dim = nterm * FC
-            # feat(Yr),feat(Yi) + feat(Icomp_r),feat(Icomp_i) (zeroed where hidden) + vis flag.
-            # Icomp must be an ENCODER input, not only a physics constant: injection
-            # estimation hides it, and a model that never sees it cannot miss it.
-            self.comp_enc[s] = MLP(2 * dim * dim + 2 * FC + 1, hidden, hidden)
+            # feat(Yr),feat(Yi) (zeroed where Y hidden) + feat(Icomp) (zeroed where
+            # hidden) + vis flags; four_mask adds gated I_bus features + vis_y/vis_i
+            # flags. Everything hidden must still be an encoder INPUT slot: a model
+            # that never sees a field cannot learn to miss it.
+            width = 2 * dim * dim + 2 * FC + 1
+            if self.four_mask:
+                width += 1 + 2 * dim + 1          # vis_y flag + I_bus feat + vis_i flag
+                self.y_head[s] = MLP(hidden, 2 * dim * dim, hidden, zero_last=True)
+            self.comp_enc[s] = MLP(width, hidden, hidden)
             # Icomp estimate head (feat space). Only consulted where vis_ic is False;
             # visible entries stay pinned to the data, like _decode_dv does for V.
             self.ic_head[s] = MLP(hidden, 2 * FC, hidden, zero_last=True)
@@ -260,7 +271,17 @@ class DKSolver(nn.Module):
             gate = vis_ic.unsqueeze(1).float()
             icf = torch.cat([feat(icr, self._iscale(s), self.use_feat) * gate,
                              feat(ici, self._iscale(s), self.use_feat) * gate, gate], 1)
-            hc[s] = self.comp_enc[s](torch.cat([yf, icf], 1))
+            parts = [yf, icf]
+            if self.four_mask:
+                vis_y = st.vis_y if hasattr(st, "vis_y") else torch.ones(n, dtype=torch.bool, device=yf.device)
+                gy = vis_y.unsqueeze(1).float()
+                parts[0] = yf * gy                 # hidden Y never reaches the encoder
+                vis_i = st.vis_i if hasattr(st, "vis_i") else torch.zeros(n, dtype=torch.bool, device=yf.device)
+                gi = vis_i.unsqueeze(1).float()
+                ibf = torch.cat([feat(st.ir, self._iscale(s), self.use_feat) * gi,
+                                 feat(st.ii, self._iscale(s), self.use_feat) * gi], 1)
+                parts += [gy, ibf, gi]
+            hc[s] = self.comp_enc[s](torch.cat(parts, 1))
         fb_at = set()
         if self.fb_points > 0:
             stride = max(1, self.steps // (self.fb_points + 1))
@@ -306,6 +327,22 @@ class DKSolver(nn.Module):
         dvp = self._pred_dv(nd, hn)
         v = nd.v_init + self._decode_dv(nd, hn, dvp)
         cur = self._completed_currents(batch, edges, hc, v)
+        if self.four_mask:
+            # Y estimates for hidden components (feat space -> pu via yscale).
+            # NOTE: the current-decode path above still uses TRUTH Y internally;
+            # with W_I=W_KCL=0 that never reaches the loss -- the Y estimate is
+            # supervised directly here. Wiring estimates into the decode is the
+            # later end-to-end step.
+            self._last_aux["y_est"] = {}; self._last_aux["y_msk"] = {}
+            for s in edges:
+                st = batch[s]
+                if not hasattr(st, "vis_y") or bool(st.vis_y.all()):
+                    continue
+                n_, dim, _ = st.yr.shape
+                z = self.y_head[s](hc[s]).clamp(-8.0, 8.0).reshape(n_, dim, dim, 2)
+                ypu = inv_feat(z, self._yscale(s), self.use_feat)
+                self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
+                self._last_aux["y_msk"][s] = ~st.vis_y
         return dvp, cur, self._last_aux
 
     def _pred_dv(self, nd, hn):
