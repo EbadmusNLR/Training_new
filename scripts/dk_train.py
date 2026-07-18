@@ -234,6 +234,11 @@ def main():
                     help="autocast forward+loss to bfloat16 (H100); no GradScaler needed")
     ap.add_argument("--eval-every", type=int, default=1,
                     help="run the (expensive) eval+lenses every N epochs")
+    ap.add_argument("--prof", action="store_true",
+                    help="per-epoch wall-time split: data-wait / H2D / forward / "
+                         "backward+step (adds cuda syncs; probe-only)")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile(reduce-overhead, dynamic=True) on the model")
     ap.add_argument("--out", default=str(ROOT / "runs" / "dk_pf"))
     args = ap.parse_args()
     if args.no_cur:
@@ -308,6 +313,8 @@ def main():
                      fb_points=args.fb_points, vabs=args.vabs,
                      four_mask=args.four_mask).to(dev)
     model.skip_current = args.no_cur
+    if args.compile:
+        model = torch.compile(model, mode="reduce-overhead", dynamic=True)
     print(f"params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
     if world > 1:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -336,7 +343,8 @@ def main():
     # re-imports torch/PyG (~60s of the epoch). prefetch keeps the GPU fed while a worker
     # builds the next batch's per-variant recon ctx.
     dl_kw = dict(num_workers=args.workers,
-                 multiprocessing_context="fork" if args.workers else None)
+                 multiprocessing_context="fork" if args.workers else None,
+                 pin_memory=torch.cuda.is_available())
     if args.workers:
         dl_kw.update(persistent_workers=True, prefetch_factor=4)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
@@ -349,17 +357,32 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train(); agg = {}
         te = time.time()
+        prof = {"data": 0.0, "h2d": 0.0, "fwd": 0.0, "bwd": 0.0} if args.prof else None
+        t_mark = time.time()
         for batch, plan, rctx in train_dl:
-            batch = batch.to(dev); batch.tree_plan = plan; batch.recon_ctx = rctx
+            if prof is not None:
+                prof["data"] += time.time() - t_mark; t_mark = time.time()
+            batch = batch.to(dev, non_blocking=True)
+            batch.tree_plan = plan; batch.recon_ctx = rctx
+            if prof is not None:
+                torch.cuda.synchronize(); prof["h2d"] += time.time() - t_mark; t_mark = time.time()
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
                 dv, cur, aux = model(batch)
                 loss, m = losses(batch, dv, cur, scales, use_feat, w_v=args.w_v, w_i=args.w_i,
                                  w_kcl=0.0 if args.no_kcl else args.w_kcl, norm=args.norm_loss,
                                  aux=aux, w_ic=args.w_ic, w_y=args.w_y)
+            if prof is not None:
+                torch.cuda.synchronize(); prof["fwd"] += time.time() - t_mark; t_mark = time.time()
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step(); sched.step()
+            if prof is not None:
+                torch.cuda.synchronize(); prof["bwd"] += time.time() - t_mark; t_mark = time.time()
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
+        if prof is not None:
+            tot = sum(prof.values()) + 1e-9
+            print(f"PROF ep{epoch:03d}: " + " ".join(
+                f"{k}={v:.1f}s({100*v/tot:.0f}%)" for k, v in prof.items()), flush=True)
         n = max(1, len(train_dl))
         tr = {k: v / n for k, v in agg.items()}
         # eval + logging on rank 0 only; other ranks proceed to the next epoch
