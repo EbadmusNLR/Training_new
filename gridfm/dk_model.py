@@ -387,7 +387,10 @@ class DKSolver(nn.Module):
                 if not hasattr(st, "vis_y") or bool(st.vis_y.all()):
                     continue
                 n_, dim, _ = st.yr.shape
-                out = self.y_head[s](hc[s]).reshape(n_, dim, dim, 4)
+                # DETACHED trunk: w_y gradients degraded the shared V/ic trunk
+                # (measured: random4 unseen 1.01-1.13 with y loss on, 0.888 with
+                # --w-y 0). The y_head may read the representation, not shape it.
+                out = self.y_head[s](hc[s].detach()).reshape(n_, dim, dim, 4)
                 z = out[..., :2].clamp(-8.0, 8.0)
                 g = out[..., 2:]                          # gate logits (zero-init -> 0.5)
                 gate = torch.sigmoid(g)
