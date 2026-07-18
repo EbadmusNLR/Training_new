@@ -73,7 +73,7 @@ def main():
                      kcl_feedback=not args.get("no_kcl", False),
                      use_feat=not args.get("no_feat", False), scales=ck["scales"],
                      fb_points=args.get("fb_points", 0), vabs=args.get("vabs", False))
-    model.load_state_dict(ck["model"]); model.eval()
+    model.load_state_dict(ck["model"]); model.eval(); model.skip_current = True
     # same unseen split the trainer uses (pinned seed 42, per corpus, interleaved)
     from itertools import zip_longest
     per = [split_feeders(discover_feeders(r), seed=42) for r in ROOTS]
@@ -107,14 +107,14 @@ def run_lens(a, args, model, unseen, task):
     rows = []
     for fdir in unseen[: a.n_feeders * 3]:
         try:
-            fd = DKFeeder(fdir)
+            fd = DKFeeder(fdir, need_decoder=False)  # mesh admitted; solve is topology-agnostic
         except UnsupportedNetwork as e:
             print(f"{os.path.basename(fdir)[:44]:44s} SKIP {e}")
             continue
         ds = DKDataset([fd], [a.variant], task=task,
                        use_feat=not args.get("no_feat", False))
         item = ds[0]
-        batch, plan, rctx = make_dk_collate([fd])([item])
+        batch, plan, rctx = make_dk_collate([fd], need_ctx=False)([item])
         batch.tree_plan = plan; batch.recon_ctx = rctx
         with torch.no_grad():
             dv, cur, aux = model(batch)
