@@ -166,6 +166,30 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
             st = batch[s]; mm = aux["y_msk"][s]
             if not bool(mm.any()):
                 continue
+            if aux.get("y_cb_logits", {}).get(s) is not None:
+                # v5 codebook loss (T31): family CE + log-scale MSE. Labels come
+                # from the truth Y on the fly: nearest codebook family by max-abs
+                # distance on the normalized matrix; no match within tol -> class
+                # K ("other", excluded from the scale loss).
+                cb = aux["y_cb"][s]                       # [K, dim, dim, 2]
+                K = cb.shape[0]
+                tr_st = torch.stack([st.yr[mm], st.yi[mm]], -1)
+                flat = tr_st.reshape(tr_st.shape[0], -1)
+                sc = flat.abs().amax(1).clamp(min=1e-12)
+                normf = flat / sc[:, None]
+                dist = (normf[:, None, :] - cb.reshape(K, -1)[None]).abs().amax(-1)
+                mind, lab = dist.min(1)
+                lab = torch.where(mind < 5e-3, lab, torch.full_like(lab, K))
+                logits = aux["y_cb_logits"][s][mm]
+                ls = aux["y_cb_ls"][s][mm]
+                ce = torch.nn.functional.cross_entropy(logits, lab)
+                inb = lab < K
+                lsm = ((ls - sc.log()) ** 2)[inb].mean() if bool(inb.any()) \
+                    else ls.new_zeros(())
+                y_mse = y_mse + ce + lsm; ny_t += 1
+                es = torch.stack([eyr[mm], eyi[mm]], -1)
+                yn = yn + (es - tr_st).abs().sum(); yd = yd + tr_st.abs().sum()
+                continue
             # FEAT space, like the ic loss: pu-space Y spans ~12 orders, so a pu MSE
             # is owned by the stiffest entries and the sinh decode explodes its
             # gradients (measured: par y_wape 1730% -- WORSE than predicting zero).

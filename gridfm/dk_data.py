@@ -244,6 +244,7 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     Ib: dict[str, list] = {s: [] for s in STORES}
     Yb: dict[str, dict] = {s: {"r_diag": [], "r_off": [], "i_diag": [], "i_off": []} for s in STORES}
     Yp: dict[str, list] = {s: [] for s in STORES}   # per-position |Y| samples [n,dim,dim,2]
+    Ycbc: dict[str, dict] = {s: {} for s in STORES}  # normalized-family -> [count, exemplar]
 
     def _keep(t):
         t = t.flatten()
@@ -281,6 +282,20 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
                 if ys.shape[0] > 256:
                     ys = ys[torch.randint(0, ys.shape[0], (256,))]
                 Yp[s].append(ys)
+                # Y codebook families (T31): normalized-by-max-abs component Y
+                # collapses to tens of families per store (95% of lines in 20-32).
+                # Collect SIGNED normalized exemplars + counts on the FULL store.
+                Yfull = torch.stack([yr, yi], -1).reshape(yr.shape[0], -1)
+                sc = Yfull.abs().amax(1).clamp(min=1e-12)
+                normf = (Yfull / sc[:, None]).double()
+                keys = np.round(normf.numpy(), 3)
+                for k in range(keys.shape[0]):
+                    kb = keys[k].tobytes()
+                    e = Ycbc[s].get(kb)
+                    if e is None:
+                        Ycbc[s][kb] = [1, normf[k].float()]
+                    else:
+                        e[0] += 1
 
     Iscale = {s: _p95(Ib[s]) for s in STORES}
     Yscale = {s: {k: _p95(Yb[s][k]) for k in Yb[s]} for s in STORES}
@@ -308,8 +323,17 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     # the train sample (phases spread the real/imag parts to O(1)).
     v_all = torch.cat(vss) if vss else torch.ones(1, 2)
     v_std = [max(float(v_all[:, 0].std()), 1e-6), max(float(v_all[:, 1].std()), 1e-6)]
-    return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "kcl": max(kcl, 1e-9),
-            "dv_std": dv_std, "v_std": v_std}
+    # Y codebook: top-K families per store, most-common first [K, dim, dim, 2].
+    # The head classifies family + regresses log-scale; class K = "other".
+    Ycb = {}
+    for s in STORES:
+        if not Ycbc[s]:
+            continue
+        top = sorted(Ycbc[s].values(), key=lambda e: -e[0])[:64]
+        dim = STORES[s][1] * FC
+        Ycb[s] = torch.stack([e[1] for e in top]).reshape(len(top), dim, dim, 2)
+    return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb,
+            "kcl": max(kcl, 1e-9), "dv_std": dv_std, "v_std": v_std}
 
 
 def _ydim(store):

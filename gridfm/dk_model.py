@@ -86,6 +86,7 @@ class DKSolver(nn.Module):
         # supervised outputs. Requires w_i=0, w_kcl=0, fb_points=0.
         self.skip_current = False
         self.y_head = nn.ModuleDict()
+        self.y_cb_head = nn.ModuleDict()
         for s in self.stores:
             _, nterm, _ = STORES[s]
             dim = nterm * FC
@@ -103,6 +104,14 @@ class DKSolver(nn.Module):
                 # with per-position scales). gate*sinh(z) lets structure be learned
                 # as classification (phase presence is visible in connectivity).
                 self.y_head[s] = MLP(hidden, 4 * dim * dim, hidden, zero_last=True)
+                # T31 codebook head (v5): 95% of a store's Y matrices are ~64
+                # normalized families x a scalar. Classify family (+1 "other")
+                # + regress log-scale; Y = exp(ls) * codebook[class]. Registered
+                # ONLY when scales carry Ycb so old checkpoints still load.
+                if scales and s in scales.get("Ycb", {}):
+                    K = scales["Ycb"][s].shape[0]
+                    self.register_buffer(f"ycb_{s}", scales["Ycb"][s].float())
+                    self.y_cb_head[s] = MLP(hidden, K + 2, hidden, zero_last=True)
             if self.ctx_points and s in PC_STORES:
                 width += self.ctx_points * 4 * FC  # T6 (Icomp, V_loc) context pairs
             self.comp_enc[s] = MLP(width, hidden, hidden)
@@ -400,18 +409,37 @@ class DKSolver(nn.Module):
                 # DETACHED trunk: w_y gradients degraded the shared V/ic trunk
                 # (measured: random4 unseen 1.01-1.13 with y loss on, 0.888 with
                 # --w-y 0). The y_head may read the representation, not shape it.
-                out = self.y_head[s](hc[s].detach()).reshape(n_, dim, dim, 4)
-                z = out[..., :2].clamp(-8.0, 8.0)
-                g = out[..., 2:]                          # gate logits (zero-init -> 0.5)
-                gate = torch.sigmoid(g)
-                ypu = gate * inv_feat(z, self._yscale(s), self.use_feat)
-                self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
-                self._last_aux["y_feat"] = self._last_aux.get("y_feat", {})
-                self._last_aux["y_feat"][s] = z          # feat space, for the loss
-                self._last_aux["y_gate"] = self._last_aux.get("y_gate", {})
-                self._last_aux["y_gate"][s] = g          # logits, for the BCE
-                self._last_aux["y_scale"] = self._last_aux.get("y_scale", {})
-                self._last_aux["y_scale"][s] = self._yscale(s)
+                if s in self.y_cb_head:
+                    # v5 codebook head: family logits (+"other") + log-scale.
+                    cb = getattr(self, f"ycb_{s}")        # [K,dim,dim,2]
+                    K = cb.shape[0]
+                    out = self.y_cb_head[s](hc[s].detach())
+                    logits = out[:, :K + 1]
+                    ls = out[:, K + 1].clamp(-30.0, 30.0)
+                    cls = logits.argmax(1)
+                    base = cb[cls.clamp(max=K - 1)]       # [n,dim,dim,2]
+                    keep = (cls < K).float().view(-1, 1, 1, 1)
+                    ypu = torch.exp(ls).view(-1, 1, 1, 1) * base * keep
+                    self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
+                    self._last_aux["y_cb_logits"] = self._last_aux.get("y_cb_logits", {})
+                    self._last_aux["y_cb_logits"][s] = logits
+                    self._last_aux["y_cb_ls"] = self._last_aux.get("y_cb_ls", {})
+                    self._last_aux["y_cb_ls"][s] = ls
+                    self._last_aux["y_cb"] = self._last_aux.get("y_cb", {})
+                    self._last_aux["y_cb"][s] = cb        # for the label match
+                else:
+                    out = self.y_head[s](hc[s].detach()).reshape(n_, dim, dim, 4)
+                    z = out[..., :2].clamp(-8.0, 8.0)
+                    g = out[..., 2:]                      # gate logits (zero-init -> 0.5)
+                    gate = torch.sigmoid(g)
+                    ypu = gate * inv_feat(z, self._yscale(s), self.use_feat)
+                    self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
+                    self._last_aux["y_feat"] = self._last_aux.get("y_feat", {})
+                    self._last_aux["y_feat"][s] = z      # feat space, for the loss
+                    self._last_aux["y_gate"] = self._last_aux.get("y_gate", {})
+                    self._last_aux["y_gate"][s] = g      # logits, for the BCE
+                    self._last_aux["y_scale"] = self._last_aux.get("y_scale", {})
+                    self._last_aux["y_scale"][s] = self._yscale(s)
                 self._last_aux["y_msk"][s] = ~st.vis_y
         return dvp, cur, self._last_aux
 
