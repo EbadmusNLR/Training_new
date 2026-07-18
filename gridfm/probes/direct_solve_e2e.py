@@ -55,7 +55,8 @@ def main():
     unseen = [d for tup in zip_longest(*[c["unseen"] for c in per]) for d in tup if d]
     for task in a.tasks:
         print(f"\n=== lens: {task} ===")
-        print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} {'hid_ic%':>8s}")
+        print(f"{'feeder':44s} {'n':>6s} {'skill_head':>10s} {'skill_solve':>11s} "
+              f"{'skill_joint':>11s} {'hid_ic%':>8s}")
         run_lens(a, args, model, unseen, task)
 
 
@@ -78,6 +79,7 @@ def run_lens(a, args, model, unseen, task):
         n = node_count(d)
         Ybus, rhs = build_ybus(d, n)  # truth rhs; estimated entries replace below
         # scatter estimate into rhs: for each shunt store, hidden terminals get est
+        hid_slot_nodes = []   # one entry per hidden ic slot: the node it injects at
         for s in aux.get("ic_est", {}):
             er, ei = aux["ic_est"][s]
             st = batch[s]
@@ -102,6 +104,7 @@ def run_lens(a, args, model, unseen, task):
                         col = (t - 1) * FC + int(k)
                         if col < delta.shape[1]:
                             rhs[node] += delta[c, col]
+                            hid_slot_nodes.append(node)
         Vt = d["node"].V_r_pu.double().numpy() + 1j * d["node"].V_i_pu.double().numpy()
         Vi = (d["node"].V_r_init_pu.double().numpy()
               + 1j * d["node"].V_i_init_pu.double().numpy())
@@ -118,12 +121,36 @@ def run_lens(a, args, model, unseen, task):
         msk = nd.msk_v
         verr = (dv - nd.dv)[msk]
         skill_head = float(verr.abs().sum() / (nd.dv[msk].abs().sum() + 1e-30))
+        # JOINT linear solve: the plain solve above IGNORES the mask's visible
+        # interior V measurements -- but those are exactly what pins hidden Icomp
+        # (the identifiability structure). Unknowns [V_hidden, dIc_hidden] around
+        # the model estimate; equations = KCL at every node except ground and
+        # vsource buses (their source current is not modeled). Determinate samples
+        # solve exactly; underdetermined corners get the min-norm correction, i.e.
+        # "project the model estimate onto the KCL-consistent manifold".
+        skill_joint = float("nan")
+        if n <= 4000:  # dense complex lstsq (SVD); bigger needs sparse lsqr
+            vis_np = nd.vis_v.numpy()
+            rows_ok = np.ones(n, dtype=bool); rows_ok[0] = False; rows_ok[fix] = False
+            hidnodes = np.where(~vis_np)[0]; visnodes = np.where(vis_np)[0]
+            A1 = Ybus[np.ix_(rows_ok.nonzero()[0], hidnodes)]
+            E = np.zeros((int(rows_ok.sum()), len(hid_slot_nodes)), dtype=np.complex128)
+            rowidx = -np.ones(n, dtype=int)
+            rowidx[rows_ok] = np.arange(int(rows_ok.sum()))
+            for j, na in enumerate(hid_slot_nodes):
+                if rowidx[na] >= 0:
+                    E[rowidx[na], j] = -1.0
+            bj = rhs[rows_ok] - Ybus[np.ix_(rows_ok.nonzero()[0], visnodes)] @ Vt[visnodes]
+            x, *_ = np.linalg.lstsq(np.concatenate([A1, E], axis=1), bj, rcond=None)
+            Vj = Vt.copy(); Vj[hidnodes] = x[: len(hidnodes)]
+            skill_joint = float(np.abs(Vj[free] - Vt[free]).sum() / dvn)
         hid_pct = []
         for s in aux.get("ic_msk", {}):
             m = aux["ic_msk"][s]
             hid_pct.append(float(m.float().mean()) * 100)
         print(f"{os.path.basename(fdir)[:44]:44s} {n:6d} {skill_head:10.3f} "
-              f"{skill_solve:11.3f} {np.mean(hid_pct) if hid_pct else 0:8.1f}")
+              f"{skill_solve:11.3f} {skill_joint:11.2e} "
+              f"{np.mean(hid_pct) if hid_pct else 0:8.1f}")
 
 
 if __name__ == "__main__":
