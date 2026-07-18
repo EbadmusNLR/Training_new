@@ -141,7 +141,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                     # magnitudes unmoored (T26b: ic 170k-982k%) -- estimates feed a
                     # physics solve in real units, so amplitude must stay supervised.
                     mag_anchor = ((pe_.norm(dim=-1) - te_.norm(dim=-1)) ** 2).mean()
-                    term = ((1.0 - cos) ** 2).mean() + 0.1 * mag_anchor
+                    term = ((1.0 - cos) ** 2).mean() + float(os.environ.get("SCE_MAG", 0.1)) * mag_anchor
                 else:
                     term = fr.mean() + fi.mean()
                     if norm:
