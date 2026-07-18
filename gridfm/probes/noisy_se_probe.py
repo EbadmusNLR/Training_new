@@ -28,7 +28,7 @@ adoption trigger, measured). Run on a compute node (dense fp64 lstsq).
 Usage: noisy_se_probe.py --ckpt runs/dk_foundation_15261953/last.pt \
          --n-feeders 16 --sigma 0.01 --gross-frac 0.03 --subset-seed 401
 """
-import argparse, os, sys
+import argparse, os, sys, zlib
 import numpy as np
 import torch
 
@@ -228,7 +228,7 @@ def main():
 
         # plant corruption (per-feeder deterministic)
         frng = np.random.default_rng(
-            [a.subset_seed, abs(hash(os.path.basename(fdir))) % (2**31)])
+            [a.subset_seed, zlib.crc32(os.path.basename(fdir).encode())])
         medv = float(np.median(np.abs(Vt[free]))) or 1.0
         Vm = Vt.copy()
         noise = a.sigma * medv * (frng.standard_normal(visI.size)
