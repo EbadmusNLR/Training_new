@@ -298,7 +298,7 @@ def main():
                     help="T6 multi-snapshot context: K other operating points of the "
                          "same feeder attached per PC component as (Icomp, V_loc) "
                          "pairs -- the identifiability mechanism for the class-B "
-                         "Icomp split (single-snapshot ic_wape floor ~100%)")
+                         "Icomp split (single-snapshot ic_wape floor ~100%%)")
     ap.add_argument("--subset-seed", type=int, default=None,
                     help="shuffle the TRAIN feeder list with this seed before "
                          "--limit-feeders, so probes draw different random data "
