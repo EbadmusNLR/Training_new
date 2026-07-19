@@ -131,6 +131,48 @@ def _pivot_order(vectors: np.ndarray) -> list[int]:
     return order
 
 
+def _structured_recovery(v: np.ndarray, b: np.ndarray, kind: str) -> tuple[np.ndarray, float]:
+    """Fit a complex-symmetric or zero-row-sum symmetric primitive Y.
+
+    ``v`` and ``b`` are K-by-N terminal voltage/current matrices satisfying
+    ``b[k] = Y @ v[k]``. The Laplacian basis enforces reciprocity and KCL/gauge
+    structure by representing Y as sums of ``(e_i-e_j)(e_i-e_j)^T``.
+    """
+    k_count, dim = v.shape
+    if kind == "symmetric":
+        params = [(p, q) for p in range(dim) for q in range(p, dim)]
+    elif kind == "laplacian":
+        params = [(p, q) for p in range(dim) for q in range(p + 1, dim)]
+    else:
+        raise ValueError(kind)
+    design = np.zeros((k_count * dim, len(params)), dtype=np.complex128)
+    target = b.reshape(-1)
+    for k in range(k_count):
+        for col, (p, q) in enumerate(params):
+            if kind == "symmetric":
+                design[k * dim + p, col] += v[k, q]
+                if p != q:
+                    design[k * dim + q, col] += v[k, p]
+            else:
+                delta = v[k, p] - v[k, q]
+                design[k * dim + p, col] += delta
+                design[k * dim + q, col] -= delta
+    coef, *_ = np.linalg.lstsq(design, target, rcond=None)
+    y = np.zeros((dim, dim), dtype=np.complex128)
+    for value, (p, q) in zip(coef, params):
+        if kind == "symmetric":
+            y[p, q] += value
+            if p != q:
+                y[q, p] += value
+        else:
+            y[p, p] += value
+            y[q, q] += value
+            y[p, q] -= value
+            y[q, p] -= value
+    fit = float(np.abs((v @ y.T) - b).sum() / (np.abs(b).sum() + 1e-300))
+    return y, fit
+
+
 def _voltage_skill(dh, s_target: str, c: int, cols: list[int], edges, yrec, y_reference) -> float:
     """Held-out direct solve after adding yrec-y_reference to its existing Ybus."""
     n = node_count(dh)
@@ -185,6 +227,7 @@ def audit_target(
     cols = [a for a, _ in edges]
     dim = y0_all.shape[-1]
     y0 = y0_all[c]
+    y0_block = y0[np.ix_(cols, cols)]
 
     passive0 = _y_state(d0, PASSIVE_STORES)
     all0 = _y_state(d0, STORES)
@@ -261,6 +304,10 @@ def audit_target(
             fit_num += float(np.abs(amat @ x - bvec).sum())
             fit_den += float(np.abs(bvec).sum())
 
+        bmat = np.column_stack([np.asarray(rows_b[a])[chosen] for a in cols])
+        ys, ys_fit = _structured_recovery(excitation, bmat, "symmetric")
+        yl, yl_fit = _structured_recovery(excitation, bmat, "laplacian")
+
         block = np.ix_(cols, cols)
         yerr0 = float(np.abs(yrec[block] - y0[block]).sum() / (np.abs(y0[block]).sum() + 1e-300))
         record = {
@@ -280,6 +327,14 @@ def audit_target(
             "oracle_dynamic_y_relres": sum(oracle_num_by_snapshot[j] for j in chosen)
             / (sum(oracle_den_by_snapshot[j] for j in chosen) + 1e-300),
             "y_relerr_vs_variant0": yerr0,
+            "symmetric_fit_relres": ys_fit,
+            "symmetric_y_relerr": float(
+                np.abs(ys - y0_block).sum() / (np.abs(y0_block).sum() + 1e-300)
+            ),
+            "laplacian_fit_relres": yl_fit,
+            "laplacian_y_relerr": float(
+                np.abs(yl - y0_block).sum() / (np.abs(y0_block).sum() + 1e-300)
+            ),
             "v_skill_legacy_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, y0),
             "v_skill_correct_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, yh),
         }
@@ -301,6 +356,12 @@ def audit_target(
         "all_component_y_drift_max": all_drift_max,
         "holdout": holdout,
         "holdout_target_y_drift": holdout_drift,
+        "target_symmetry_rel": float(
+            np.abs(y0_block - y0_block.T).sum() / (np.abs(y0_block).sum() + 1e-300)
+        ),
+        "target_rowsum_rel": float(
+            np.abs(y0_block.sum(axis=1)).sum() / (np.abs(y0_block).sum() + 1e-300)
+        ),
         "variant0_passive_y_hash": _state_digest(passive0),
         "variant0_all_y_hash": _state_digest(all0),
     }
