@@ -55,13 +55,16 @@ Progression of `par` lens y_wape on line (100% = predict-zero baseline):
 free-entry head 388k–3.2M% → codebook+free scale 3616–6349% → decoupled clamped scale
 489–2421% → **analytic scale 76–91% (sub-100%)**.
 
-**T32e (last experiment, replicated on 301 and 302):**
-- shm crashes **fixed** (0 aborts; first clean 40-epoch probes of the arc).
-- **V trunk is the best of this config: unseen 0.659 / 0.726.** Analytic Y does not harm
-  the trunk — earlier 1.4–2.2 readings were mid-run artifacts of crashed runs.
-- Y line reaches **76–91% through ~epoch 20, then DEGRADES** (139→264→11088% on 301;
-  272→6369% on 302). Same pattern both subsets.
-- Per-store at the good point: storage 0%, capacitor 2–18%, transformer 36–56%, line
+**T32e (last experiment, both subsets ran 40/40 epochs, 0 shm aborts):**
+- shm crashes **fixed** — first clean full probes of the arc.
+- **V trunk is the best of the campaign: unseen 0.659 (301) / 0.732 (302), class D
+  0.820 / 0.916** — beats the T27 config of record (0.710/0.783, D 0.811/0.995). So the
+  analytic-Y path does **not** harm the trunk; earlier 1.4–2.2 readings were mid-run
+  artifacts of crashed runs. If you need a checkpoint today, these are the best ones.
+- Y line reaches **76–91% through ~epoch 20, then DEGRADES**. Finals: line 11080% (301),
+  230% (302). The divergence **replicates, but its magnitude is erratic** (230 vs 11080)
+  — the signature of an ill-conditioned guard firing at random, not a learning problem.
+- Per-store at the good point: storage 0%, capacitor 2–13%, transformer 38–52%, line
   76–91%; load/pvsystem/reactor ~100% (their Y is near-zero, so predict-zero is ~right).
 
 ### START HERE: the next fix (root cause already identified in code)
