@@ -238,6 +238,19 @@ def audit_target(
     dim = y0_all.shape[-1]
     y0 = y0_all[c]
     y0_block = y0[np.ix_(cols, cols)]
+    identity = np.eye(len(cols), dtype=np.complex128)
+    _, symmetric_structure_rel = _structured_recovery(
+        identity, y0_block.T, "symmetric"
+    )
+    _, laplacian_structure_rel = _structured_recovery(
+        identity, y0_block.T, "laplacian"
+    )
+    if s_target == "line" and len(cols) % 2 == 0:
+        _, two_terminal_structure_rel = _structured_recovery(
+            identity, y0_block.T, "two_terminal"
+        )
+    else:
+        two_terminal_structure_rel = None
 
     passive0 = _y_state(d0, PASSIVE_STORES)
     all0 = _y_state(d0, STORES)
@@ -382,6 +395,9 @@ def audit_target(
         "target_rowsum_rel": float(
             np.abs(y0_block.sum(axis=1)).sum() / (np.abs(y0_block).sum() + 1e-300)
         ),
+        "symmetric_structure_rel": symmetric_structure_rel,
+        "laplacian_structure_rel": laplacian_structure_rel,
+        "two_terminal_structure_rel": two_terminal_structure_rel,
         "variant0_passive_y_hash": _state_digest(passive0),
         "variant0_all_y_hash": _state_digest(all0),
     }
