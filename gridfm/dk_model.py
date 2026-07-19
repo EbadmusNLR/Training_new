@@ -195,13 +195,9 @@ class DKSolver(nn.Module):
             out[s] = terms
         return out
 
-    def _phys_current(self, s, batch, terms, v, icomp=None):
-        """Physics-decoded terminal currents I = Y@V - Icomp from the current V
-        estimate, for well-conditioned families (loads/shunts/transformers). V
-        error maps ~linearly to current error here (unlike stiff series lines).
-        `icomp` overrides the stored compensation: for injection estimation the
-        model's Icomp ESTIMATE must drive the decode, so the current loss and KCL
-        pull the estimate toward truth -- the iterated-unknown pattern."""
+    def _term_v(self, s, batch, terms, v):
+        """Terminal voltage vector [n,dim] (re,im) for a store, scattered from the
+        node voltages via the component's terminal->node map."""
         st = batch[s]
         n, dim, _ = st.yr.shape
         Vlr = v.new_zeros(n, dim); Vli = v.new_zeros(n, dim)
@@ -211,6 +207,18 @@ class DKSolver(nn.Module):
             comp, node, col = t
             Vlr[comp, col] = v[node, 0]
             Vli[comp, col] = v[node, 1]
+        return Vlr, Vli
+
+    def _phys_current(self, s, batch, terms, v, icomp=None):
+        """Physics-decoded terminal currents I = Y@V - Icomp from the current V
+        estimate, for well-conditioned families (loads/shunts/transformers). V
+        error maps ~linearly to current error here (unlike stiff series lines).
+        `icomp` overrides the stored compensation: for injection estimation the
+        model's Icomp ESTIMATE must drive the decode, so the current loss and KCL
+        pull the estimate toward truth -- the iterated-unknown pattern."""
+        st = batch[s]
+        n, dim, _ = st.yr.shape
+        Vlr, Vli = self._term_v(s, batch, terms, v)
         Ir = torch.bmm(st.yr, Vlr.unsqueeze(-1)).squeeze(-1) - torch.bmm(st.yi, Vli.unsqueeze(-1)).squeeze(-1)
         Ii = torch.bmm(st.yr, Vli.unsqueeze(-1)).squeeze(-1) + torch.bmm(st.yi, Vlr.unsqueeze(-1)).squeeze(-1)
         _, _, nic = STORES[s]
@@ -442,6 +450,35 @@ class DKSolver(nn.Module):
                     base = cb[cin]                        # [n,dim,dim,2]
                     keep = (cls < K).float().view(-1, 1, 1, 1)
                     ypu = torch.exp(ls).view(-1, 1, 1, 1) * base * keep
+                    if os.environ.get("YCB_ANALYTIC_SCALE") and hasattr(st, "vis_i"):
+                        # v5.4: the scale is ALGEBRA, not regression. With Y=s*P and
+                        # visible terminal currents, i = s*P*v (+Icomp) gives the
+                        # least-squares scale in CLOSED FORM:
+                        #     s = Re<Pv, i> / ||Pv||^2
+                        # Exact when the pattern is right; a bounded projection when
+                        # it is wrong -- which removes the explosion mechanism
+                        # entirely (T32c/d). Same split that won everywhere else:
+                        # the net supplies the discrete structure, physics the scalar.
+                        Vlr, Vli = self._term_v(s, batch, edges[s], v)
+                        Pr, Pi = base[..., 0], base[..., 1]          # [n,dim,dim]
+                        Pvr = (torch.bmm(Pr, Vlr.unsqueeze(-1))
+                               - torch.bmm(Pi, Vli.unsqueeze(-1))).squeeze(-1)
+                        Pvi = (torch.bmm(Pr, Vli.unsqueeze(-1))
+                               + torch.bmm(Pi, Vlr.unsqueeze(-1))).squeeze(-1)
+                        # target = I_bus + Icomp (Y@V = I_bus + Icomp per _phys_current)
+                        tr_, ti_ = st.ir, st.ii
+                        _, _, nic = STORES[s]
+                        if nic and hasattr(st, "icr"):
+                            w = min(nic, tr_.shape[1], st.icr.shape[1])
+                            tr_ = tr_.clone(); ti_ = ti_.clone()
+                            tr_[:, :w] = tr_[:, :w] + st.icr[:, :w]
+                            ti_[:, :w] = ti_[:, :w] + st.ici[:, :w]
+                        den = (Pvr ** 2 + Pvi ** 2).sum(1)
+                        num = (Pvr * tr_ + Pvi * ti_).sum(1)
+                        s_an = num / den.clamp(min=1e-20)
+                        ok = (st.vis_i & (den > 1e-20) & torch.isfinite(s_an)
+                              & (cls < K)).view(-1, 1, 1, 1)
+                        ypu = torch.where(ok, s_an.view(-1, 1, 1, 1) * base, ypu)
                     self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
                     self._last_aux["y_cb_logits"] = self._last_aux.get("y_cb_logits", {})
                     self._last_aux["y_cb_logits"][s] = logits
