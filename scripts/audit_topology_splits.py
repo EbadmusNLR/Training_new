@@ -103,6 +103,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--json", default=None)
+    ap.add_argument("--manifest", default=None,
+                    help="write compact relative-feeder -> WL fingerprint mapping")
     ap.add_argument("--examples", type=int, default=12)
     a = ap.parse_args()
 
@@ -132,6 +134,15 @@ def main():
         print(f"ERROR {r['corpus']}:{os.path.basename(r['feeder'])}: {r['error']}")
     if a.json:
         Path(a.json).write_text(json.dumps(rows, indent=2) + "\n")
+    if a.manifest:
+        mapping = {}
+        base = PROJECT / "training_data"
+        for r in rows:
+            if "error" not in r:
+                mapping[str(Path(r["feeder"]).relative_to(base))] = r["wl"]
+        payload = {"version": 1, "method": "hetero_wl_sha256_6",
+                   "feeders": dict(sorted(mapping.items()))}
+        Path(a.manifest).write_text(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":

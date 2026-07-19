@@ -10,7 +10,8 @@ The non-negotiable inference contract is:
 - `Ibus` and `Icomp` remain separate and satisfy `Ibus + Icomp = YV` in pu.
 - No OpenDSS or assembled power-flow solve is used by the learned model.
 - No baseline computed from solved target voltages of an evaluation topology is allowed.
-- Feeder identities, not samples, define unseen-topology splits.
+- Content-derived topology groups, not names or samples, define unseen/test splits;
+  structurally equivalent vendored copies can never cross split boundaries.
 
 The first architecture is `EdgeStateGridFM`: recurrent bipartite message passing over
 component-terminal incidences, explicit terminal voltage proposals, a graph-global state,

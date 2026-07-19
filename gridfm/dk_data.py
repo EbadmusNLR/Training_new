@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -46,19 +47,48 @@ PE_DIM = 6  # [log_deg, hop/10, is_slack, is_ground, deg_ratio, log1p_nbr_deg]
 
 
 # ----------------------------------------------------------------------------- splits
+_TOPOLOGY_GROUPS = None
+
+
+def _topology_groups():
+    global _TOPOLOGY_GROUPS
+    if _TOPOLOGY_GROUPS is None:
+        path = Path(__file__).with_name("topology_fingerprints.json")
+        if path.exists():
+            _TOPOLOGY_GROUPS = json.loads(path.read_text()).get("feeders", {})
+        else:
+            _TOPOLOGY_GROUPS = {}
+    return _TOPOLOGY_GROUPS
+
+
+def _topology_group(feeder):
+    p = Path(feeder)
+    key = "/".join(p.parts[-2:])
+    return _topology_groups().get(key, "name:" + p.name)
+
+
 def discover_feeders(root: str) -> list[str]:
     return sorted(os.path.dirname(p) for p in glob.glob(os.path.join(root, "*", "static.pt")))
 
 
 def split_feeders(feeders: list[str], train_frac=0.8, val_frac=0.1, seed=42):
-    """Deterministic feeder-disjoint split by name hash (stable across runs)."""
-    def h(name):
-        return int(hashlib.md5((str(seed) + os.path.basename(name)).encode()).hexdigest(), 16)
-    ordered = sorted(feeders, key=h)
-    n = len(ordered)
-    ntr = int(round(train_frac * n))
-    nval = int(round(val_frac * n))
-    return {"train": ordered[:ntr], "unseen": ordered[ntr:ntr + nval], "test": ordered[ntr + nval:]}
+    """Deterministic topology-grouped split, stable across corpora and runs.
+
+    Structurally equivalent vendored copies share one content-derived group ID,
+    so none can leak from train into unseen/test under a different path. New
+    feeders absent from the checked-in manifest fall back to their basename.
+    """
+    out = {"train": [], "unseen": [], "test": []}
+    for feeder in feeders:
+        group = _topology_group(feeder)
+        raw = int(hashlib.md5((str(seed) + group).encode()).hexdigest(), 16)
+        q = raw / float(1 << 128)
+        name = "train" if q < train_frac else (
+            "unseen" if q < train_frac + val_frac else "test")
+        out[name].append(feeder)
+    for name in out:
+        out[name].sort(key=lambda x: hashlib.md5((str(seed) + os.path.basename(x)).encode()).digest())
+    return out
 
 
 # ----------------------------------------------------------------------------- per-feeder
