@@ -5,8 +5,8 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH -t 1:00:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/wt/t22_audit/logs/t22-fixed-y-%j.out
-#SBATCH -e /kfs2/projects/gogpt/Ebadmus/wt/t22_audit/logs/t22-fixed-y-%j.err
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-y-%j.out
+#SBATCH -e /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-y-%j.err
 
 set -euo pipefail
 
@@ -14,7 +14,8 @@ ROOT="/kfs2/projects/gogpt/Ebadmus"
 TD="${ROOT}/training_data"
 DATA="${ROOT}/data"
 PY="${ROOT}/.venv/bin/python"
-RUN_ROOT="${ROOT}/wt/t22_audit/runs/t22_fixed_y_seed260719_v2"
+AUDIT_ROOT="${AUDIT_ROOT:-${ROOT}/Training_new}"
+RUN_ROOT="${AUDIT_ROOT}/runs/t22_fixed_y_seed260719_v2"
 SOURCE_ROOT="${RUN_ROOT}/source"
 STORE_ROOT="${RUN_ROOT}/stores"
 CORPORA=(SMART-DS_1000 new_dss_data dss_data minimal_component)
@@ -87,7 +88,7 @@ export VECLIB_MAXIMUM_THREADS=1
   --strict-exit
 
 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 \
-"${PY}" -u "${ROOT}/wt/t22_audit/gridfm/probes/y_recovery_audit.py" \
+"${PY}" -u "${AUDIT_ROOT}/gridfm/probes/y_recovery_audit.py" \
   --root "${STORE_ROOT}" \
   --corpora "${CORPORA[@]}" \
   --per-corpus "${PER_CORPUS}" \

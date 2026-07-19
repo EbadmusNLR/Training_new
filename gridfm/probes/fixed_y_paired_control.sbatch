@@ -5,15 +5,15 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH -t 1:00:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/wt/t22_audit/logs/t22-fixed-pair-%j.out
-#SBATCH -e /kfs2/projects/gogpt/Ebadmus/wt/t22_audit/logs/t22-fixed-pair-%j.err
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-pair-%j.out
+#SBATCH -e /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-pair-%j.err
 
 set -euo pipefail
 
 ROOT="/kfs2/projects/gogpt/Ebadmus"
 PY="${ROOT}/.venv/bin/python"
 DATA="${ROOT}/data"
-AUDIT_ROOT="${ROOT}/wt/t22_audit"
+AUDIT_ROOT="${AUDIT_ROOT:-${ROOT}/Training_new}"
 ORIGINAL_JSON="${AUDIT_ROOT}/runs/t22_audit/original.json"
 PRIOR_CONTROL="${AUDIT_ROOT}/runs/t22_fixed_y_seed260719_v2/stores"
 RUN_ROOT="${AUDIT_ROOT}/runs/t22_fixed_y_paired_seed260719"
