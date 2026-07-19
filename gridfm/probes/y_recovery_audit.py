@@ -97,6 +97,40 @@ def _effective_ranks(s: np.ndarray, shape: tuple[int, int]) -> dict[str, float |
     }
 
 
+def _pivot_order(vectors: np.ndarray) -> list[int]:
+    """Greedy D-optimal ordering using only candidate terminal voltages.
+
+    At each step it maximizes ``logdet(G + vᴴv + λI)``. A tiny
+    scale-relative ridge makes this a stable rank-revealing design before the
+    Gram matrix becomes full rank.
+    No current or target-Y value enters the selection.
+    """
+    vectors = np.asarray(vectors, dtype=np.complex128)
+    if vectors.ndim != 2 or not len(vectors):
+        return []
+    dim = vectors.shape[1]
+    scale = max(float(np.max(np.sum(np.abs(vectors) ** 2, axis=1))), 1e-300)
+    ridge = scale * 1e-14
+    gram = np.zeros((dim, dim), dtype=np.complex128)
+    remaining = list(range(len(vectors)))
+    order: list[int] = []
+    eye = np.eye(dim, dtype=np.complex128)
+    while remaining:
+        scores = []
+        for idx in remaining:
+            v = vectors[idx]
+            candidate = gram + np.outer(v.conj(), v) + ridge * eye
+            sign, logdet = np.linalg.slogdet(candidate)
+            score = float(logdet) if np.real(sign) > 0 else float("-inf")
+            scores.append((score, -idx, idx))
+        _, _, chosen = max(scores)
+        v = vectors[chosen]
+        gram += np.outer(v.conj(), v)
+        order.append(chosen)
+        remaining.remove(chosen)
+    return order
+
+
 def _voltage_skill(dh, s_target: str, c: int, cols: list[int], edges, yrec, y_reference) -> float:
     """Held-out direct solve after adding yrec-y_reference to its existing Ybus."""
     n = node_count(dh)
@@ -122,9 +156,21 @@ def _voltage_skill(dh, s_target: str, c: int, cols: list[int], edges, yrec, y_re
     return float(np.abs(solved - vt[free]).sum() / (np.abs(vt[free] - vi[free]).sum() + 1e-300))
 
 
-def audit_target(fdir: str, s_target: str, k_list: tuple[int, ...], holdout: int):
+def audit_target(
+    fdir: str,
+    s_target: str,
+    k_list: tuple[int, ...],
+    holdout: int,
+    selection: str = "prefix",
+    candidates: int | None = None,
+):
     scenarios = FeederScenarios(fdir)
-    need = max(max(k_list), holdout + 1)
+    candidates = int(candidates or max(k_list))
+    if candidates < max(k_list):
+        raise ValueError(f"candidates={candidates} must be >= max K={max(k_list)}")
+    if holdout < candidates:
+        raise ValueError("holdout must be outside the candidate-selection pool")
+    need = max(candidates, holdout + 1)
     if len(scenarios) < need:
         raise ValueError(f"need {need} variants, found {len(scenarios)}")
 
@@ -154,7 +200,7 @@ def audit_target(fdir: str, s_target: str, k_list: tuple[int, ...], holdout: int
     oracle_num_by_snapshot = []
     oracle_den_by_snapshot = []
 
-    for k in range(max(k_list)):
+    for k in range(candidates):
         d = scenarios[k]
         yk_all = _complex_y(d, s_target)
         if yk_all is None or yk_all.shape != y0_all.shape:
@@ -195,18 +241,21 @@ def audit_target(fdir: str, s_target: str, k_list: tuple[int, ...], holdout: int
     holdout_drift = float(np.abs(yh[np.ix_(cols, cols)] - y0[np.ix_(cols, cols)]).sum()
                           / (np.abs(y0[np.ix_(cols, cols)]).sum() + 1e-300))
 
+    excitation_all = np.asarray(rows_a[cols[0]])
+    order = list(range(candidates)) if selection == "prefix" else _pivot_order(excitation_all)
     records = []
     for k in k_list:
+        chosen = order[:k]
         yrec = np.zeros((dim, dim), dtype=np.complex128)
         fit_num = 0.0
         fit_den = 0.0
         # Every terminal row sees the same stacked local-voltage matrix.
-        excitation = np.asarray(rows_a[cols[0]][:k])
+        excitation = excitation_all[chosen]
         singular_values = np.linalg.svd(excitation, compute_uv=False)
         ranks = _effective_ranks(singular_values, excitation.shape)
         for a in cols:
-            amat = np.asarray(rows_a[a][:k])
-            bvec = np.asarray(rows_b[a][:k])
+            amat = np.asarray(rows_a[a])[chosen]
+            bvec = np.asarray(rows_b[a])[chosen]
             x, *_ = np.linalg.lstsq(amat, bvec, rcond=None)
             yrec[a, cols] = x
             fit_num += float(np.abs(amat @ x - bvec).sum())
@@ -216,17 +265,20 @@ def audit_target(fdir: str, s_target: str, k_list: tuple[int, ...], holdout: int
         yerr0 = float(np.abs(yrec[block] - y0[block]).sum() / (np.abs(y0[block]).sum() + 1e-300))
         record = {
             "K": k,
+            "selection": selection,
+            "selected_indices": chosen,
+            "selected_variant_ids": [int(scenarios.variant_ids[j]) for j in chosen],
             "connected_slots": len(cols),
             "singular_values": [float(x) for x in singular_values],
             "condition_nonzero": float(singular_values[0] / singular_values[-1])
             if len(singular_values) and singular_values[-1] > 0 else float("inf"),
             **ranks,
             "target_y_exact": bool(all(np.array_equal(_complex_y(scenarios[j], s_target)[c], y0)
-                                        for j in range(k))),
-            "target_y_drift_max": max(target_drift[:k]),
+                                        for j in chosen)),
+            "target_y_drift_max": max(target_drift[j] for j in chosen),
             "common_fit_relres": fit_num / (fit_den + 1e-300),
-            "oracle_dynamic_y_relres": sum(oracle_num_by_snapshot[:k])
-            / (sum(oracle_den_by_snapshot[:k]) + 1e-300),
+            "oracle_dynamic_y_relres": sum(oracle_num_by_snapshot[j] for j in chosen)
+            / (sum(oracle_den_by_snapshot[j] for j in chosen) + 1e-300),
             "y_relerr_vs_variant0": yerr0,
             "v_skill_legacy_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, y0),
             "v_skill_correct_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, yh),
@@ -237,7 +289,9 @@ def audit_target(fdir: str, s_target: str, k_list: tuple[int, ...], holdout: int
         "feeder": fdir,
         "target": s_target,
         "component_index": c,
-        "variant_ids": [int(scenarios.variant_ids[k]) for k in range(max(k_list))],
+        "variant_ids": [int(scenarios.variant_ids[k]) for k in range(candidates)],
+        "candidate_variant_ids": [int(scenarios.variant_ids[k]) for k in range(candidates)],
+        "selection": selection,
         "target_y_exact_all": target_exact,
         "target_y_drift_max": max(target_drift),
         "target_y_unique_hashes": len(set(target_hashes)),
@@ -272,11 +326,16 @@ def main() -> int:
     parser.add_argument("--per-corpus", type=int, default=3)
     parser.add_argument("--k", nargs="+", type=int, default=[1, 2, 4, 8, 16, 32])
     parser.add_argument("--holdout", type=int, default=90)
+    parser.add_argument("--selection", choices=("prefix", "pivot"), default="prefix")
+    parser.add_argument("--candidates", type=int, default=None,
+                        help="candidate snapshots available to the selector; defaults to max K")
     parser.add_argument("--output")
     args = parser.parse_args()
     k_list = tuple(sorted(set(args.k)))
 
-    payload = {"root": args.root, "k": list(k_list), "holdout": args.holdout, "audits": [], "failures": []}
+    payload = {"root": args.root, "k": list(k_list), "holdout": args.holdout,
+               "selection": args.selection, "candidates": args.candidates,
+               "audits": [], "failures": []}
     header = ("corpus/feeder", "target", "K", "Ysame", "rank", "smin/smax", "Ydrift", "fit_res", "Yerr0", "Vcorrect")
     print(f"{header[0]:44s} {header[1]:11s} {header[2]:>3s} {header[3]:>5s} {header[4]:>5s} "
           f"{header[5]:>10s} {header[6]:>10s} {header[7]:>10s} {header[8]:>10s} {header[9]:>10s}")
@@ -284,7 +343,8 @@ def main() -> int:
         name = f"{corpus}/{os.path.basename(fdir)}"
         for target in ("line", "transformer"):
             try:
-                audit = audit_target(fdir, target, k_list, args.holdout)
+                audit = audit_target(fdir, target, k_list, args.holdout,
+                                     selection=args.selection, candidates=args.candidates)
             except Exception as exc:
                 failure = {"feeder": fdir, "target": target, "error": f"{type(exc).__name__}: {exc}"}
                 payload["failures"].append(failure)
