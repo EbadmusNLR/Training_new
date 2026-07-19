@@ -86,6 +86,7 @@ export VECLIB_MAXIMUM_THREADS=1
   --fail-on-skipped-feeders \
   --strict-exit
 
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 \
 "${PY}" -u "${ROOT}/wt/t22_audit/gridfm/probes/y_recovery_audit.py" \
   --root "${STORE_ROOT}" \
   --corpora "${CORPORA[@]}" \
