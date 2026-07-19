@@ -510,8 +510,17 @@ def main():
         dl_kw.update(persistent_workers=True, prefetch_factor=4)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,
                           collate_fn=tr_collate, **dl_kw)
-    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, collate_fn=un_collate, **dl_kw)
-    lens_dl = {k: DataLoader(v, batch_size=args.batch_size, collate_fn=un_collate, **dl_kw)
+    # EVAL loaders get a SMALL pool: there are 5 of them (unseen + 4 lenses) and
+    # persistent_workers keeps every pool alive, so args.workers=16 meant ~96 live
+    # worker processes each holding /dev/shm segments -- that is what produced the
+    # "could not unlink the shared memory file" aborts (killed v5.4 at ep1/ep4 and
+    # cost several runs before that). Eval covers only --eval-feeders, so 2 each is
+    # plenty and cuts shm pressure ~5x.
+    ev_kw = dict(dl_kw)
+    if args.workers:
+        ev_kw.update(num_workers=min(2, args.workers), prefetch_factor=2)
+    unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, collate_fn=un_collate, **ev_kw)
+    lens_dl = {k: DataLoader(v, batch_size=args.batch_size, collate_fn=un_collate, **ev_kw)
                for k, v in lens_ds.items()}
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
