@@ -117,6 +117,10 @@ class DKSolver(nn.Module):
                     lsb = scales.get("Ycb_ls", {}).get(
                         s, torch.zeros(K, 2)).float()
                     self.register_buffer(f"ycbls_{s}", lsb)
+                    # global [mean,std] for the v5.3 decoupled ABSOLUTE scale
+                    gl = scales.get("Ycb_glob", {}).get(
+                        s, torch.tensor([0.0, 1.0])).float()
+                    self.register_buffer(f"ycbglob_{s}", gl)
                     self.y_cb_head[s] = MLP(hidden, K + 2, hidden, zero_last=True)
             if self.ctx_points and s in PC_STORES:
                 width += self.ctx_points * 4 * FC  # T6 (Icomp, V_loc) context pairs
@@ -422,12 +426,18 @@ class DKSolver(nn.Module):
                     K = cb.shape[0]
                     out = self.y_cb_head[s](hc[s].detach())
                     logits = out[:, :K + 1]
-                    z = out[:, K + 1]                     # standardized residual
+                    z = out[:, K + 1]                     # scale output
                     cls = logits.argmax(1)
                     cin = cls.clamp(max=K - 1)
-                    # ls bounded to family mean +- std*tanh(z): exp() can never
-                    # escape the family's observed magnitude range (v5.1).
-                    ls = lsb[cin, 0] + lsb[cin, 1] * torch.tanh(z)
+                    if os.environ.get("YCB_ABS_SCALE"):
+                        # v5.3: ABSOLUTE log-scale, DECOUPLED from class, clamped to
+                        # the store's global mean+-4std -- a pattern misclassification
+                        # no longer inherits a wrong family's mean (T32c line fix).
+                        gm, gs = getattr(self, f"ycbglob_{s}")
+                        ls = (gm + 4.0 * gs * torch.tanh(z))
+                    else:
+                        # ls bounded to family mean +- std*tanh(z) (v5.1/5.2).
+                        ls = lsb[cin, 0] + lsb[cin, 1] * torch.tanh(z)
                     base = cb[cin]                        # [n,dim,dim,2]
                     keep = (cls < K).float().view(-1, 1, 1, 1)
                     ypu = torch.exp(ls).view(-1, 1, 1, 1) * base * keep
@@ -440,6 +450,8 @@ class DKSolver(nn.Module):
                     self._last_aux["y_cb"][s] = cb        # for the label match
                     self._last_aux["y_cb_lsb"] = self._last_aux.get("y_cb_lsb", {})
                     self._last_aux["y_cb_lsb"][s] = lsb   # for the residual target
+                    self._last_aux["y_cb_glob"] = self._last_aux.get("y_cb_glob", {})
+                    self._last_aux["y_cb_glob"][s] = getattr(self, f"ycbglob_{s}")
                 else:
                     out = self.y_head[s](hc[s].detach()).reshape(n_, dim, dim, 4)
                     z = out[..., :2].clamp(-8.0, 8.0)

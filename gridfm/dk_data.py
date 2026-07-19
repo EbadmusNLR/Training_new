@@ -330,7 +330,7 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
     # plus per-family log-scale [mean, std] so the head predicts a STANDARDIZED,
     # bounded residual (v5.1: free log-scale regression let exp() spike y_wape to
     # 9061% -- T32). std floored so single-member families still decode.
-    Ycb, Ycb_ls = {}, {}
+    Ycb, Ycb_ls, Ycb_glob = {}, {}, {}
     for s in STORES:
         if not Ycbc[s]:
             continue
@@ -350,8 +350,20 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
             # the family mean and eat a bounded 7x error, not 6e4x (v5.2).
             ls.append([mean, min(max(var ** 0.5, 0.5), 2.0)])
         Ycb_ls[s] = torch.tensor(ls, dtype=torch.float32)   # [K, 2]
+        # global log-scale [mean, std] over ALL of the store's components (v5.3):
+        # the head predicts an ABSOLUTE ls clamped to mean+-4std, DECOUPLED from
+        # the (possibly wrong) class, so a line misclassified across families no
+        # longer inherits a wrong family's mean and blows exp() up (T32c: line
+        # 3616-6349% was low-scale-comp -> high-mean-family misclassification).
+        tc = sum(e[0] for e in Ycbc[s].values())
+        tsm = sum(e[2] for e in Ycbc[s].values())
+        tsq = sum(e[3] for e in Ycbc[s].values())
+        gmean = tsm / tc
+        gstd = max((tsq / tc - gmean * gmean) ** 0.5, 0.5)
+        Ycb_glob[s] = torch.tensor([gmean, gstd], dtype=torch.float32)
     return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb, "Ycb_ls": Ycb_ls,
-            "kcl": max(kcl, 1e-9), "dv_std": dv_std, "v_std": v_std}
+            "Ycb_glob": Ycb_glob, "kcl": max(kcl, 1e-9),
+            "dv_std": dv_std, "v_std": v_std}
 
 
 def _ydim(store):

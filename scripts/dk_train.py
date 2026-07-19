@@ -186,12 +186,20 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                 z = aux["y_cb_z"][s][mm]
                 ce = torch.nn.functional.cross_entropy(logits, lab)
                 inb = lab < K
-                # standardized-residual target: z* = (log sc - mean)/std of the
-                # TRUE family, so the head learns a bounded correction (v5.1).
                 lin = lab.clamp(max=K - 1)
-                ztgt = (sc.log() - lsb[lin, 0]) / lsb[lin, 1]
-                lsm = ((z - ztgt) ** 2)[inb].mean() if bool(inb.any()) \
-                    else z.new_zeros(())
+                if os.environ.get("YCB_ABS_SCALE"):
+                    # v5.3 ABSOLUTE-scale target: ls = gm+4gs*tanh(z) = log sc ->
+                    # tanh(z*) = (log sc - gm)/(4 gs). MSE on tanh(z) vs that (avoids
+                    # atanh blowup at the clamp edge); trained on ALL hidden comps,
+                    # not just in-codebook -- scale is defined even for "other".
+                    gm, gs = aux["y_cb_glob"][s]
+                    ttgt = ((sc.log() - gm) / (4.0 * gs)).clamp(-0.999, 0.999)
+                    lsm = ((torch.tanh(z) - ttgt) ** 2).mean()
+                else:
+                    # standardized-residual target vs the TRUE family (v5.1/5.2).
+                    ztgt = (sc.log() - lsb[lin, 0]) / lsb[lin, 1]
+                    lsm = ((z - ztgt) ** 2)[inb].mean() if bool(inb.any()) \
+                        else z.new_zeros(())
                 y_mse = y_mse + ce + lsm; ny_t += 1
                 es = torch.stack([eyr[mm], eyi[mm]], -1)
                 en = (es - tr_st).abs().sum(); em = tr_st.abs().sum()
