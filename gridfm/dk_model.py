@@ -475,10 +475,44 @@ class DKSolver(nn.Module):
                             ti_[:, :w] = ti_[:, :w] + st.ici[:, :w]
                         den = (Pvr ** 2 + Pvi ** 2).sum(1)
                         num = (Pvr * tr_ + Pvi * ti_).sum(1)
-                        s_an = num / den.clamp(min=1e-20)
-                        ok = (st.vis_i & (den > 1e-20) & torch.isfinite(s_an)
-                              & (cls < K)).view(-1, 1, 1, 1)
+
+                        # An absolute den floor is not a conditioning test: a
+                        # pattern can nearly annihilate this voltage while still
+                        # having den >> 1e-20, making num/den explode late in
+                        # training (T32e).  Use the scale-free projection energy
+                        #   ||Pv||^2 / (||P||_F^2 ||v||^2)
+                        # and fall back to the learned bounded scale when it is
+                        # small.  This is invariant to pattern/voltage units.
+                        pnorm2 = (Pr ** 2 + Pi ** 2).sum((1, 2))
+                        vnorm2 = (Vlr ** 2 + Vli ** 2).sum(1)
+                        den_ref = pnorm2 * vnorm2
+                        tiny = torch.finfo(den.dtype).tiny
+                        rel = den / den_ref.clamp_min(tiny)
+                        rcond = float(os.environ.get("YCB_ANALYTIC_RCOND", "1e-6"))
+                        conditioned = (den_ref > tiny) & (rel > rcond)
+                        safe_den = torch.where(conditioned, den, torch.ones_like(den))
+                        s_an = num / safe_den
+
+                        # The analytic formula uses I_bus + Icomp.  It must not
+                        # consume hidden ground-truth Icomp under random4 masks.
+                        visible_rhs = st.vis_i
+                        if nic:
+                            visible_rhs = visible_rhs & st.vis_ic
+
+                        # Even a formally accepted projection can be corrupted by
+                        # a wrong codebook class. Keep its scale inside the global
+                        # range observed in the training split, matching the v5.3
+                        # learned-scale fallback.
+                        gm, gs = getattr(self, f"ycbglob_{s}")
+                        s_lo = torch.exp(gm - 4.0 * gs)
+                        s_hi = torch.exp(gm + 4.0 * gs)
+                        s_an = s_an.clamp(min=s_lo, max=s_hi)
+                        ok_flat = (visible_rhs & conditioned & torch.isfinite(s_an)
+                                   & (cls < K))
+                        ok = ok_flat.view(-1, 1, 1, 1)
                         ypu = torch.where(ok, s_an.view(-1, 1, 1, 1) * base, ypu)
+                        self._last_aux.setdefault("y_cb_analytic_ok", {})[s] = ok_flat
+                        self._last_aux.setdefault("y_cb_analytic_rcond", {})[s] = rel.detach()
                     self._last_aux["y_est"][s] = (ypu[..., 0], ypu[..., 1])
                     self._last_aux["y_cb_logits"] = self._last_aux.get("y_cb_logits", {})
                     self._last_aux["y_cb_logits"][s] = logits

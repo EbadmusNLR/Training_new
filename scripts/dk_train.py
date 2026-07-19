@@ -161,6 +161,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     # space, per-family scales). Same pattern as ic_term; the general four-array
     # mask makes Y a first-class target.
     y_mse = dv.new_zeros(()); yn = dv.new_zeros(()); yd = dv.new_zeros(()); ny_t = 0
+    y_an_ok = 0.0; y_an_n = 0
     y_per = {}   # per-store [err_sum, mag_sum] for a WAPE breakdown (diagnostic)
     if aux and aux.get("y_est"):
         for s, (eyr, eyi) in aux["y_est"].items():
@@ -201,6 +202,10 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                     lsm = ((z - ztgt) ** 2)[inb].mean() if bool(inb.any()) \
                         else z.new_zeros(())
                 y_mse = y_mse + ce + lsm; ny_t += 1
+                if s in aux.get("y_cb_analytic_ok", {}):
+                    aok = aux["y_cb_analytic_ok"][s][mm]
+                    y_an_ok += float(aok.sum())
+                    y_an_n += int(aok.numel())
                 # DETACHED: y_est is metric-only here (the loss is CE + scale MSE).
                 # The v5.4 analytic scale builds it from `v`, so an attached metric
                 # would pin that whole graph in memory for nothing.
@@ -249,6 +254,7 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
     ic_wape = 100.0 * float(icn) / (float(icd) + 1e-30) if nic_t else 0.0
     y_wape = 100.0 * float(yn) / (float(yd) + 1e-30) if ny_t else 0.0
     m = {"ic_wape": ic_wape, "y_wape": y_wape,
+         "y_an_accept": 100.0 * y_an_ok / y_an_n if y_an_n else float("nan"),
          **{f"y_wape_{s}": 100.0 * v[0] / (v[1] + 1e-30) for s, v in y_per.items()},
          "v_skill_C": v_skill_C, "v_skill_D": v_skill_D,
          "ic_wapeB": 100.0 * icc["B"][0] / (icc["B"][1] + 1e-30) if icc["B"][1] else float("nan"),
@@ -601,7 +607,9 @@ def main():
               f"        unseen I/fam: {fam_str}\n"
               f"        lenses: se v_skill={lens['se']['v_skill']:.3f} I={lens['se']['i_wape']:.2f}% | "
               f"inj ic_wape={lens['inj']['ic_wape']:.2f}% I={lens['inj']['i_wape']:.2f}%"
-              + (f" | par y_wape={lens['par']['y_wape']:.2f}%" if "par" in lens else "")
+              + (f" | par y_wape={lens['par']['y_wape']:.2f}%"
+                 f" an_accept={lens['par'].get('y_an_accept', float('nan')):.1f}%"
+                 if "par" in lens else "")
               + (("  [" + " ".join(f"{k[7:]}:{lens['par'][k]:.0f}" for k in sorted(lens['par'])
                                    if k.startswith("y_wape_")) + "]") if "par" in lens else "")
               + ((f"\n        rnd-lens classes: v_skill C={lens['rnd'].get('v_skill_C', float('nan')):.3f} "
