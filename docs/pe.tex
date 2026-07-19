@@ -1,0 +1,85 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage[T1]{fontenc}
+
+\title{Implemented Positional Encoding in Training\_new}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\paragraph{Notation.}
+Let $G=(\mathcal{V},\mathcal{E})$ be the node graph used for PE.
+For node $i\in\mathcal{V}$:
+\[
+\begin{aligned}
+&d_i &&\text{: node degree},\\
+&s_i\in\{0,1\} &&\text{: slack indicator},\\
+&g_i\in\{0,1\} &&\text{: ground indicator},\\
+&\mathcal{S}=\{u\in\mathcal{V}: s_u=1\} &&\text{: set of slack nodes.}
+\end{aligned}
+\]
+
+\paragraph{BFS distance.}
+BFS (Breadth-First Search) gives shortest path length in \emph{number of edges}.
+Thus
+\[
+h_i = \min_{u\in\mathcal{S}} \operatorname{dist}_{\mathrm{BFS}}(i,u),
+\qquad
+h_i \leftarrow \min(h_i, H),
+\]
+where $H=\texttt{DK\_PE\_HOPCAP}$.
+
+The node positional encoding is
+\[
+\bm{p}_i =
+\begin{bmatrix}
+\log(1+d_i) \\
+\dfrac{h_i}{\max(10, H/3)} \\
+s_i \\
+g_i \\
+\dfrac{d_i}{d_{\max}} \\
+\dfrac{\log(1+d_i)}{\log(1+d_{\max})+10^{-6}}
+\end{bmatrix}
+\in \mathbb{R}^{6},
+\qquad
+d_{\max}=\max_{j\in\mathcal{V}} d_j.
+\]
+
+\paragraph{Why log terms.}
+The transforms $\log(1+d_i)$ and $\log(1+d_{\max})$ compress heavy-tailed degree scale,
+so high-degree nodes do not dominate the feature magnitude. Using $\log(1+x)$ is also
+well-defined at $x=0$ and keeps features numerically stable.
+
+Hence,
+\[
+\texttt{PE\_DIM}=6.
+\]
+
+Per-node encoder input is
+\[
+\bm{x}^{\mathrm{node}}_i
+=
+\big[\bm{V}^{\mathrm{init}}_i,\; \Delta\bm{V}_i\odot m_i,\; m_i,\; \bm{p}_i\big],
+\]
+where
+\[
+\begin{aligned}
+&\bm{V}^{\mathrm{init}}_i\in\mathbb{R}^2 &&\text{: initial voltage (real, imag)},\\
+&\Delta\bm{V}_i\in\mathbb{R}^2 &&\text{: voltage residual target},\\
+&m_i\in\{0,1\} &&\text{: voltage visibility mask},\\
+&\odot &&\text{: elementwise product},\\
+&[\cdot,\cdot,\cdot] &&\text{: feature concatenation.}
+\end{aligned}
+\]
+
+No-PE ablation:
+\[
+\bm{p}_i \leftarrow \bm{0}.
+\]
+
+\end{document}
+
