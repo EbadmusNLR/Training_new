@@ -238,6 +238,8 @@ def audit_target(
     dim = y0_all.shape[-1]
     y0 = y0_all[c]
     y0_block = y0[np.ix_(cols, cols)]
+    target_y_sv = np.linalg.svd(y0_block, compute_uv=False)
+    target_y_ranks = _effective_ranks(target_y_sv, y0_block.shape)
     identity = np.eye(len(cols), dtype=np.complex128)
     _, symmetric_structure_rel = _structured_recovery(
         identity, y0_block.T, "symmetric"
@@ -395,6 +397,9 @@ def audit_target(
         "target_rowsum_rel": float(
             np.abs(y0_block.sum(axis=1)).sum() / (np.abs(y0_block).sum() + 1e-300)
         ),
+        "target_y_singular_values": [float(value) for value in target_y_sv],
+        "target_y_rank_lapack": target_y_ranks["rank_lapack"],
+        "target_y_rank_rel1e8": target_y_ranks["rank_rel1e8"],
         "symmetric_structure_rel": symmetric_structure_rel,
         "laplacian_structure_rel": laplacian_structure_rel,
         "two_terminal_structure_rel": two_terminal_structure_rel,
