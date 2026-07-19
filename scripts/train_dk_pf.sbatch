@@ -67,4 +67,6 @@ echo "[$(date '+%F %T')] out=$OUT"
   ${NORM:+--norm-loss} --small-first \
   --workers "$WORKERS" \
   --out "$OUT" $EXTRA
-echo "[$(date '+%F %T')] exit=$?"
+rc=$?
+echo "[$(date '+%F %T')] exit=$rc"
+exit "$rc"
