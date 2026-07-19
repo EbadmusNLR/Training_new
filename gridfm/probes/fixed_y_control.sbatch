@@ -14,7 +14,7 @@ ROOT="/kfs2/projects/gogpt/Ebadmus"
 TD="${ROOT}/training_data"
 DATA="${ROOT}/data"
 PY="${ROOT}/.venv/bin/python"
-RUN_ROOT="${ROOT}/wt/t22_audit/runs/t22_fixed_y_seed260719"
+RUN_ROOT="${ROOT}/wt/t22_audit/runs/t22_fixed_y_seed260719_v2"
 SOURCE_ROOT="${RUN_ROOT}/source"
 STORE_ROOT="${RUN_ROOT}/stores"
 CORPORA=(SMART-DS_1000 new_dss_data dss_data minimal_component)
@@ -41,8 +41,15 @@ for corpus in "${CORPORA[@]}"; do
   picked=0
   for ((index=0; index<${#stores[@]} && picked<PER_CORPUS; index+=step)); do
     store_name="$(basename "$(dirname "${stores[$index]}")")"
-    relative="${store_name//__//}"
+    # Some source corpora were already arranged into flat, collision-free
+    # feeder directories; SMART-DS retains its hierarchy. Prefer the exact
+    # flat name, then invert the hierarchy separator used by scenario stores.
+    relative="${store_name}"
     source_feeder="${DATA}/${corpus}/${relative}"
+    if [[ ! -f "${source_feeder}/Master.dss" && ! -f "${source_feeder}/network/Master.dss" ]]; then
+      relative="${store_name//__//}"
+      source_feeder="${DATA}/${corpus}/${relative}"
+    fi
     staged_feeder="${SOURCE_ROOT}/${corpus}/${relative}"
     if [[ ! -f "${source_feeder}/Master.dss" && ! -f "${source_feeder}/network/Master.dss" ]]; then
       echo "cannot map store ${store_name} to source feeder ${source_feeder}" >&2
