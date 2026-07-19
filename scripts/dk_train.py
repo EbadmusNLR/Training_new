@@ -201,8 +201,12 @@ def losses(batch, dv, cur, scales, use_feat=True, w_v=10.0, w_i=1.0, w_kcl=0.1,
                     lsm = ((z - ztgt) ** 2)[inb].mean() if bool(inb.any()) \
                         else z.new_zeros(())
                 y_mse = y_mse + ce + lsm; ny_t += 1
-                es = torch.stack([eyr[mm], eyi[mm]], -1)
-                en = (es - tr_st).abs().sum(); em = tr_st.abs().sum()
+                # DETACHED: y_est is metric-only here (the loss is CE + scale MSE).
+                # The v5.4 analytic scale builds it from `v`, so an attached metric
+                # would pin that whole graph in memory for nothing.
+                with torch.no_grad():
+                    es = torch.stack([eyr[mm], eyi[mm]], -1)
+                    en = (es - tr_st).abs().sum(); em = tr_st.abs().sum()
                 yn = yn + en; yd = yd + em
                 y_per[s] = [float(en), float(em)]
                 continue
@@ -516,9 +520,12 @@ def main():
     # "could not unlink the shared memory file" aborts (killed v5.4 at ep1/ep4 and
     # cost several runs before that). Eval covers only --eval-feeders, so 2 each is
     # plenty and cuts shm pressure ~5x.
-    ev_kw = dict(dl_kw)
-    if args.workers:
-        ev_kw.update(num_workers=min(2, args.workers), prefetch_factor=2)
+    # num_workers=0: eval covers only --eval-feeders and runs every --eval-every
+    # epochs, so in-process collation costs little -- and it removes FIVE persistent
+    # worker pools outright. At workers=16 those pools were ~80 live processes each
+    # holding /dev/shm segments, which is what produced the recurring
+    # "could not unlink the shared memory file" aborts (killed runs at ep0/ep1/ep4).
+    ev_kw = dict(num_workers=0, pin_memory=dl_kw["pin_memory"])
     unseen_dl = DataLoader(unseen_ds, batch_size=args.batch_size, collate_fn=un_collate, **ev_kw)
     lens_dl = {k: DataLoader(v, batch_size=args.batch_size, collate_fn=un_collate, **ev_kw)
                for k, v in lens_ds.items()}
