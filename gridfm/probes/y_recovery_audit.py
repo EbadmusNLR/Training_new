@@ -139,36 +139,46 @@ def _structured_recovery(v: np.ndarray, b: np.ndarray, kind: str) -> tuple[np.nd
     structure by representing Y as sums of ``(e_i-e_j)(e_i-e_j)^T``.
     """
     k_count, dim = v.shape
-    if kind == "symmetric":
-        params = [(p, q) for p in range(dim) for q in range(p, dim)]
-    elif kind == "laplacian":
-        params = [(p, q) for p in range(dim) for q in range(p + 1, dim)]
+    bases: list[np.ndarray] = []
+    if kind in {"symmetric", "laplacian"}:
+        params = ([(p, q) for p in range(dim) for q in range(p, dim)]
+                  if kind == "symmetric" else
+                  [(p, q) for p in range(dim) for q in range(p + 1, dim)])
+        for p, q in params:
+            basis = np.zeros((dim, dim), dtype=np.complex128)
+            if kind == "symmetric":
+                basis[p, q] = 1.0
+                basis[q, p] = 1.0
+            else:
+                basis[p, p] = basis[q, q] = 1.0
+                basis[p, q] = basis[q, p] = -1.0
+            bases.append(basis)
+    elif kind == "two_terminal":
+        if dim % 2:
+            raise ValueError("two-terminal basis needs equal terminal widths")
+        width = dim // 2
+        # Reciprocal pi block: Y=[[A,B],[B,A]], with A and B symmetric.
+        for block in ("diag", "cross"):
+            for p in range(width):
+                for q in range(p, width):
+                    basis = np.zeros((dim, dim), dtype=np.complex128)
+                    pairs = ((p, q), (p + width, q + width)) if block == "diag" else (
+                        (p, q + width), (p + width, q)
+                    )
+                    for i, j in pairs:
+                        basis[i, j] = 1.0
+                        basis[j, i] = 1.0
+                    bases.append(basis)
     else:
         raise ValueError(kind)
-    design = np.zeros((k_count * dim, len(params)), dtype=np.complex128)
+    design = np.zeros((k_count * dim, len(bases)), dtype=np.complex128)
     target = b.reshape(-1)
     for k in range(k_count):
-        for col, (p, q) in enumerate(params):
-            if kind == "symmetric":
-                design[k * dim + p, col] += v[k, q]
-                if p != q:
-                    design[k * dim + q, col] += v[k, p]
-            else:
-                delta = v[k, p] - v[k, q]
-                design[k * dim + p, col] += delta
-                design[k * dim + q, col] -= delta
+        for col, basis in enumerate(bases):
+            design[k * dim:(k + 1) * dim, col] = basis @ v[k]
     coef, *_ = np.linalg.lstsq(design, target, rcond=None)
-    y = np.zeros((dim, dim), dtype=np.complex128)
-    for value, (p, q) in zip(coef, params):
-        if kind == "symmetric":
-            y[p, q] += value
-            if p != q:
-                y[q, p] += value
-        else:
-            y[p, p] += value
-            y[q, q] += value
-            y[p, q] -= value
-            y[q, p] -= value
+    y = sum((value * basis for value, basis in zip(coef, bases)),
+            start=np.zeros((dim, dim), dtype=np.complex128))
     fit = float(np.abs((v @ y.T) - b).sum() / (np.abs(b).sum() + 1e-300))
     return y, fit
 
@@ -307,6 +317,11 @@ def audit_target(
         bmat = np.column_stack([np.asarray(rows_b[a])[chosen] for a in cols])
         ys, ys_fit = _structured_recovery(excitation, bmat, "symmetric")
         yl, yl_fit = _structured_recovery(excitation, bmat, "laplacian")
+        if s_target == "line" and len(cols) % 2 == 0:
+            yt, yt_fit = _structured_recovery(excitation, bmat, "two_terminal")
+        else:
+            yt = None
+            yt_fit = None
 
         block = np.ix_(cols, cols)
         yerr0 = float(np.abs(yrec[block] - y0[block]).sum() / (np.abs(y0[block]).sum() + 1e-300))
@@ -335,6 +350,10 @@ def audit_target(
             "laplacian_y_relerr": float(
                 np.abs(yl - y0_block).sum() / (np.abs(y0_block).sum() + 1e-300)
             ),
+            "two_terminal_fit_relres": yt_fit,
+            "two_terminal_y_relerr": (float(
+                np.abs(yt - y0_block).sum() / (np.abs(y0_block).sum() + 1e-300)
+            ) if yt is not None else None),
             "v_skill_legacy_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, y0),
             "v_skill_correct_patch": _voltage_skill(dh, s_target, c, cols, edges, yrec, yh),
         }
@@ -344,6 +363,7 @@ def audit_target(
         "feeder": fdir,
         "target": s_target,
         "component_index": c,
+        "connected_columns": cols,
         "variant_ids": [int(scenarios.variant_ids[k]) for k in range(candidates)],
         "candidate_variant_ids": [int(scenarios.variant_ids[k]) for k in range(candidates)],
         "selection": selection,
