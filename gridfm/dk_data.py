@@ -389,7 +389,10 @@ def fit_scales(feeders, variants, max_feeders: int = 60, max_variants: int = 4,
         tsm = sum(e[2] for e in Ycbc[s].values())
         tsq = sum(e[3] for e in Ycbc[s].values())
         gmean = tsm / tc
-        gstd = max((tsq / tc - gmean * gmean) ** 0.5, 0.5)
+        # Roundoff can make E[x^2]-E[x]^2 slightly negative on nearly constant
+        # families; clamp before sqrt (the per-family path above already does).
+        gvar = max(tsq / tc - gmean * gmean, 0.0)
+        gstd = max(gvar ** 0.5, 0.5)
         Ycb_glob[s] = torch.tensor([gmean, gstd], dtype=torch.float32)
     return {"I": Iscale, "Y": Yscale, "Ypos": Ypos, "Ycb": Ycb, "Ycb_ls": Ycb_ls,
             "Ycb_glob": Ycb_glob, "kcl": max(kcl, 1e-9),
