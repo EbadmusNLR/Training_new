@@ -118,6 +118,15 @@ def main() -> int:
     cfg["data"]["exact_reactor_metadata"] = bool(
         cfg["model"].get("exact_reactor_metadata", False)
     )
+    cfg["data"]["exact_load_metadata"] = bool(
+        cfg["model"].get("exact_load_metadata", False)
+    )
+    cfg["data"]["exact_pvsystem_metadata"] = bool(
+        cfg["model"].get("exact_pvsystem_metadata", False)
+    )
+    cfg["data"]["exact_vsource_metadata"] = bool(
+        cfg["model"].get("exact_vsource_metadata", False)
+    )
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))

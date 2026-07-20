@@ -184,6 +184,65 @@ def test_shunt_metadata_is_exact_and_target_independent() -> None:
     assert torch.equal(out["reactor"][:, 72:], reactor_current)
 
 
+def test_load_metadata_is_exact_and_preserves_current() -> None:
+    info = _info("load", 1, 36)
+    cache = SimpleNamespace(name="load", stores={"load": info})
+    original = em.decode_load_metadata
+    yr = torch.diag_embed(torch.arange(1, 5, dtype=torch.float64)[None])
+    yi = -3 * yr
+    try:
+        em.decode_load_metadata = lambda _store: (
+            yr, yi, torch.ones(1, dtype=torch.bool)
+        )
+        em.attach_exact_metadata(
+            [cache], line=False, transformer=False, load=True
+        )
+    finally:
+        em.decode_load_metadata = original
+    exact_y = info["derived_definitions"]["metadata_y_feat"][0]
+    assert exact_y.shape == (1, 20)
+    pred = torch.randn(1, 36)
+    current = pred[:, 20:].clone()
+    batch = {
+        "load": SimpleNamespace(
+            num_nodes=1, metadata_y_feat=exact_y,
+            metadata_y_supported=torch.ones(1, dtype=torch.bool),
+            x_true=torch.full((1, 36), 1e35),
+        ),
+    }
+    out = em.apply_exact_metadata(
+        batch, {"load": pred}, False, False, load=True,
+    )
+    assert torch.equal(out["load"][:, :20], exact_y)
+    assert torch.equal(out["load"][:, 20:], current)
+
+
+def test_pvsystem_and_vsource_exact_metadata() -> None:
+    pv_info, source_info = _info("pvsystem", 1, 21), _info("vsource", 1, 73)
+    cache = SimpleNamespace(name="pc", stores={"pvsystem": pv_info, "vsource": source_info})
+    original_pv, original_source = em.decode_pvsystem_metadata, em.decode_vsource_metadata
+    pv_y = torch.diag_embed(torch.arange(1, 5, dtype=torch.float64)[None])
+    source_y = torch.diag_embed(torch.arange(1, 9, dtype=torch.float64)[None])
+    try:
+        em.decode_pvsystem_metadata = lambda _store: (pv_y, -pv_y, torch.ones(1, dtype=torch.bool))
+        em.decode_vsource_metadata = lambda _store: (source_y, -source_y, torch.ones(1, dtype=torch.bool))
+        em.attach_exact_metadata([cache], False, False, pvsystem=True, vsource=True)
+    finally:
+        em.decode_pvsystem_metadata, em.decode_vsource_metadata = original_pv, original_source
+    pv_exact = pv_info["derived_definitions"]["metadata_y_feat"][0]
+    source_exact = source_info["derived_definitions"]["metadata_y_feat"][0]
+    assert pv_exact.shape == (1, 20) and source_exact.shape == (1, 72)
+    batch = {
+        "pvsystem": SimpleNamespace(num_nodes=1, metadata_y_feat=pv_exact, metadata_y_supported=torch.ones(1, dtype=torch.bool)),
+        "vsource": SimpleNamespace(num_nodes=1, metadata_y_feat=source_exact, metadata_y_supported=torch.ones(1, dtype=torch.bool)),
+    }
+    pv_pred, source_pred = torch.randn(1, 21), torch.randn(1, 73)
+    pv_tail, source_tail = pv_pred[:, 20:].clone(), source_pred[:, 72:].clone()
+    out = em.apply_exact_metadata(batch, {"pvsystem": pv_pred, "vsource": source_pred}, False, False, pvsystem=True, vsource=True)
+    assert torch.equal(out["pvsystem"][:, :20], pv_exact) and torch.equal(out["pvsystem"][:, 20:], pv_tail)
+    assert torch.equal(out["vsource"][:, :72], source_exact) and torch.equal(out["vsource"][:, 72:], source_tail)
+
+
 def test_unused_definitions_are_not_collated() -> None:
     line_info = _info("line", 1, 38)
     line_info["definition_values"] = {"dynamic": torch.ones(2, 1).numpy()}
@@ -295,6 +354,8 @@ if __name__ == "__main__":
     test_cached_features_ignore_target_and_apply_only_to_y()
     test_unsupported_rows_fail_closed()
     test_shunt_metadata_is_exact_and_target_independent()
+    test_load_metadata_is_exact_and_preserves_current()
+    test_pvsystem_and_vsource_exact_metadata()
     test_unused_definitions_are_not_collated()
     test_dynamic_definitions_are_variant_specific()
     test_parallel_predecode_matches_serial()

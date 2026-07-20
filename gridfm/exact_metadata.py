@@ -1,4 +1,4 @@
-"""Cache and apply target-independent exact passive-device Y features."""
+"""Cache and apply target-independent exact device-Y features."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,6 +15,9 @@ from .line_metadata import decode_line_metadata
 from .transformer_metadata import decode_transformer_metadata
 from .generator_metadata import decode_generator_metadata
 from .shunt_metadata import decode_shunt_metadata
+from .load_metadata import decode_load_metadata
+from .pvsystem_metadata import decode_pvsystem_metadata
+from .vsource_metadata import decode_vsource_metadata
 
 
 EXACT_METADATA_CACHE_VERSION = 1
@@ -27,6 +30,9 @@ def _codec_fingerprint() -> str:
         Path(__file__).with_name("transformer_metadata.py"),
         Path(__file__).with_name("generator_metadata.py"),
         Path(__file__).with_name("shunt_metadata.py"),
+        Path(__file__).with_name("load_metadata.py"),
+        Path(__file__).with_name("pvsystem_metadata.py"),
+        Path(__file__).with_name("vsource_metadata.py"),
     ):
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -105,6 +111,34 @@ def _generator_feature(
     return _feature(pu, info["scale"][:, :ny]), supported
 
 
+def _load_feature(
+    info: dict, row=None, variant: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    yr, yi, supported = decode_load_metadata(
+        _definition_store(info, "load", row, variant)
+    )
+    rows, cols = legacy_data.tri_rc(4)
+    pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
+    ny = legacy_data.y_width("load")
+    return _feature(pu, info["scale"][:, :ny]), supported
+
+
+def _pc_feature(info: dict, family: str, decoder, dim: int, row=None, variant=None):
+    yr, yi, supported = decoder(_definition_store(info, family, row, variant))
+    rows, cols = legacy_data.tri_rc(dim)
+    pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
+    ny = legacy_data.y_width(family)
+    return _feature(pu, info["scale"][:, :ny]), supported
+
+
+def _pvsystem_feature(info: dict, row=None, variant=None):
+    return _pc_feature(info, "pvsystem", decode_pvsystem_metadata, 4, row, variant)
+
+
+def _vsource_feature(info: dict, row=None, variant=None):
+    return _pc_feature(info, "vsource", decode_vsource_metadata, 8, row, variant)
+
+
 def _shunt_feature(
     info: dict, family: str, row=None, variant: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -132,11 +166,14 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
         "generator": _generator_feature,
         "capacitor": _capacitor_feature,
         "reactor": _reactor_feature,
+        "load": _load_feature,
+        "pvsystem": _pvsystem_feature,
+        "vsource": _vsource_feature,
     }
     result = {}
     for family in families:
         info = cache.stores.get(family)
-        if info is None:
+        if info is None or int(info.get("n", 0)) == 0:
             continue
         dynamic = any(
             offset is not None
@@ -146,7 +183,14 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
         features, support = [], []
         for variant in variants:
             row = None if variant is None else cache.dyn[variant]
-            feature, supported = decoders[family](info, row, variant)
+            try:
+                feature, supported = decoders[family](info, row, variant)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{cache.name}: exact {family} decode failed for "
+                    f"n={info.get('n')} variant={variant}; definition fields="
+                    f"{sorted(info.get('definitions', {}))}"
+                ) from exc
             expected = (info["n"], legacy_data.y_width(family))
             if feature.shape != expected:
                 raise RuntimeError(
@@ -227,7 +271,8 @@ def _decode_cache_index(
 def attach_exact_metadata(
     caches: list, line: bool, transformer: bool, workers: int = 0,
     generator: bool = False, disk_cache_dir=None, capacitor: bool = False,
-    reactor: bool = False,
+    reactor: bool = False, load: bool = False, pvsystem: bool = False,
+    vsource: bool = False,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -247,6 +292,12 @@ def attach_exact_metadata(
         requested.append("capacitor")
     if reactor:
         requested.append("reactor")
+    if load:
+        requested.append("load")
+    if pvsystem:
+        requested.append("pvsystem")
+    if vsource:
+        requested.append("vsource")
     families = tuple(requested)
     counts = {family: 0 for family in families}
     cache_hits = cache_misses = 0
@@ -309,7 +360,7 @@ def attach_exact_metadata(
     # Drop unused families too so generic/ablation arms do not collate and copy
     # target-independent fp64 metadata to the GPU on every training batch.
     for cache in caches:
-        for family in ("line", "transformer", "generator", "capacitor", "reactor"):
+        for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource"):
             info = cache.stores.get(family)
             if info is not None:
                 info["definitions"] = {}
@@ -328,11 +379,14 @@ def attach_exact_metadata(
 def apply_exact_metadata(
     batch, preds: dict[str, torch.Tensor], line: bool, transformer: bool,
     generator: bool = False, capacitor: bool = False, reactor: bool = False,
+    load: bool = False, pvsystem: bool = False, vsource: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Replace only supported passive-Y predictions; never read x_true."""
+    """Replace only supported device-Y predictions; never read x_true."""
     for family, enabled in (
         ("line", line), ("transformer", transformer), ("generator", generator),
         ("capacitor", capacitor), ("reactor", reactor),
+        ("load", load),
+        ("pvsystem", pvsystem), ("vsource", vsource),
     ):
         if not enabled or batch[family].num_nodes == 0:
             continue
