@@ -57,6 +57,64 @@ SPECS: dict[str, dict[str, Any]] = {
     "storage": {"json_key": "Storage", "n_term": 1, "y_fields": ("Ystorage_r_tri", "Ystorage_i_tri"), "y_dim": 4, "icomp": 4},
 }
 
+# Definition-only metadata is not a learned electrical target. Preserve it
+# through pu -> feature conversion so exact passive-device decoders remain
+# available without reading any stored Y answer.
+PASSIVE_DEFINITION_FIELDS: dict[str, tuple[str, ...]] = {
+    "line": (
+        "physics_params", "physics_mask", "physics_supported",
+        "physics_family_code", "physics_reason_code", "physics_schema_version",
+        "terminal_kv_base", "system_base_mva",
+    ),
+    "transformer": (
+        "physics_params", "physics_mask", "physics_supported",
+        "physics_schema_version", "terminal_kv_base", "system_base_mva",
+        "physics_extra_params", "physics_extra_mask", "physics_v2_supported",
+    ),
+}
+
+# Current datakit pu tensors are full matrices; DG_FM_Training consumes packed
+# lower triangles in these exact field names and dimensions.
+SCENARIO_Y_FIELDS: dict[str, tuple[int, tuple[tuple[str, str, str], ...]]] = {
+    "line": (4, (
+        ("Ys_r_pu", "Ys_r_tri_feat", "r"),
+        ("Ys_i_pu", "Ys_i_tri_feat", "i"),
+        ("Yh_i_pu", "Yh_i_tri_feat", "i"),
+    )),
+    "capacitor": (8, (
+        ("Ycap_r_pu", "Ycap_r_tri_feat", "r"),
+        ("Ycap_i_pu", "Ycap_i_tri_feat", "i"),
+    )),
+    "reactor": (8, (
+        ("Yreactor_r_pu", "Yreactor_r_tri_feat", "r"),
+        ("Yreactor_i_pu", "Yreactor_i_tri_feat", "i"),
+    )),
+    "transformer": (12, (
+        ("Yxfmr_r_pu", "Yxfmr_r_tri_feat", "r"),
+        ("Yxfmr_i_pu", "Yxfmr_i_tri_feat", "i"),
+    )),
+    "vsource": (8, (
+        ("Ysource_r_pu", "Ysource_r_tri_feat", "r"),
+        ("Ysource_i_pu", "Ysource_i_tri_feat", "i"),
+    )),
+    "load": (4, (
+        ("Yload_r_pu", "Yload_r_tri_feat", "r"),
+        ("Yload_i_pu", "Yload_i_tri_feat", "i"),
+    )),
+    "generator": (4, (
+        ("Ygen_r_pu", "Ygen_r_tri_feat", "r"),
+        ("Ygen_i_pu", "Ygen_i_tri_feat", "i"),
+    )),
+    "pvsystem": (4, (
+        ("Ypv_r_pu", "Ypv_r_tri_feat", "r"),
+        ("Ypv_i_pu", "Ypv_i_tri_feat", "i"),
+    )),
+    "storage": (4, (
+        ("Ystorage_r_pu", "Ystorage_r_tri_feat", "r"),
+        ("Ystorage_i_pu", "Ystorage_i_tri_feat", "i"),
+    )),
+}
+
 
 def _as_float_list(values: Any) -> list[float]:
     if not isinstance(values, list):
@@ -686,10 +744,7 @@ def _scenario_baseline_json_path(root: Path, feeder_dir: Path) -> Path:
 
 
 def _scenario_families_by_store(payload: dict[str, Any]) -> dict[str, list[str]]:
-    try:
-        from DG_FM_DK.core.hetero_graph import COMPONENTS
-    except ModuleNotFoundError:  # pragma: no cover - supports package-style imports
-        from DG_FM_DK.core.hetero_graph import COMPONENTS
+    from datakit.core.hetero_graph import COMPONENTS
 
     triplex = bus_triplex_map(payload)
     out: dict[str, list[str]] = {}
@@ -719,10 +774,7 @@ def _scenario_build_feat_sample(raw_data, scaler: dict[str, Any], families: dict
     import torch
     from torch_geometric.data import HeteroData
 
-    try:
-        from DG_FM_DK.core.hetero_graph import COMPONENTS, FIXED_CONDUCTORS, component_fields
-    except ModuleNotFoundError:  # pragma: no cover - supports package-style imports
-        from DG_FM_DK.core.hetero_graph import COMPONENTS, FIXED_CONDUCTORS, component_fields
+    from datakit.core.hetero_graph import COMPONENTS, FIXED_CONDUCTORS
 
     feat_data = HeteroData()
     _scenario_copy_node_and_edges(raw_data, feat_data)
@@ -736,59 +788,69 @@ def _scenario_build_feat_sample(raw_data, scaler: dict[str, Any], families: dict
             continue
         dst = feat_data[store_name]
         row_families = families.get(store_name, [])
-        feat_fields = component_fields(store_name, basis="feat")
-        pu_fields = component_fields(store_name, basis="pu")
-        n_rows = int(getattr(src, pu_fields[0]).shape[0]) if pu_fields else 0
+        dim, y_fields = SCENARIO_Y_FIELDS[store_name]
+        n_rows = int(getattr(src, y_fields[0][0]).shape[0])
         if row_families and len(row_families) != n_rows:
             raise ValueError(f"{store_name}: family rows {len(row_families)} != tensor rows {n_rows}")
-        diag_idx = tri_diag_indices(int(SPECS[store_name]["y_dim"]))
+        if not row_families and n_rows:
+            raise ValueError(f"{store_name}: missing family labels for {n_rows} rows")
+        rows, cols = torch.tril_indices(dim, dim)
+        diag = rows == cols
+        for pu_field, feat_field, part in y_fields:
+            full = getattr(src, pu_field).reshape(n_rows, dim, dim)
+            packed = full[:, rows, cols]
+            out = torch.empty_like(packed)
+            for row, family in enumerate(row_families):
+                scales = torch.tensor(
+                    [
+                        admittance_scale(
+                            scaler, family, part, "diag" if bool(is_diag) else "offdiag"
+                        )
+                        for is_diag in diag
+                    ],
+                    dtype=packed.dtype,
+                )
+                out[row] = torch.asinh(packed[row] / (scales + eps))
+            setattr(dst, feat_field, out)
 
-        for field in feat_fields:
-            if field.endswith("_tri_feat"):
-                pu_field = field.replace("_feat", "_pu")
-                pu_tensor = getattr(src, pu_field)
+        icomp_slots = int(spec.get("icomp_slots", 0))
+        if icomp_slots:
+            for part in ("r", "i"):
+                pu_tensor = getattr(src, f"Icomp_{part}_pu")
                 out = torch.empty_like(pu_tensor)
-                part = "r" if "_r_" in field else "i"
-                for row in range(pu_tensor.shape[0]):
-                    family = row_families[row]
-                    for idx, value in enumerate(pu_tensor[row].tolist()):
-                        band = "diag" if idx in diag_idx else "offdiag"
-                        scale = admittance_scale(scaler, family, part, band)
-                        out[row, idx] = admittance_to_feat(float(value), scale, eps)
-                setattr(dst, field, out)
-            elif "_bus" in field:
-                pu_field = field.replace("_feat", "_pu")
-                pu_tensor = getattr(src, pu_field)
-                out = torch.empty_like(pu_tensor)
-                part = "r" if field.startswith("I_r") else "i"
-                term = int(field.split("_bus", 1)[1].split("_", 1)[0])
-                icomp_slots = int(spec.get("icomp_slots", 0))
-                icomp_tensor = None
-                if icomp_slots:
-                    icomp_tensor = getattr(src, f"Icomp_{part}_pu")
-                for row in range(pu_tensor.shape[0]):
-                    family = row_families[row]
+                for row, family in enumerate(row_families):
                     scale = current_scale(scaler, family)
-                    start = (term - 1) * FIXED_CONDUCTORS
-                    for idx, value in enumerate(pu_tensor[row].tolist()):
-                        iy = float(value)
-                        if icomp_tensor is not None and start + idx < icomp_tensor.shape[1]:
-                            iy += float(icomp_tensor[row, start + idx])
-                        out[row, idx] = current_to_feat(iy, scale, eps)
-                setattr(dst, field, out)
-            else:
-                raise ValueError(f"unsupported feature field {store_name}.{field}")
+                    out[row] = torch.asinh(pu_tensor[row] / (scale + eps))
+                setattr(dst, f"Icomp_{part}_feat", out)
 
-        dst.num_nodes = getattr(src, "num_nodes", len(row_families))
+        for term in range(1, int(spec["terminals"]) + 1):
+            for part in ("r", "i"):
+                pu_tensor = getattr(src, f"I_{part}_bus{term}_pu")
+                out = torch.empty_like(pu_tensor)
+                icomp_tensor = (
+                    getattr(src, f"Icomp_{part}_pu") if icomp_slots else None
+                )
+                start = (term - 1) * FIXED_CONDUCTORS
+                for row, family in enumerate(row_families):
+                    values = pu_tensor[row]
+                    if icomp_tensor is not None:
+                        values = values + icomp_tensor[row, start:start + FIXED_CONDUCTORS]
+                    scale = current_scale(scaler, family)
+                    out[row] = torch.asinh(values / (scale + eps))
+                setattr(dst, f"I_{part}_bus{term}_feat", out)
+
+        for field in PASSIVE_DEFINITION_FIELDS.get(store_name, ()):
+            value = getattr(src, field, None)
+            if torch.is_tensor(value):
+                setattr(dst, field, value.clone())
+
+        dst.num_nodes = n_rows
 
     return feat_data
 
 
 def _scenario_featurize_one_feeder(root_str: str, feeder_dir_str: str, scaler: dict[str, Any], overwrite: bool) -> tuple[str, str]:
-    try:
-        import DG_FM_DK.core.scenario_store as scenario_store
-    except ModuleNotFoundError:  # pragma: no cover - supports package-style imports
-        from DG_FM_DK import scenario_store
+    import datakit.core.scenario_store as scenario_store
 
     root = Path(root_str)
     feeder_dir = Path(feeder_dir_str)
