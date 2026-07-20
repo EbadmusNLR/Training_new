@@ -62,7 +62,8 @@ class EdgeStateGridFM(nn.Module):
                  exact_reactor_metadata: bool = False,
                  exact_load_metadata: bool = False,
                  exact_pvsystem_metadata: bool = False,
-                 exact_vsource_metadata: bool = False):
+                 exact_vsource_metadata: bool = False,
+                 exact_storage_metadata: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -86,6 +87,7 @@ class EdgeStateGridFM(nn.Module):
         self.exact_load_metadata = exact_load_metadata
         self.exact_pvsystem_metadata = exact_pvsystem_metadata
         self.exact_vsource_metadata = exact_vsource_metadata
+        self.exact_storage_metadata = exact_storage_metadata
         # pu scale that normalizes the fed-back KCL residual; set from the corpus
         # current scaler by train.py/evaluate.py. asinh keeps it O(1).
         self.register_buffer("s_kcl", torch.tensor(1.0), persistent=False)
@@ -360,6 +362,7 @@ class EdgeStateGridFM(nn.Module):
             self.exact_load_metadata,
             self.exact_pvsystem_metadata,
             self.exact_vsource_metadata,
+            self.exact_storage_metadata,
         )
         if return_aux:
             return preds, {

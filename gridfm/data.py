@@ -48,6 +48,7 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
     exact_load = bool(data_cfg.get("exact_load_metadata", False))
     exact_pvsystem = bool(data_cfg.get("exact_pvsystem_metadata", False))
     exact_vsource = bool(data_cfg.get("exact_vsource_metadata", False))
+    exact_storage = bool(data_cfg.get("exact_storage_metadata", False))
     exact_workers = int(data_cfg.get("exact_metadata_workers", 0))
     attach_exact_metadata(
         train.caches,
@@ -60,11 +61,12 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
         load=exact_load,
         pvsystem=exact_pvsystem,
         vsource=exact_vsource,
+        storage=exact_storage,
         # Anchor the derived cache to the immutable feature corpus so training,
         # evaluation and validation configs all reuse one decode.
         disk_cache_dir=Path(data_cfg["root"]) / ".exact_metadata_cache_v1",
     )
-    if any((exact_line, exact_transformer, exact_generator, exact_capacitor, exact_reactor, exact_load, exact_pvsystem, exact_vsource)):
+    if any((exact_line, exact_transformer, exact_generator, exact_capacitor, exact_reactor, exact_load, exact_pvsystem, exact_vsource, exact_storage)):
         print(
             f"exact metadata prepared in {time.perf_counter() - exact_started:.1f}s "
             f"with workers={exact_workers}",

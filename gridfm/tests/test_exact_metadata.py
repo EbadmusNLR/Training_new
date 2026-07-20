@@ -243,6 +243,37 @@ def test_pvsystem_and_vsource_exact_metadata() -> None:
     assert torch.equal(out["vsource"][:, :72], source_exact) and torch.equal(out["vsource"][:, 72:], source_tail)
 
 
+def test_storage_exact_metadata_preserves_current() -> None:
+    info = _info("storage", 1, 36)
+    cache = SimpleNamespace(name="storage", stores={"storage": info})
+    original = em.decode_storage_metadata
+    yr = torch.diag_embed(torch.arange(1, 5, dtype=torch.float64)[None])
+    try:
+        em.decode_storage_metadata = lambda _store: (
+            yr, -yr, torch.ones(1, dtype=torch.bool)
+        )
+        em.attach_exact_metadata(
+            [cache], False, False, storage=True
+        )
+    finally:
+        em.decode_storage_metadata = original
+    exact_y = info["derived_definitions"]["metadata_y_feat"][0]
+    assert exact_y.shape == (1, 20)
+    pred = torch.randn(1, 36)
+    current = pred[:, 20:].clone()
+    batch = {
+        "storage": SimpleNamespace(
+            num_nodes=1, metadata_y_feat=exact_y,
+            metadata_y_supported=torch.ones(1, dtype=torch.bool),
+        ),
+    }
+    out = em.apply_exact_metadata(
+        batch, {"storage": pred}, False, False, storage=True,
+    )
+    assert torch.equal(out["storage"][:, :20], exact_y)
+    assert torch.equal(out["storage"][:, 20:], current)
+
+
 def test_unused_definitions_are_not_collated() -> None:
     line_info = _info("line", 1, 38)
     line_info["definition_values"] = {"dynamic": torch.ones(2, 1).numpy()}
@@ -356,6 +387,7 @@ if __name__ == "__main__":
     test_shunt_metadata_is_exact_and_target_independent()
     test_load_metadata_is_exact_and_preserves_current()
     test_pvsystem_and_vsource_exact_metadata()
+    test_storage_exact_metadata_preserves_current()
     test_unused_definitions_are_not_collated()
     test_dynamic_definitions_are_variant_specific()
     test_parallel_predecode_matches_serial()

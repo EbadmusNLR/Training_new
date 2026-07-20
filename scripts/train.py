@@ -198,7 +198,7 @@ def main() -> int:
     ap.add_argument("--init-ckpt", type=Path)
     ap.add_argument("--scratch", action="store_true")
     ap.add_argument(
-        "--exact-metadata", choices=("none", "line", "transformer", "generator", "shunts", "load", "pvsystem", "vsource", "both", "all"),
+        "--exact-metadata", choices=("none", "line", "transformer", "generator", "shunts", "load", "pvsystem", "vsource", "storage", "both", "all"),
     )
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -227,6 +227,7 @@ def main() -> int:
         cfg["model"]["exact_load_metadata"] = args.exact_metadata in ("load", "all")
         cfg["model"]["exact_pvsystem_metadata"] = args.exact_metadata in ("pvsystem", "all")
         cfg["model"]["exact_vsource_metadata"] = args.exact_metadata in ("vsource", "all")
+        cfg["model"]["exact_storage_metadata"] = args.exact_metadata in ("storage", "all")
     cfg["data"]["exact_line_metadata"] = bool(
         cfg["model"].get("exact_line_metadata", False)
     )
@@ -250,6 +251,9 @@ def main() -> int:
     )
     cfg["data"]["exact_vsource_metadata"] = bool(
         cfg["model"].get("exact_vsource_metadata", False)
+    )
+    cfg["data"]["exact_storage_metadata"] = bool(
+        cfg["model"].get("exact_storage_metadata", False)
     )
     if args.limit_feeders is not None:
         cfg["data"]["limit_feeders"] = args.limit_feeders

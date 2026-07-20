@@ -18,6 +18,7 @@ from .shunt_metadata import decode_shunt_metadata
 from .load_metadata import decode_load_metadata
 from .pvsystem_metadata import decode_pvsystem_metadata
 from .vsource_metadata import decode_vsource_metadata
+from .storage_metadata import decode_storage_metadata
 
 
 EXACT_METADATA_CACHE_VERSION = 1
@@ -33,6 +34,7 @@ def _codec_fingerprint() -> str:
         Path(__file__).with_name("load_metadata.py"),
         Path(__file__).with_name("pvsystem_metadata.py"),
         Path(__file__).with_name("vsource_metadata.py"),
+        Path(__file__).with_name("storage_metadata.py"),
     ):
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -139,6 +141,10 @@ def _vsource_feature(info: dict, row=None, variant=None):
     return _pc_feature(info, "vsource", decode_vsource_metadata, 8, row, variant)
 
 
+def _storage_feature(info: dict, row=None, variant=None):
+    return _pc_feature(info, "storage", decode_storage_metadata, 4, row, variant)
+
+
 def _shunt_feature(
     info: dict, family: str, row=None, variant: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -169,6 +175,7 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
         "load": _load_feature,
         "pvsystem": _pvsystem_feature,
         "vsource": _vsource_feature,
+        "storage": _storage_feature,
     }
     result = {}
     for family in families:
@@ -273,6 +280,7 @@ def attach_exact_metadata(
     generator: bool = False, disk_cache_dir=None, capacitor: bool = False,
     reactor: bool = False, load: bool = False, pvsystem: bool = False,
     vsource: bool = False,
+    storage: bool = False,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -298,6 +306,8 @@ def attach_exact_metadata(
         requested.append("pvsystem")
     if vsource:
         requested.append("vsource")
+    if storage:
+        requested.append("storage")
     families = tuple(requested)
     counts = {family: 0 for family in families}
     cache_hits = cache_misses = 0
@@ -360,7 +370,7 @@ def attach_exact_metadata(
     # Drop unused families too so generic/ablation arms do not collate and copy
     # target-independent fp64 metadata to the GPU on every training batch.
     for cache in caches:
-        for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource"):
+        for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource", "storage"):
             info = cache.stores.get(family)
             if info is not None:
                 info["definitions"] = {}
@@ -380,6 +390,7 @@ def apply_exact_metadata(
     batch, preds: dict[str, torch.Tensor], line: bool, transformer: bool,
     generator: bool = False, capacitor: bool = False, reactor: bool = False,
     load: bool = False, pvsystem: bool = False, vsource: bool = False,
+    storage: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Replace only supported device-Y predictions; never read x_true."""
     for family, enabled in (
@@ -387,6 +398,7 @@ def apply_exact_metadata(
         ("capacitor", capacitor), ("reactor", reactor),
         ("load", load),
         ("pvsystem", pvsystem), ("vsource", vsource),
+        ("storage", storage),
     ):
         if not enabled or batch[family].num_nodes == 0:
             continue

@@ -98,7 +98,7 @@ def main() -> int:
             )
     row_counts = {
         family: 0 for family in
-        ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource")
+        ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource", "storage")
     }
     for feeder in feeders:
         meta = torch.load(feeder / "static.pt", map_location="cpu", weights_only=False)
@@ -121,6 +121,8 @@ def main() -> int:
                 row_counts["pvsystem"] += int(entry["shape"][0])
             elif entry["store"] == "vsource" and entry["field"] == "Ysource_r_tri_feat":
                 row_counts["vsource"] += int(entry["shape"][0])
+            elif entry["store"] == "storage" and entry["field"] == "Ystorage_r_tri_feat":
+                row_counts["storage"] += int(entry["shape"][0])
     cfg = {
         "root": str(root), "cache_dir": str(root / ".contract_cache"),
         "cast_float32": True, "train_frac": 0.8, "val_frac": 0.1,
@@ -131,6 +133,7 @@ def main() -> int:
         "exact_capacitor_metadata": True, "exact_reactor_metadata": True,
         "exact_load_metadata": True,
         "exact_pvsystem_metadata": True, "exact_vsource_metadata": True,
+        "exact_storage_metadata": True,
         "exact_metadata_workers": args.workers,
     }
     mask = {
@@ -145,7 +148,7 @@ def main() -> int:
     for cache in bundle.train.caches:
         for variant in {0, cache.n_variants - 1}:
             sample = cache.sample(variant)
-            for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource"):
+            for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource", "storage"):
                 if sample[family].num_nodes and not hasattr(
                     sample[family], "metadata_y_feat"
                 ):
@@ -178,7 +181,7 @@ def main() -> int:
             cache.sample(0) for cache in bundle.train.caches[start:start + 16]
         ]
         mixed = Batch.from_data_list(samples)
-        for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource"):
+        for family in ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource", "storage"):
             if not hasattr(mixed[family], "metadata_y_feat"):
                 raise AssertionError(
                     f"mixed-feeder batch missing exact field for {family}"
