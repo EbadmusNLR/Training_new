@@ -205,7 +205,14 @@ def _voltage_skill(dh, s_target: str, c: int, cols: list[int], edges, yrec, y_re
     free = np.where(~visible)[0]
     fixed = np.where(visible)[0]
     bfree = rhs[free] - ybus[np.ix_(free, fixed)] @ vt[fixed]
-    solved = np.linalg.solve(ybus[np.ix_(free, free)], bfree)
+    try:
+        solved = np.linalg.solve(ybus[np.ix_(free, free)], bfree)
+    except np.linalg.LinAlgError:
+        # Some synthetic connection families deliberately expose a floating
+        # common/zero-sequence mode. Their local excitation rank and Y fit are
+        # still auditable even though a unique full-network voltage solve is
+        # undefined.
+        return float("nan")
     return float(np.abs(solved - vt[free]).sum() / (np.abs(vt[free] - vi[free]).sum() + 1e-300))
 
 
