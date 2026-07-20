@@ -8,6 +8,7 @@
 - Structural-safe v2 passes; seed73 plus retries are healthy; split evals `15316607/608` and select `15316609` follow.
 - Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
 - Pin-memory root cause is fixed in `scripts/train.py`: only train uses workers; seen/unseen/task evaluation is synchronous.
+- Foundation evaluation also defaults to zero workers; override only after measuring a larger split.
 - Raw scorecards now label the stored terminal target as `Ifeat`; legacy `Ibus` receipts remain readable.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
 ## Next actions

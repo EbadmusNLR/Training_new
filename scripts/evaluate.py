@@ -42,6 +42,8 @@ def main() -> int:
         help="replace the checkpoint mask mixture with one deterministic task family",
     )
     ap.add_argument("--device")
+    ap.add_argument("--num-workers", type=int,
+                    help="override evaluation DataLoader workers")
     ap.add_argument("--kcl-vsource", action="store_true")
     ap.add_argument("--kcl-icomp", action="store_true",
                     help="recover uniquely hidden PC Icomp entries from nodal KCL")
@@ -98,6 +100,8 @@ def main() -> int:
     if ensemble_cks and ck is None:
         ap.error("--ensemble-ckpt requires --ckpt")
     cfg = load_config(args.config) if args.config else ck["cfg"]
+    if args.num_workers is not None:
+        cfg["data"]["num_workers"] = args.num_workers
     if args.task:
         cfg["mask"]["mixture"] = {args.task: 1.0}
         if args.task == "random":

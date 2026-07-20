@@ -15,6 +15,7 @@ RUN_DIR="${RUN_DIR:?set RUN_DIR to the candidate run directory}"
 CKPT="${CKPT:-$RUN_DIR/best_foundation.pt}"
 SPLIT="${SPLIT:-unseen}"
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_DIR/task_reports_$SPLIT}"
+EVAL_WORKERS="${EVAL_WORKERS:-0}"
 CONFIG_ARGS=()
 if [[ -n "${CONFIG:-}" ]]; then
   CONFIG_ARGS=(--config "$CONFIG")
@@ -35,12 +36,14 @@ run_task() {
   local task="$1"
   "$PYTHON_BIN" scripts/evaluate.py \
     "${CONFIG_ARGS[@]}" --ckpt "$CKPT" --split "$SPLIT" --task "$task" \
+    --num-workers "$EVAL_WORKERS" \
     --output "$OUTPUT_DIR/$task.json"
 }
 
 run_task pf
 "$PYTHON_BIN" scripts/evaluate.py \
   "${CONFIG_ARGS[@]}" --ckpt "$CKPT" --split "$SPLIT" --task pf --tree-line --kcl-vsource \
+  --num-workers "$EVAL_WORKERS" \
   --output "$OUTPUT_DIR/pf_tree.json"
 run_task se_known
 run_task param_one
