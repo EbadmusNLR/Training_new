@@ -20,13 +20,18 @@ def _info(family: str, n: int, width: int) -> dict:
 def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
     line_info = _info("line", 1, 38)
     transformer_info = _info("transformer", 1, 180)
+    generator_info = _info("generator", 1, 36)
     cache = SimpleNamespace(
-        name="poison", stores={"line": line_info, "transformer": transformer_info}
+        name="poison", stores={
+            "line": line_info, "transformer": transformer_info,
+            "generator": generator_info,
+        }
     )
     absent = SimpleNamespace(name="absent", stores={}, dtype=torch.float32)
 
     original_line = em.decode_line_metadata
     original_transformer = em.decode_transformer_metadata
+    original_generator = em.decode_generator_metadata
     line_yr = torch.zeros((1, 8, 8), dtype=torch.float64)
     line_yi = torch.zeros_like(line_yr)
     line_yr[:, :4, 4:] = -torch.eye(4)
@@ -34,6 +39,8 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
     line_yi[:, :4, :4] = 5 * torch.eye(4)
     transformer_yr = torch.diag_embed(torch.arange(1, 13, dtype=torch.float64)[None])
     transformer_yi = -transformer_yr
+    generator_yr = torch.diag_embed(torch.arange(1, 5, dtype=torch.float64)[None])
+    generator_yi = -2 * generator_yr
     try:
         em.decode_line_metadata = lambda _store: (
             line_yr, line_yi, torch.ones(1, dtype=torch.bool)
@@ -41,15 +48,25 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
         em.decode_transformer_metadata = lambda _store: (
             transformer_yr, transformer_yi, torch.ones(1, dtype=torch.bool)
         )
-        em.attach_exact_metadata([cache, absent], line=True, transformer=True)
+        em.decode_generator_metadata = lambda _store: (
+            generator_yr, generator_yi, torch.ones(1, dtype=torch.bool)
+        )
+        em.attach_exact_metadata(
+            [cache, absent], line=True, transformer=True, generator=True
+        )
         before_line = line_info["derived_definitions"]["metadata_y_feat"][0].clone()
         before_transformer = transformer_info["derived_definitions"]["metadata_y_feat"][0].clone()
+        before_generator = generator_info["derived_definitions"]["metadata_y_feat"][0].clone()
         line_info["tmpl"].fill_(-1e30)
         transformer_info["tmpl"].fill_(1e30)
-        em.attach_exact_metadata([cache, absent], line=True, transformer=True)
+        generator_info["tmpl"].fill_(-1e35)
+        em.attach_exact_metadata(
+            [cache, absent], line=True, transformer=True, generator=True
+        )
     finally:
         em.decode_line_metadata = original_line
         em.decode_transformer_metadata = original_transformer
+        em.decode_generator_metadata = original_generator
 
     assert torch.equal(before_line, line_info["derived_definitions"]["metadata_y_feat"][0])
     assert torch.equal(
@@ -61,11 +78,16 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
     assert absent.empty_derived_definitions["transformer"][
         "metadata_y_feat"
     ].shape == (0, 156)
+    assert absent.empty_derived_definitions["generator"][
+        "metadata_y_feat"
+    ].shape == (0, 20)
 
     line_pred = torch.randn(1, 38)
     transformer_pred = torch.randn(1, 180)
+    generator_pred = torch.randn(1, 36)
     line_current = line_pred[:, 30:].clone()
     transformer_current = transformer_pred[:, 156:].clone()
+    generator_current = generator_pred[:, 20:].clone()
     batch = {
         "line": SimpleNamespace(
             num_nodes=1, metadata_y_feat=before_line,
@@ -77,14 +99,24 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
             metadata_y_supported=torch.ones(1, dtype=torch.bool),
             x_true=torch.full((1, 180), -1e35),
         ),
+        "generator": SimpleNamespace(
+            num_nodes=1, metadata_y_feat=before_generator,
+            metadata_y_supported=torch.ones(1, dtype=torch.bool),
+            x_true=torch.full((1, 36), 1e35),
+        ),
     }
     out = em.apply_exact_metadata(
-        batch, {"line": line_pred, "transformer": transformer_pred}, True, True
+        batch, {
+            "line": line_pred, "transformer": transformer_pred,
+            "generator": generator_pred,
+        }, True, True, True
     )
     assert torch.equal(out["line"][:, :30], before_line)
     assert torch.equal(out["transformer"][:, :156], before_transformer)
     assert torch.equal(out["line"][:, 30:], line_current)
     assert torch.equal(out["transformer"][:, 156:], transformer_current)
+    assert torch.equal(out["generator"][:, :20], before_generator)
+    assert torch.equal(out["generator"][:, 20:], generator_current)
 
 
 def test_unsupported_rows_fail_closed() -> None:

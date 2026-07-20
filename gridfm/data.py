@@ -42,14 +42,16 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
     exact_started = time.perf_counter()
     exact_line = bool(data_cfg.get("exact_line_metadata", False))
     exact_transformer = bool(data_cfg.get("exact_transformer_metadata", False))
+    exact_generator = bool(data_cfg.get("exact_generator_metadata", False))
     exact_workers = int(data_cfg.get("exact_metadata_workers", 0))
     attach_exact_metadata(
         train.caches,
         exact_line,
         exact_transformer,
         exact_workers,
+        generator=exact_generator,
     )
-    if exact_line or exact_transformer:
+    if exact_line or exact_transformer or exact_generator:
         print(
             f"exact metadata prepared in {time.perf_counter() - exact_started:.1f}s "
             f"with workers={exact_workers}",

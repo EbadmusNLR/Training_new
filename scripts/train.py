@@ -198,7 +198,7 @@ def main() -> int:
     ap.add_argument("--init-ckpt", type=Path)
     ap.add_argument("--scratch", action="store_true")
     ap.add_argument(
-        "--exact-metadata", choices=("none", "line", "transformer", "both"),
+        "--exact-metadata", choices=("none", "line", "transformer", "generator", "both", "all"),
     )
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -217,15 +217,19 @@ def main() -> int:
     elif args.scratch:
         cfg["train"].pop("init_ckpt", None)
     if args.exact_metadata is not None:
-        cfg["model"]["exact_line_metadata"] = args.exact_metadata in ("line", "both")
+        cfg["model"]["exact_line_metadata"] = args.exact_metadata in ("line", "both", "all")
         cfg["model"]["exact_transformer_metadata"] = args.exact_metadata in (
-            "transformer", "both"
+            "transformer", "both", "all"
         )
+        cfg["model"]["exact_generator_metadata"] = args.exact_metadata in ("generator", "all")
     cfg["data"]["exact_line_metadata"] = bool(
         cfg["model"].get("exact_line_metadata", False)
     )
     cfg["data"]["exact_transformer_metadata"] = bool(
         cfg["model"].get("exact_transformer_metadata", False)
+    )
+    cfg["data"]["exact_generator_metadata"] = bool(
+        cfg["model"].get("exact_generator_metadata", False)
     )
     if args.limit_feeders is not None:
         cfg["data"]["limit_feeders"] = args.limit_feeders

@@ -9,6 +9,7 @@ import torch
 from .legacy import data as legacy_data
 from .line_metadata import decode_line_metadata
 from .transformer_metadata import decode_transformer_metadata
+from .generator_metadata import decode_generator_metadata
 
 
 def _definition_store(
@@ -69,8 +70,24 @@ def _transformer_feature(
     return _feature(pu, info["scale"][:, :ny]), supported
 
 
+def _generator_feature(
+    info: dict, row=None, variant: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    yr, yi, supported = decode_generator_metadata(
+        _definition_store(info, "generator", row, variant)
+    )
+    rows, cols = legacy_data.tri_rc(4)
+    pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
+    ny = legacy_data.y_width("generator")
+    return _feature(pu, info["scale"][:, :ny]), supported
+
+
 def _decode_cache(cache, families: tuple[str, ...]) -> dict:
-    decoders = {"line": _line_feature, "transformer": _transformer_feature}
+    decoders = {
+        "line": _line_feature,
+        "transformer": _transformer_feature,
+        "generator": _generator_feature,
+    }
     result = {}
     for family in families:
         info = cache.stores.get(family)
@@ -114,6 +131,7 @@ def _decode_cache_index(index: int, cache, families: tuple[str, ...]):
 
 def attach_exact_metadata(
     caches: list, line: bool, transformer: bool, workers: int = 0,
+    generator: bool = False,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -127,6 +145,8 @@ def attach_exact_metadata(
         requested.append("line")
     if transformer:
         requested.append("transformer")
+    if generator:
+        requested.append("generator")
     families = tuple(requested)
     counts = {family: 0 for family in families}
     for cache in caches:
@@ -184,7 +204,7 @@ def attach_exact_metadata(
     # Drop unused families too so generic/ablation arms do not collate and copy
     # target-independent fp64 metadata to the GPU on every training batch.
     for cache in caches:
-        for family in ("line", "transformer"):
+        for family in ("line", "transformer", "generator"):
             info = cache.stores.get(family)
             if info is not None:
                 info["definitions"] = {}
@@ -196,9 +216,12 @@ def attach_exact_metadata(
 
 def apply_exact_metadata(
     batch, preds: dict[str, torch.Tensor], line: bool, transformer: bool,
+    generator: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Replace only supported passive-Y predictions; never read x_true."""
-    for family, enabled in (("line", line), ("transformer", transformer)):
+    for family, enabled in (
+        ("line", line), ("transformer", transformer), ("generator", generator),
+    ):
         if not enabled or batch[family].num_nodes == 0:
             continue
         store = batch[family]
