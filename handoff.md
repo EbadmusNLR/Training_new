@@ -5,19 +5,19 @@
 - Current contract: stored `I_feat=I_bus+Icomp=YV`; only physical KCL uses `I_bus=I_feat-Icomp`.
 - Key commits: DG_FM_Training `4802d3b`, `bf468d7`, `08f4978`; Training_new `b24a1bc`, `5efdc02`, `a806505`.
 - Injection masks now hide only PC slots on valid KCL nodes, globally at most one hidden component per conductor node.
-- Structural-safe v2 passes; seed73 plus retries are healthy; split evals `15316607/608` and select `15316609` follow.
+- Structural-safe passes; seed73 raw fails (Icomp ~101%); retries/eval/select `15316386/16607/16734` remain live.
 - Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
 - Pin-memory root cause is fixed in `scripts/train.py`: only train uses workers; seen/unseen/task evaluation is synchronous.
 - Foundation evaluation also defaults to zero workers; override only after measuring a larger split.
 - Raw scorecards now label the stored terminal target as `Ifeat`; legacy `Ibus` receipts remain readable.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
 ## Next actions
-1. Package the passing structural scorecard with the winning raw fallback after `15316282/283/284` completes.
-2. Monitor `15316282/283/284`; use only completed unseen scorecards and never select on test data.
-3. Update T99 and the v10 ledger row with final measured values and an explicit verdict.
-4. If structural-safe passes, make it the deployed identifiable reconstruction path while retaining raw heads as diagnostics/fallbacks.
-5. Vectorize `kcl_decode_icomp` and replace the dense PF solve with a sparse fp64 implementation before large-feeder scaling.
-6. Decouple exact-cache validity from wrapper-only source edits; retain explicit schema and decoder fingerprints.
-7. Rerun unit, mask, structural, and topology-general gates after those speed changes; poison hidden targets again.
-8. Clean canceled/invalid v10 run directories and logs, stale cache temporaries, and proven dead probes without touching training corpora.
-9. Commit each validated cleanup/change separately and leave all nested repositories clean for handoff.
+1. Package the passing structural scorecard with the least-bad raw fallback after selection completes.
+2. Monitor `15316386/16607/16734`; use only completed unseen scorecards and never select on test data.
+3. Update T100 with all four final raw scorecards and an explicit verdict.
+4. Promote structural-safe as the deployed identifiable path; retain raw heads only for fail-closed fallback/diagnostics.
+5. Vectorize `kcl_decode_icomp` and replace the dense PF solve with sparse fp64 before large-feeder scaling.
+6. Stabilize exact-cache fingerprints and make multi-task evaluation reuse one process/dataset.
+7. Rerun unit, mask, structural, topology-general, and target-poison gates after speed changes.
+8. Clean canceled/invalid runs, logs, stale cache temporaries, and proven dead probes without touching corpora.
+9. Commit each validated cleanup/change separately and leave every nested repository clean.
