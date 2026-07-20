@@ -43,21 +43,27 @@ def main() -> int:
     checks = {
         "pf_voltage": float(pf["V_wape_pct"]),
         "pf_current_direct": float(pf["Ibus_wape_pct"]),
-        "pf_current_structural": float(pf_tree["Ibus_wape_pct"]),
         "se_voltage": float(se["V_wape_pct"]),
         "se_current": float(se["Ibus_wape_pct"]),
         "parameter_Y": float(param["Y_wape_pct"]),
         "injection_Icomp": float(injection["Icomp_wape_pct"]),
         "worst_Y_scale_field": worst_scale(param, "Y")["pct"],
         "worst_Icomp_scale_field": worst_scale(injection, "Icomp")["pct"],
-        "random_voltage": float(random["V_wape_pct"]),
-        "random_current": float(random["Ibus_wape_pct"]),
-        "random_Y": float(random["Y_wape_pct"]),
-        "random_Icomp": float(random["Icomp_wape_pct"]),
         "random_safe_voltage": float(random_safe["V_wape_pct"]),
         "random_safe_current": float(random_safe["Ibus_wape_pct"]),
         "random_safe_Y": float(random_safe["Y_wape_pct"]),
         "random_safe_Icomp": float(random_safe["Icomp_wape_pct"]),
+    }
+    diagnostics = {
+        # The tree decoder is radial-only; retaining it as a diagnostic must
+        # not make topology-general acceptance depend on a radial assumption.
+        "pf_current_structural": float(pf_tree["Ibus_wape_pct"]),
+        # Joint arbitrary deletion is intentionally underdetermined from one
+        # snapshot. random_safe is the identifiable acceptance curriculum.
+        "random_voltage": float(random["V_wape_pct"]),
+        "random_current": float(random["Ibus_wape_pct"]),
+        "random_Y": float(random["Y_wape_pct"]),
+        "random_Icomp": float(random["Icomp_wape_pct"]),
     }
     threshold = float(args.threshold_pct)
     payload = {
@@ -65,6 +71,7 @@ def main() -> int:
         "checkpoint": pf.get("checkpoint"),
         "threshold_pct": threshold,
         "checks_pct": checks,
+        "diagnostics_pct": diagnostics,
         "feasibility": {
             key: pf.get(key) for key in (
                 "feasibility_accuracy", "feasibility_precision", "feasibility_recall",

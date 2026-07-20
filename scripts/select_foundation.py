@@ -49,7 +49,8 @@ def candidate(scorecard_path: Path) -> dict:
     # selection together with every core forward/inverse task.
     core = {
         key: value for key, value in checks.items()
-        if not key.startswith("random_") or key.startswith("random_safe_")
+        if (not key.startswith("random_") or key.startswith("random_safe_"))
+        and key != "pf_current_structural"
     }
     maximum = max(core.values())
     mean = sum(core.values()) / len(core)
