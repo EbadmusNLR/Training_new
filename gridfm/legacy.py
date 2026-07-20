@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = ROOT / "DG_FM_Training"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(LEGACY_ROOT) not in sys.path:
     sys.path.insert(0, str(LEGACY_ROOT))
 

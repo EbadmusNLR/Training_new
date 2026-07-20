@@ -55,15 +55,25 @@ def foundation_selection_score(task_metrics: dict) -> float:
     return max(values) if values else float("inf")
 
 
-def loader(dataset, batch: int, workers: int, shuffle: bool, samples: int | None = None):
+def loader(
+    dataset, batch: int, workers: int, shuffle: bool,
+    samples: int | None = None, prefetch_factor: int = 2,
+):
     sampler = None
     if shuffle and samples is not None and samples < len(dataset):
         sampler = torch.utils.data.RandomSampler(dataset, num_samples=samples)
         shuffle = False
+    worker_args = {}
+    if workers:
+        worker_args.update(
+            multiprocessing_context="fork",
+            persistent_workers=True,
+            prefetch_factor=prefetch_factor,
+        )
     return DataLoader(
         dataset, batch_size=batch, shuffle=shuffle, sampler=sampler,
         num_workers=workers, pin_memory=True,
-        multiprocessing_context="fork" if workers else None,
+        **worker_args,
     )
 
 
@@ -153,6 +163,12 @@ def main() -> int:
     ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
+    cfg["data"]["exact_line_metadata"] = bool(
+        cfg["model"].get("exact_line_metadata", False)
+    )
+    cfg["data"]["exact_transformer_metadata"] = bool(
+        cfg["model"].get("exact_transformer_metadata", False)
+    )
     if args.limit_feeders is not None:
         cfg["data"]["limit_feeders"] = args.limit_feeders
     if args.epochs is not None:
@@ -228,9 +244,18 @@ def main() -> int:
     batch_size = int(cfg["train"]["batch_size"])
     workers = int(cfg["data"].get("num_workers", 0))
     samples = int(cfg["data"].get("samples_per_epoch", len(bundle.train)))
-    train_loader = loader(bundle.train, batch_size, workers, True, samples)
-    seen_loader = loader(bundle.seen, batch_size, workers, False)
-    unseen_loader = loader(bundle.unseen, batch_size, workers, False)
+    prefetch_factor = int(cfg["data"].get("prefetch_factor", 2))
+    if prefetch_factor < 1:
+        raise ValueError("data.prefetch_factor must be >= 1")
+    train_loader = loader(
+        bundle.train, batch_size, workers, True, samples, prefetch_factor
+    )
+    seen_loader = loader(
+        bundle.seen, batch_size, workers, False, prefetch_factor=prefetch_factor
+    )
+    unseen_loader = loader(
+        bundle.unseen, batch_size, workers, False, prefetch_factor=prefetch_factor
+    )
     steps = math.ceil(min(samples, len(bundle.train)) / batch_size)
     total_steps = max(1, int(cfg["train"]["epochs"]) * steps)
     warmup = min(int(cfg["train"].get("warmup_steps", 0)), total_steps // 10)
@@ -261,10 +286,13 @@ def main() -> int:
     wb = init_wandb(cfg, out)
     log_path = out / "log.jsonl"
     for epoch in range(start, int(cfg["train"]["epochs"]) + 1):
+        epoch_started = time.perf_counter()
         bundle.train.set_epoch(epoch)
         train_metrics = run_epoch(model, train_loader, cfg, device, s_kcl, opt, sched)
+        train_sec = time.perf_counter() - epoch_started
         seen_metrics = unseen_metrics = {}
         task_metrics = {}
+        eval_started = time.perf_counter()
         if epoch % int(cfg["train"]["eval_every"]) == 0 or epoch == int(cfg["train"]["epochs"]):
             with torch.no_grad():
                 seen_metrics = run_epoch(model, seen_loader, cfg, device, s_kcl)
@@ -282,15 +310,19 @@ def main() -> int:
                             )
                     finally:
                         bundle.unseen.mask_cfg = original_mask
+        eval_sec = time.perf_counter() - eval_started
+        epoch_sec = time.perf_counter() - epoch_started
         rec = {
             "epoch": epoch, "lr": sched.get_last_lr()[0],
+            "train_sec": train_sec, "eval_sec": eval_sec, "epoch_sec": epoch_sec,
             "train": train_metrics, "seen": seen_metrics, "unseen": unseen_metrics,
             "unseen_tasks": task_metrics,
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(
-            f"epoch {epoch:03d} train={train_metrics.get('loss', float('nan')):.4e} "
+            f"epoch {epoch:03d} [{epoch_sec:.1f}s train={train_sec:.1f}s "
+            f"eval={eval_sec:.1f}s] train={train_metrics.get('loss', float('nan')):.4e} "
             f"seen V/I={seen_metrics.get('V_wape_pct', float('nan')):.4f}%/"
             f"{seen_metrics.get('tree_Ibus_wape_pct', seen_metrics.get('Ibus_wape_pct', float('nan'))):.3f}% "
             f"unseen V/I={unseen_metrics.get('V_wape_pct', float('nan')):.4f}%/"

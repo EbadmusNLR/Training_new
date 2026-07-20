@@ -103,6 +103,12 @@ def main() -> int:
                 "p_terminal": 0.05,
                 "p_component": 0.0,
             })
+    cfg["data"]["exact_line_metadata"] = bool(
+        cfg["model"].get("exact_line_metadata", False)
+    )
+    cfg["data"]["exact_transformer_metadata"] = bool(
+        cfg["model"].get("exact_transformer_metadata", False)
+    )
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))

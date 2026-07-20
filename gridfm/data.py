@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import torch
 
 from .legacy import build_datasets
+from .exact_metadata import attach_exact_metadata
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,11 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
     """Build feeder-disjoint splits and reject target-derived nominal fields."""
     limit = data_cfg.get("limit_feeders")
     train, seen, unseen, test = build_datasets(data_cfg, mask_cfg, seed, limit=limit)
+    attach_exact_metadata(
+        train.caches,
+        bool(data_cfg.get("exact_line_metadata", False)),
+        bool(data_cfg.get("exact_transformer_metadata", False)),
+    )
     train_names, seen_names = _names(train), _names(seen)
     unseen_names, test_names = _names(unseen), _names(test)
     if train_names != seen_names:
