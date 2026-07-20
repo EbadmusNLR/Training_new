@@ -14,7 +14,7 @@
 ## Next actions
 1. Keep structural-safe as the deployed identifiable path; raw seed17 is fail-closed fallback/diagnostics only.
 2. Stabilize exact-cache fingerprints, then make multi-task evaluation reuse one model/dataset process.
-3. Vectorize `kcl_decode_icomp`; benchmark before/after on the same unseen split.
+3. KCL vectorization passed unit tests and benchmarked `852x` faster; monitor full structural regression `15317136`.
 4. Promote structural-safe as the deployed identifiable path; retain raw heads only for fail-closed fallback/diagnostics.
 5. Vectorize `kcl_decode_icomp` and replace the dense PF solve with sparse fp64 before large-feeder scaling.
 6. Stabilize exact-cache fingerprints and make multi-task evaluation reuse one process/dataset.
