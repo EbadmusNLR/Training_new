@@ -43,6 +43,8 @@ def main() -> int:
     )
     ap.add_argument("--device")
     ap.add_argument("--kcl-vsource", action="store_true")
+    ap.add_argument("--kcl-icomp", action="store_true",
+                    help="recover uniquely hidden PC Icomp entries from nodal KCL")
     ap.add_argument("--kcl-project", choices=("equal", "series", "line"))
     ap.add_argument("--tree-line", action="store_true",
                     help="reconstruct paired radial line-series currents from KCL")
@@ -59,6 +61,13 @@ def main() -> int:
         help=(
             "diagnostic only: apply the validated dense KCL solve when Y and Icomp "
             "are fully observed; this is not a learned-model result"
+        ),
+    )
+    ap.add_argument(
+        "--structural-safe", action="store_true",
+        help=(
+            "apply fail-closed exact Y, eligible voltage solve, YV terminal decode, "
+            "and one-hidden-per-node Icomp KCL decode"
         ),
     )
     ap.add_argument(
@@ -130,7 +139,9 @@ def main() -> int:
     cfg["data"]["exact_storage_metadata"] = bool(
         cfg["model"].get("exact_storage_metadata", False)
     )
-    cfg["data"]["exact_metadata_keep_pu"] = bool(args.exact_pf_ceiling)
+    cfg["data"]["exact_metadata_keep_pu"] = bool(
+        args.exact_pf_ceiling or args.structural_safe
+    )
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -220,14 +231,16 @@ def main() -> int:
                 )
                 if refine_metrics:
                     refinement_rows.append(refine_metrics)
-            if args.exact_pf_ceiling:
+            if args.exact_pf_ceiling or args.structural_safe:
                 preds, solve_row = physics.exact_pf_solve(
                     batch, preds, clamp, return_info=True
                 )
                 for key, value in solve_row.items():
                     pf_solve_info[key] += value
-            if args.physics_current:
+            if args.physics_current or args.structural_safe:
                 preds = physics.decode_currents(batch, preds, clamp)
+            if args.kcl_icomp or args.structural_safe:
+                preds = physics.kcl_decode_icomp(batch, preds, clamp)
             if args.hybrid_device:
                 preds = decode_hybrid_device_currents(batch, preds, clamp)
             if args.tree_series:
@@ -274,6 +287,8 @@ def main() -> int:
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
         "exact_pf_ceiling": args.exact_pf_ceiling,
+        "structural_safe": args.structural_safe,
+        "kcl_icomp": args.kcl_icomp,
         "exact_pf_graphs": pf_solve_info["graphs"],
         "exact_pf_eligible": pf_solve_info["eligible"],
         "exact_pf_solved": pf_solve_info["solved"],

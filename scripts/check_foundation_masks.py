@@ -40,6 +40,29 @@ def role_counts(data) -> dict[str, int]:
     return counts
 
 
+def assert_identifiable_injection_mask(data) -> None:
+    hidden_at_node = {}
+    pc_stores = {"load", "generator", "pvsystem", "storage"}
+    for store, spec in SPECS.items():
+        st = data[store]
+        ny, ni = y_width(store), i_offset(store)
+        hidden = st.msk[:, ny:ni]
+        if store not in pc_stores:
+            assert not bool(hidden.any()), f"injection masked non-PC {store}"
+            continue
+        es = data[(store, "conn", "node")]
+        for comp, node, slot in zip(
+            es.edge_index[0].tolist(), es.edge_index[1].tolist(), es.slot.tolist()
+        ):
+            if slot >= spec.icomp:
+                continue
+            if bool(hidden[comp, slot] or hidden[comp, spec.icomp + slot]):
+                previous = hidden_at_node.setdefault(node, (store, comp))
+                assert previous == (store, comp), (
+                    f"node {node} has hidden Icomp from {previous} and {(store, comp)}"
+                )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", type=Path, default=Path("configs/e22_foundation_random.yaml"))
@@ -63,7 +86,19 @@ def main() -> int:
     assert param["Y"] > 0 and param["V"] == param["Icomp"] == param["Ibus"] == 0
     inj = rows["injection"]
     assert inj["Icomp"] > 0 and inj["V"] == inj["Y"] == inj["Ibus"] == 0
-    assert all(rows["random"][role] > 0 for role in ("V", "Y", "Icomp", "Ibus"))
+    assert_identifiable_injection_mask(sample_for(bundle, "injection"))
+    # A single Bernoulli sample need not hit every role. Check the intended
+    # random stress distribution over a small deterministic sample union.
+    bundle.train.mask_cfg = {
+        **bundle.train.mask_cfg, "mixture": {"random": 1.0}
+    }
+    bundle.train.set_epoch(0)
+    random_union = {role: 0 for role in ("V", "Y", "Icomp", "Ibus")}
+    for index in range(min(64, len(bundle.train))):
+        counts = role_counts(bundle.train[index])
+        for role, count in counts.items():
+            random_union[role] += count
+    rows["random_union"] = random_union
 
     # random_safe spans all roles across samples but never jointly hides an
     # underdetermined combination inside one operating snapshot.
@@ -78,6 +113,8 @@ def main() -> int:
         counts = role_counts(data)
         active = {role for role, count in counts.items() if count > 0}
         assert active in ({"V", "Ibus"}, {"Y"}, {"Icomp"})
+        if active == {"Icomp"}:
+            assert_identifiable_injection_mask(data)
         for role, count in counts.items():
             safe_union[role] += count
     assert all(safe_union[role] > 0 for role in safe_union)
