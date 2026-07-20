@@ -18,6 +18,7 @@ proper ``Yrec - Y_holdout`` patch.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import hashlib
 import json
@@ -414,9 +415,19 @@ def audit_target(
     return {"meta": meta, "records": records}
 
 
-def _selected_feeders(root: str, corpora: list[str], per_corpus: int):
+def _selected_feeders(
+    root: str,
+    corpora: list[str],
+    per_corpus: int,
+    feeder_pattern: str | None = None,
+):
     for corpus in corpora:
         stores = sorted(glob.glob(os.path.join(root, corpus, "*", "static.pt")))
+        if feeder_pattern:
+            stores = [
+                path for path in stores
+                if fnmatch.fnmatch(os.path.basename(os.path.dirname(path)), feeder_pattern)
+            ]
         step = max(1, len(stores) // per_corpus)
         picked = 0
         for path in stores[::step]:
@@ -438,19 +449,27 @@ def main() -> int:
                         help="candidate snapshots available to the selector; defaults to max K")
     parser.add_argument("--component-index", type=int, default=0,
                         help="component row to audit; use -1 for the last rendered target")
+    parser.add_argument("--feeder-pattern", default=None,
+                        help="optional shell-style pattern matched against feeder directory names")
+    parser.add_argument("--targets", nargs="+", choices=tuple(PASSIVE_STORES),
+                        default=["line", "transformer"],
+                        help="component families to audit")
     parser.add_argument("--output")
     args = parser.parse_args()
     k_list = tuple(sorted(set(args.k)))
 
     payload = {"root": args.root, "k": list(k_list), "holdout": args.holdout,
                "selection": args.selection, "candidates": args.candidates,
+               "feeder_pattern": args.feeder_pattern, "targets": args.targets,
                "audits": [], "failures": []}
     header = ("corpus/feeder", "target", "K", "Ysame", "rank", "smin/smax", "Ydrift", "fit_res", "Yerr0", "Vcorrect")
     print(f"{header[0]:44s} {header[1]:11s} {header[2]:>3s} {header[3]:>5s} {header[4]:>5s} "
           f"{header[5]:>10s} {header[6]:>10s} {header[7]:>10s} {header[8]:>10s} {header[9]:>10s}")
-    for corpus, fdir in _selected_feeders(args.root, args.corpora, args.per_corpus):
+    for corpus, fdir in _selected_feeders(
+        args.root, args.corpora, args.per_corpus, args.feeder_pattern
+    ):
         name = f"{corpus}/{os.path.basename(fdir)}"
-        for target in ("line", "transformer"):
+        for target in args.targets:
             try:
                 audit = audit_target(fdir, target, k_list, args.holdout,
                                      selection=args.selection, candidates=args.candidates,
@@ -478,7 +497,9 @@ def main() -> int:
         out.write_text(json.dumps(payload, indent=2, allow_nan=True) + "\n")
     changed = sum(not a["meta"]["target_y_exact_all"] for a in payload["audits"])
     print(f"SUMMARY targets={len(payload['audits'])} target_Y_changed={changed} failures={len(payload['failures'])}")
-    return 1 if payload["failures"] else 0
+    if not payload["audits"]:
+        print("ERROR: selection produced no auditable target components")
+    return 1 if payload["failures"] or not payload["audits"] else 0
 
 
 if __name__ == "__main__":
