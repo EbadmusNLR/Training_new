@@ -195,6 +195,13 @@ def main() -> int:
     ap.add_argument("--lr", type=float)
     ap.add_argument("--batch-size", type=int)
     ap.add_argument("--num-workers", type=int)
+    ap.add_argument(
+        "--task-mixture", type=json.loads,
+        help='JSON task probabilities, e.g. {"pf":0.35,"se_known":0.25,"injection":0.4}',
+    )
+    ap.add_argument("--recon-voltage-weight", type=float)
+    ap.add_argument("--recon-icomp-weight", type=float)
+    ap.add_argument("--recon-ibus-weight", type=float)
     ap.add_argument("--init-ckpt", type=Path)
     ap.add_argument("--scratch", action="store_true")
     ap.add_argument(
@@ -210,6 +217,25 @@ def main() -> int:
         cfg["train"]["batch_size"] = args.batch_size
     if args.num_workers is not None:
         cfg["data"]["num_workers"] = args.num_workers
+    if args.task_mixture is not None:
+        if not isinstance(args.task_mixture, dict) or not args.task_mixture:
+            ap.error("--task-mixture must be a non-empty JSON object")
+        total = sum(float(value) for value in args.task_mixture.values())
+        if any(float(value) < 0 for value in args.task_mixture.values()) or abs(total - 1.0) > 1e-8:
+            ap.error("--task-mixture probabilities must be nonnegative and sum to 1")
+        cfg["mask"]["mixture"] = {
+            str(key): float(value) for key, value in args.task_mixture.items()
+        }
+    recon_weights = cfg["loss"].setdefault("recon_weights", {})
+    for name, value in (
+        ("voltage", args.recon_voltage_weight),
+        ("icomp", args.recon_icomp_weight),
+        ("ibus", args.recon_ibus_weight),
+    ):
+        if value is not None:
+            if value < 0:
+                ap.error(f"--recon-{name}-weight must be nonnegative")
+            recon_weights[name] = value
     if args.init_ckpt is not None and args.scratch:
         ap.error("--init-ckpt and --scratch are mutually exclusive")
     if args.init_ckpt is not None:
