@@ -5,11 +5,11 @@
 - Current contract: stored `I_feat=I_bus+Icomp=YV`; only physical KCL uses `I_bus=I_feat-Icomp`.
 - Key commits: DG_FM_Training `4802d3b`, `bf468d7`, `08f4978`; Training_new `b24a1bc`, `5efdc02`, `a806505`.
 - Injection masks now hide only PC slots on valid KCL nodes, globally at most one hidden component per conductor node.
-- Live: structural-safe v2 `15316280`; corrected four-seed train/eval/select `15316282/283/284` (some array tasks may wait for H100s).
-- Next: record v2 Icomp/random-safe results, finish the live chain, then stabilize exact-cache fingerprinting and remove only proven dead/generated remnants.
+- Structural-safe v2 `15316280` passes every identifiable unseen task; corrected four-seed train/eval/select `15316282/283/284` remains live.
+- Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
 ## Next actions
-1. Monitor `15316280`; verify nonground Load Icomp and aggregate `random_safe` are below the 1% gate.
+1. Make the validated structural-safe path the deployed identifiable scorecard while preserving raw-head diagnostics.
 2. Monitor `15316282/283/284`; use only completed unseen scorecards and never select on test data.
 3. Update T99 and the v10 ledger row with final measured values and an explicit verdict.
 4. If structural-safe passes, make it the deployed identifiable reconstruction path while retaining raw heads as diagnostics/fallbacks.
