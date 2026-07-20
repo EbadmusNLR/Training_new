@@ -34,7 +34,7 @@ for split in seen test; do
   done
   if [[ "$complete" == 0 ]]; then
     RUN_DIR="$RUN_DIR" CKPT="$CKPT" SPLIT="$split" OUTPUT_DIR="$reports" \
-      EVAL_WORKERS=0 bash scripts/evaluate_foundation.sbatch
+      EVAL_WORKERS=0 FORCE=1 bash scripts/evaluate_foundation.sbatch
   fi
 done
 
