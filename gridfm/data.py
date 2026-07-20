@@ -50,6 +50,7 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
         exact_transformer,
         exact_workers,
         generator=exact_generator,
+        disk_cache_dir=Path(data_cfg["cache_dir"]) / "exact_metadata_v1",
     )
     if exact_line or exact_transformer or exact_generator:
         print(

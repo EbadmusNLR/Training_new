@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 import torch
@@ -10,6 +14,23 @@ from .legacy import data as legacy_data
 from .line_metadata import decode_line_metadata
 from .transformer_metadata import decode_transformer_metadata
 from .generator_metadata import decode_generator_metadata
+
+
+EXACT_METADATA_CACHE_VERSION = 1
+
+
+def _codec_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for path in (
+        Path(__file__), Path(__file__).with_name("line_metadata.py"),
+        Path(__file__).with_name("transformer_metadata.py"),
+        Path(__file__).with_name("generator_metadata.py"),
+    ):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+CODEC_FINGERPRINT = _codec_fingerprint()
 
 
 def _definition_store(
@@ -125,13 +146,63 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
     return result
 
 
-def _decode_cache_index(index: int, cache, families: tuple[str, ...]):
-    return index, _decode_cache(cache, families)
+def _source_fingerprint(cache, families: tuple[str, ...]) -> dict | None:
+    feeder_dir = getattr(cache, "_dir", None)
+    if feeder_dir is None:
+        return None
+    files = []
+    for name in ("static.pt", "dynamic.npy"):
+        path = Path(feeder_dir) / name
+        stat = path.stat()
+        files.append((name, int(stat.st_size), int(stat.st_mtime_ns)))
+    return {
+        "version": EXACT_METADATA_CACHE_VERSION,
+        "codec": CODEC_FINGERPRINT,
+        "families": families,
+        "source": tuple(files),
+    }
+
+
+def _disk_cache_path(cache, families: tuple[str, ...], disk_cache_dir) -> Path | None:
+    feeder_dir = getattr(cache, "_dir", None)
+    if feeder_dir is None or disk_cache_dir is None:
+        return None
+    identity = hashlib.sha256(str(Path(feeder_dir).resolve()).encode()).hexdigest()[:24]
+    suffix = "-".join(families)
+    return Path(disk_cache_dir) / f"{identity}-{suffix}.pt"
+
+
+def _decode_cache_index(
+    index: int, cache, families: tuple[str, ...], disk_cache_dir=None,
+):
+    path = _disk_cache_path(cache, families, disk_cache_dir)
+    fingerprint = _source_fingerprint(cache, families)
+    if path is not None and path.is_file():
+        try:
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            if payload.get("fingerprint") == fingerprint:
+                return index, payload["result"], True
+        except Exception:
+            # A stale/interrupted cache is never a correctness fallback: decode
+            # from the causal definitions and atomically replace it below.
+            pass
+    result = _decode_cache(cache, families)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        os.close(fd)
+        try:
+            torch.save({"fingerprint": fingerprint, "result": result}, temp_name)
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+    return index, result, False
 
 
 def attach_exact_metadata(
     caches: list, line: bool, transformer: bool, workers: int = 0,
-    generator: bool = False,
+    generator: bool = False, disk_cache_dir=None,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -149,6 +220,7 @@ def attach_exact_metadata(
         requested.append("generator")
     families = tuple(requested)
     counts = {family: 0 for family in families}
+    cache_hits = cache_misses = 0
     for cache in caches:
         empty = getattr(cache, "empty_derived_definitions", None)
         if empty is None:
@@ -172,16 +244,20 @@ def attach_exact_metadata(
             max_workers=min(int(workers), len(caches))
         ) as pool:
             futures = [
-                pool.submit(_decode_cache_index, index, cache, families)
+                pool.submit(
+                    _decode_cache_index, index, cache, families, disk_cache_dir
+                )
                 for index, cache in enumerate(caches)
             ]
             results = (future.result() for future in as_completed(futures))
     else:
         results = [
-            (index, _decode_cache(cache, families))
+            _decode_cache_index(index, cache, families, disk_cache_dir)
             for index, cache in enumerate(caches)
         ]
-    for index, result in results:
+    for index, result, cache_hit in results:
+        cache_hits += int(cache_hit)
+        cache_misses += int(not cache_hit)
         cache = caches[index]
         for family, (dynamic, feature_np, supported_np, count) in result.items():
             info = cache.stores[family]
@@ -212,6 +288,12 @@ def attach_exact_metadata(
     for family in families:
         if counts[family] == 0:
             raise RuntimeError(f"exact {family} metadata requested but no rows were decoded")
+    if families and disk_cache_dir is not None:
+        print(
+            f"exact metadata disk cache hits={cache_hits} misses={cache_misses} "
+            f"dir={Path(disk_cache_dir)}",
+            flush=True,
+        )
 
 
 def apply_exact_metadata(

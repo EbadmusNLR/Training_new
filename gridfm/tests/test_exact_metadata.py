@@ -1,6 +1,8 @@
 """Contracts for the cached exact-metadata path used by EdgeStateGridFM."""
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 import torch
@@ -221,10 +223,34 @@ def test_parallel_predecode_matches_serial() -> None:
     )
 
 
+def test_disk_cache_reuses_and_invalidates_source() -> None:
+    with tempfile.TemporaryDirectory() as root_s:
+        root = Path(root_s)
+        feeder = root / "feeder"
+        feeder.mkdir()
+        (feeder / "static.pt").write_bytes(b"static-v1")
+        (feeder / "dynamic.npy").write_bytes(b"dynamic-v1")
+        cache = SimpleNamespace(_dir=feeder)
+        calls = []
+        original = em._decode_cache
+        try:
+            em._decode_cache = lambda _cache, _families: calls.append(1) or {"sentinel": 7}
+            _, first, first_hit = em._decode_cache_index(0, cache, ("line",), root / "cache")
+            _, second, second_hit = em._decode_cache_index(0, cache, ("line",), root / "cache")
+            (feeder / "dynamic.npy").write_bytes(b"dynamic-v2-longer")
+            _, third, third_hit = em._decode_cache_index(0, cache, ("line",), root / "cache")
+        finally:
+            em._decode_cache = original
+        assert first == second == third == {"sentinel": 7}
+        assert (first_hit, second_hit, third_hit) == (False, True, False)
+        assert len(calls) == 2
+
+
 if __name__ == "__main__":
     test_cached_features_ignore_target_and_apply_only_to_y()
     test_unsupported_rows_fail_closed()
     test_unused_definitions_are_not_collated()
     test_dynamic_definitions_are_variant_specific()
     test_parallel_predecode_matches_serial()
+    test_disk_cache_reuses_and_invalidates_source()
     print("EDGE_EXACT_METADATA_TEST_OK")
