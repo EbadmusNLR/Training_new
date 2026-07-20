@@ -63,7 +63,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--physics-current", action="store_true",
-        help="diagnostic only: decode Ibus=YV-Icomp after voltage completion",
+        help="diagnostic only: decode stored terminal feature I_feat=YV after voltage completion",
     )
     ap.add_argument("--voltage-refine-steps", type=int, default=0)
     ap.add_argument("--voltage-refine-damping", type=float, default=0.25)
@@ -130,6 +130,7 @@ def main() -> int:
     cfg["data"]["exact_storage_metadata"] = bool(
         cfg["model"].get("exact_storage_metadata", False)
     )
+    cfg["data"]["exact_metadata_keep_pu"] = bool(args.exact_pf_ceiling)
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -164,6 +165,10 @@ def main() -> int:
     sums: dict[str, float] = {}
     metric_rows: dict[str, list[float]] = {}
     refinement_rows: list[dict[str, float]] = []
+    pf_solve_info = {
+        "graphs": 0, "eligible": 0, "solved": 0, "unstable": 0,
+        "solved_v_abs_error": 0.0, "solved_v_abs_truth": 0.0,
+    }
     feasibility = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
     workers = int(cfg["data"].get("num_workers", 0))
     batches = DataLoader(
@@ -216,7 +221,11 @@ def main() -> int:
                 if refine_metrics:
                     refinement_rows.append(refine_metrics)
             if args.exact_pf_ceiling:
-                preds = physics.exact_pf_solve(batch, preds, clamp)
+                preds, solve_row = physics.exact_pf_solve(
+                    batch, preds, clamp, return_info=True
+                )
+                for key, value in solve_row.items():
+                    pf_solve_info[key] += value
             if args.physics_current:
                 preds = physics.decode_currents(batch, preds, clamp)
             if args.hybrid_device:
@@ -265,6 +274,14 @@ def main() -> int:
         "kcl_vsource": args.kcl_vsource, "n_samples": len(dataset),
         "kcl_project": args.kcl_project,
         "exact_pf_ceiling": args.exact_pf_ceiling,
+        "exact_pf_graphs": pf_solve_info["graphs"],
+        "exact_pf_eligible": pf_solve_info["eligible"],
+        "exact_pf_solved": pf_solve_info["solved"],
+        "exact_pf_unstable": pf_solve_info["unstable"],
+        "exact_pf_solved_v_wape_pct": (
+            100.0 * pf_solve_info["solved_v_abs_error"]
+            / max(pf_solve_info["solved_v_abs_truth"], 1e-30)
+        ),
         "physics_current": args.physics_current,
         "voltage_refine_steps": args.voltage_refine_steps,
         "voltage_refine_damping": args.voltage_refine_damping,

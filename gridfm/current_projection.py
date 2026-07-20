@@ -30,9 +30,7 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
         if st.num_nodes == 0:
             continue
         ni = i_offset(store)
-        cur = physics.decode_completed(
-            xbar[store][:, ni:].double(), st.scale[:, ni:].double(), st.msk[:, ni:], clamp
-        )
+        cur = physics.decoded_physical_currents(batch, xbar, store, clamp)
         es = batch[(store, "conn", "node")]
         comp, node, slot = es.edge_index[0], es.edge_index[1], es.slot
         col_r = (slot // FC) * 2 * FC + slot % FC
@@ -80,7 +78,10 @@ def project_kcl(batch, preds, clamp: float, mode: str = "series"):
         corrected[comp, col_r + FC] -= weight * sum_i[node]
         st = batch[store]
         ni = i_offset(store)
-        encoded = torch.asinh(corrected / (st.scale[:, ni:].double() + 1e-12))
+        terminal_feature = physics.physical_to_terminal_feature(
+            batch, xbar, store, corrected, clamp
+        )
+        encoded = torch.asinh(terminal_feature / (st.scale[:, ni:].double() + 1e-12))
         p = out[store].clone()
         take = st.msk[:, ni:]
         p[:, ni:] = torch.where(take, encoded.to(p.dtype), p[:, ni:])

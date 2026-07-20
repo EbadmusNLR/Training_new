@@ -74,7 +74,7 @@ def _feature(pu: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
 
 def _line_feature(
     info: dict, row=None, variant: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_line_metadata(
         _definition_store(info, "line", row, variant)
     )
@@ -86,43 +86,43 @@ def _line_feature(
         (ys_r[:, rows, cols], ys_i[:, rows, cols], yh_i[:, rows, cols]), dim=1
     )
     ny = legacy_data.y_width("line")
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _transformer_feature(
     info: dict, row=None, variant: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_transformer_metadata(
         _definition_store(info, "transformer", row, variant)
     )
     rows, cols = legacy_data.tri_rc(12)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
     ny = legacy_data.y_width("transformer")
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _generator_feature(
     info: dict, row=None, variant: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_generator_metadata(
         _definition_store(info, "generator", row, variant)
     )
     rows, cols = legacy_data.tri_rc(4)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
     ny = legacy_data.y_width("generator")
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _load_feature(
     info: dict, row=None, variant: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_load_metadata(
         _definition_store(info, "load", row, variant)
     )
     rows, cols = legacy_data.tri_rc(4)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
     ny = legacy_data.y_width("load")
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _pc_feature(info: dict, family: str, decoder, dim: int, row=None, variant=None):
@@ -130,7 +130,7 @@ def _pc_feature(info: dict, family: str, decoder, dim: int, row=None, variant=No
     rows, cols = legacy_data.tri_rc(dim)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
     ny = legacy_data.y_width(family)
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _pvsystem_feature(info: dict, row=None, variant=None):
@@ -147,14 +147,14 @@ def _storage_feature(info: dict, row=None, variant=None):
 
 def _shunt_feature(
     info: dict, family: str, row=None, variant: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_shunt_metadata(
         _definition_store(info, family, row, variant), family
     )
     rows, cols = legacy_data.tri_rc(8)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
     ny = legacy_data.y_width(family)
-    return _feature(pu, info["scale"][:, :ny]), supported
+    return _feature(pu, info["scale"][:, :ny]), supported, pu
 
 
 def _capacitor_feature(info: dict, row=None, variant: int | None = None):
@@ -187,11 +187,11 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
             for _static, offset, _shape in info.get("definitions", {}).values()
         )
         variants = [None] if not dynamic else list(range(cache.n_variants))
-        features, support = [], []
+        features, support, physical_values = [], [], []
         for variant in variants:
             row = None if variant is None else cache.dyn[variant]
             try:
-                feature, supported = decoders[family](info, row, variant)
+                feature, supported, physical = decoders[family](info, row, variant)
             except Exception as exc:
                 raise RuntimeError(
                     f"{cache.name}: exact {family} decode failed for "
@@ -210,12 +210,21 @@ def _decode_cache(cache, families: tuple[str, ...]) -> dict:
                 raise RuntimeError(
                     f"{cache.name}: exact {family} {label} has {bad} unsupported rows"
                 )
+            if physical.shape != expected or physical.dtype != torch.float64:
+                raise RuntimeError(
+                    f"{cache.name}: invalid exact {family} physical Y "
+                    f"{physical.shape}/{physical.dtype}, expected {expected}/float64"
+                )
             features.append(feature.contiguous())
             support.append(supported.contiguous())
+            physical_values.append(physical.contiguous())
         feature = torch.stack(features) if dynamic else features[0]
         supported = torch.stack(support) if dynamic else support[0]
+        physical = (
+            torch.stack(physical_values) if dynamic else physical_values[0]
+        )
         result[family] = (
-            dynamic, feature.numpy(), supported.numpy(),
+            dynamic, feature.numpy(), supported.numpy(), physical.numpy(),
             int(sum(int(value.sum()) for value in support)),
         )
     return result
@@ -281,6 +290,7 @@ def attach_exact_metadata(
     reactor: bool = False, load: bool = False, pvsystem: bool = False,
     vsource: bool = False,
     storage: bool = False,
+    keep_pu: bool = False,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -324,6 +334,10 @@ def attach_exact_metadata(
                 ),
                 "metadata_y_supported": torch.zeros(0, dtype=torch.bool),
             }
+            if keep_pu:
+                empty[family]["metadata_y_pu"] = torch.zeros(
+                    0, legacy_data.y_width(family), dtype=torch.float64
+                )
     if not families:
         results = []
     elif workers > 1 and len(caches) > 1:
@@ -349,7 +363,9 @@ def attach_exact_metadata(
         cache_hits += int(cache_hit)
         cache_misses += int(not cache_hit)
         cache = caches[index]
-        for family, (dynamic, feature_np, supported_np, count) in result.items():
+        for family, (
+            dynamic, feature_np, supported_np, physical_np, count,
+        ) in result.items():
             info = cache.stores[family]
             feature = torch.from_numpy(feature_np)
             supported = torch.from_numpy(supported_np)
@@ -360,6 +376,11 @@ def attach_exact_metadata(
             derived["metadata_y_supported"] = (
                 (None, supported) if dynamic else (supported, None)
             )
+            if keep_pu:
+                physical = torch.from_numpy(physical_np)
+                derived["metadata_y_pu"] = (
+                    (None, physical) if dynamic else (physical, None)
+                )
             # Definitions have served their causal purpose. Keep them in the
             # persisted store for auditability, but do not collate/move the raw
             # fp64 parameter blocks through every training batch.

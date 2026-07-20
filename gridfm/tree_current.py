@@ -47,10 +47,7 @@ def decode_tree_series_currents(
             continue
         st = batch[store]
         ni = i_offset(store)
-        cur = physics.decode_completed(
-            xbar[store][:, ni:].double(), st.scale[:, ni:].double(),
-            st.msk[:, ni:], clamp,
-        )
+        cur = physics.decoded_physical_currents(batch, xbar, store, clamp)
         es = batch[(store, "conn", "node")]
         comp, node, slot = es.edge_index[0], es.edge_index[1], es.slot
         col_r = (slot // FC) * 2 * FC + slot % FC

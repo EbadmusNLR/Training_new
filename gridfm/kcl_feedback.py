@@ -20,12 +20,12 @@ EPS = physics.EPS
 CLAMP = 20.0
 
 
-def nodal_current_residual(batch, ibus_feat: dict) -> torch.Tensor:
+def nodal_current_residual(batch, field_feat: dict) -> torch.Tensor:
     """Nodal KCL residual [N,2] from COMPLETED terminal-current estimates.
 
-    ibus_feat[store] is the model's predicted current-feature block (columns
-    i_offset(store):). It is completed with the observed truth where visible,
-    decoded to pu, and summed at each node. r_n = Σ_e Ibus_{e→n}, zeroed at
+    field_feat[store] is the model's full predicted component feature block. Its
+    stored terminal feature and Icomp are completed independently, then physical
+    Ibus=I_feat-Icomp is summed. r_n = Σ_e Ibus_{e→n}, zeroed at
     ground. Unlike Y·V this is well-conditioned (O(1)) AND differentiable in the
     predictions (dr/dIbus = 1), so it needs no detach — the network learns to
     drive it to zero. Task-agnostic: works whether V, Y, Icomp, or Ibus is the
@@ -34,18 +34,33 @@ def nodal_current_residual(batch, ibus_feat: dict) -> torch.Tensor:
     """
     nd = batch["node"]
     n_node = nd.num_nodes
-    dev = ibus_feat[next(iter(ibus_feat))].device
+    dev = field_feat[next(iter(field_feat))].device
     rr = torch.zeros(n_node, device=dev, dtype=torch.float32)
     ri = torch.zeros_like(rr)
     for store, spec in SPECS.items():
         st = batch[store]
         if st.num_nodes == 0:
             continue
-        ni = i_offset(store)
+        ny, ni = y_width(store), i_offset(store)
         vis_i, msk_i = st.vis[:, ni:], st.msk[:, ni:]
-        bar = st.x_true[:, ni:].to(dev) * vis_i + ibus_feat[store] * msk_i
-        ibus = torch.sinh(bar.clamp(-CLAMP, CLAMP)) * (st.scale[:, ni:].to(dev) + EPS)
-        ibus = ibus * st.act[:, ni:].to(ibus.dtype)
+        bar = st.x_true[:, ni:].to(dev) * vis_i + field_feat[store][:, ni:] * msk_i
+        total = torch.sinh(bar.clamp(-CLAMP, CLAMP)) * (st.scale[:, ni:].to(dev) + EPS)
+        total = total * st.act[:, ni:].to(total.dtype)
+        ibus = total
+        if spec.icomp:
+            vis_ic, msk_ic = st.vis[:, ny:ni], st.msk[:, ny:ni]
+            ic_bar = (
+                st.x_true[:, ny:ni].to(dev) * vis_ic
+                + field_feat[store][:, ny:ni] * msk_ic
+            )
+            ic = torch.sinh(ic_bar.clamp(-CLAMP, CLAMP)) * (
+                st.scale[:, ny:ni].to(dev) + EPS
+            )
+            ic = ic * st.act[:, ny:ni].to(ic.dtype)
+            ibus = total.clone()
+            col_r_all = physics._slot_to_col(store, dev)
+            ibus[:, col_r_all] -= ic[:, :spec.icomp]
+            ibus[:, col_r_all + FC] -= ic[:, spec.icomp:]
         es = batch[(store, "conn", "node")]
         comp, node, slot = es.edge_index[0], es.edge_index[1], es.slot
         col_r = (slot // FC) * 2 * FC + slot % FC

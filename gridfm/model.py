@@ -317,9 +317,9 @@ class EdgeStateGridFM(nn.Module):
                 # physically consistent solution — whatever variable is masked.
                 # Σ Ibus is O(1)/well-conditioned AND differentiable (dr/dIbus=1),
                 # so no detach; physics stays fp32. Re-normalize to bound compounding.
-                ibus_feat = {s: self._field_pred(s, hc[s])[:, i_offset(s):].float()
-                             for s in SPECS if batch[s].num_nodes}
-                res = nodal_current_residual(batch, ibus_feat)
+                field_feat = {s: self._field_pred(s, hc[s]).float()
+                              for s in SPECS if batch[s].num_nodes}
+                res = nodal_current_residual(batch, field_feat)
                 res = torch.asinh(res / (self.s_kcl.float() + 1e-12))
                 hn = self.node_norm(hn + self.kcl_feedback_mlp(res.to(hn.dtype)))
             for store in SPECS:

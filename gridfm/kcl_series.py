@@ -44,10 +44,7 @@ def kcl_decode_store(batch, preds, clamp: float, target: str):
             continue
         st = batch[store]
         ni = i_offset(store)
-        ibus = physics.decode_completed(
-            x_bar[store][:, ni:].double(), st.scale[:, ni:].double(),
-            st.msk[:, ni:], clamp,
-        )
+        ibus = physics.decoded_physical_currents(batch, x_bar, store, clamp)
         es = batch[(store, "conn", "node")]
         comp, node, slot = es.edge_index[0], es.edge_index[1], es.slot
         col_r = (slot // FC) * 2 * FC + slot % FC
@@ -66,8 +63,16 @@ def kcl_decode_store(batch, preds, clamp: float, target: str):
     share = 1.0 / target_count[node].clamp_min(1)
     val_r = -other_r[node] * share
     val_i = -other_i[node] * share
-    enc_r = torch.asinh(val_r / (scale[comp, col_r] + EPS))
-    enc_i = torch.asinh(val_i / (scale[comp, col_r + FC] + EPS))
+    physical = physics.decoded_physical_currents(batch, x_bar, target, clamp)
+    physical[comp, col_r] = val_r
+    physical[comp, col_r + FC] = val_i
+    terminal_feature = physics.physical_to_terminal_feature(
+        batch, x_bar, target, physical, clamp
+    )
+    enc_r = torch.asinh(terminal_feature[comp, col_r] / (scale[comp, col_r] + EPS))
+    enc_i = torch.asinh(
+        terminal_feature[comp, col_r + FC] / (scale[comp, col_r + FC] + EPS)
+    )
     take_r = st_t.msk[comp, ni + col_r]
     take_i = st_t.msk[comp, ni + col_r + FC]
     p[comp, ni + col_r] = torch.where(take_r, enc_r.to(p.dtype), p[comp, ni + col_r])
