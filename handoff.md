@@ -7,6 +7,7 @@
 - Injection masks now hide only PC slots on valid KCL nodes, globally at most one hidden component per conductor node.
 - Structural-safe v2 passes; seed73 `15316282_3` plus retries `15316386` are live; eval/select `15316387/388` follow.
 - Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
+- Pin-memory root cause is fixed in `scripts/train.py`: only train uses workers; seen/unseen/task evaluation is synchronous.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
 ## Next actions
 1. Package the passing structural scorecard with the winning raw fallback after `15316282/283/284` completes.

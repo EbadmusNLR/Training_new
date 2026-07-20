@@ -367,11 +367,14 @@ def main() -> int:
     train_loader = loader(
         bundle.train, batch_size, workers, True, samples, prefetch_factor
     )
+    # Evaluation is short and infrequent. Separate persistent pools here
+    # multiply worker/pin-memory threads across co-located GPU jobs and caused
+    # reproducible epoch-5 failures; keep both evaluation loaders synchronous.
     seen_loader = loader(
-        bundle.seen, batch_size, workers, False, prefetch_factor=prefetch_factor
+        bundle.seen, batch_size, 0, False, prefetch_factor=prefetch_factor
     )
     unseen_loader = loader(
-        bundle.unseen, batch_size, workers, False, prefetch_factor=prefetch_factor
+        bundle.unseen, batch_size, 0, False, prefetch_factor=prefetch_factor
     )
     # Task masks change between passes. Keep this loader synchronous so each
     # pass observes the current parent-dataset mask rather than a stale fork.
