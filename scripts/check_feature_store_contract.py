@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 
 import torch
+from torch_geometric.data import Batch
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT.parent
@@ -150,6 +151,19 @@ def main() -> int:
                             f"exact metadata disagrees with target Y: {cache.name} "
                             f"variant={variant} {family} max_rel={float(row_rel.max()):.3e}"
                         )
+    # PyG requires every store in a mixed-feeder batch to expose the same keys.
+    # Exercise all train caches in bounded chunks, including feeders where a
+    # requested passive family has zero rows.
+    for start in range(0, len(bundle.train.caches), 16):
+        samples = [
+            cache.sample(0) for cache in bundle.train.caches[start:start + 16]
+        ]
+        mixed = Batch.from_data_list(samples)
+        for family in ("line", "transformer"):
+            if not hasattr(mixed[family], "metadata_y_feat"):
+                raise AssertionError(
+                    f"mixed-feeder batch missing exact field for {family}"
+                )
     print(
         f"FEATURE_STORE_CONTRACT_OK feeders={len(bundle.train.caches)} "
         f"line={line_rows} transformer={transformer_rows} "

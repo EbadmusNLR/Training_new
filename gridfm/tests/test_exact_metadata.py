@@ -23,6 +23,7 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
     cache = SimpleNamespace(
         name="poison", stores={"line": line_info, "transformer": transformer_info}
     )
+    absent = SimpleNamespace(name="absent", stores={}, dtype=torch.float32)
 
     original_line = em.decode_line_metadata
     original_transformer = em.decode_transformer_metadata
@@ -40,12 +41,12 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
         em.decode_transformer_metadata = lambda _store: (
             transformer_yr, transformer_yi, torch.ones(1, dtype=torch.bool)
         )
-        em.attach_exact_metadata([cache], line=True, transformer=True)
+        em.attach_exact_metadata([cache, absent], line=True, transformer=True)
         before_line = line_info["derived_definitions"]["metadata_y_feat"][0].clone()
         before_transformer = transformer_info["derived_definitions"]["metadata_y_feat"][0].clone()
         line_info["tmpl"].fill_(-1e30)
         transformer_info["tmpl"].fill_(1e30)
-        em.attach_exact_metadata([cache], line=True, transformer=True)
+        em.attach_exact_metadata([cache, absent], line=True, transformer=True)
     finally:
         em.decode_line_metadata = original_line
         em.decode_transformer_metadata = original_transformer
@@ -54,6 +55,12 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
     assert torch.equal(
         before_transformer, transformer_info["derived_definitions"]["metadata_y_feat"][0]
     )
+    assert absent.empty_derived_definitions["line"]["metadata_y_feat"].shape == (
+        0, 30,
+    )
+    assert absent.empty_derived_definitions["transformer"][
+        "metadata_y_feat"
+    ].shape == (0, 156)
 
     line_pred = torch.randn(1, 38)
     transformer_pred = torch.randn(1, 180)

@@ -129,6 +129,19 @@ def attach_exact_metadata(
         requested.append("transformer")
     families = tuple(requested)
     counts = {family: 0 for family in families}
+    for cache in caches:
+        empty = getattr(cache, "empty_derived_definitions", None)
+        if empty is None:
+            empty = {}
+            cache.empty_derived_definitions = empty
+        for family in families:
+            empty[family] = {
+                "metadata_y_feat": torch.zeros(
+                    0, legacy_data.y_width(family),
+                    dtype=getattr(cache, "dtype", torch.float32),
+                ),
+                "metadata_y_supported": torch.zeros(0, dtype=torch.bool),
+            }
     if not families:
         results = []
     elif workers > 1 and len(caches) > 1:
