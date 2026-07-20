@@ -5,7 +5,7 @@
 - Current contract: stored `I_feat=I_bus+Icomp=YV`; only physical KCL uses `I_bus=I_feat-Icomp`.
 - Key commits: DG_FM_Training `4802d3b`, `bf468d7`, `08f4978`; Training_new `b24a1bc`, `5efdc02`, `a806505`.
 - Injection masks now hide only PC slots on valid KCL nodes, globally at most one hidden component per conductor node.
-- Structural-safe passes; seed73 raw fails (Icomp ~101%); retries/eval/select `15316386/16607/16734` remain live.
+- Structural-safe passes; seed73 raw fails (Icomp ~101%); all retries completed and eval/select `15316607/16734` remain queued.
 - Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
 - Pin-memory root cause is fixed in `scripts/train.py`: only train uses workers; seen/unseen/task evaluation is synchronous.
 - Foundation evaluation also defaults to zero workers; override only after measuring a larger split.
