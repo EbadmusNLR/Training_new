@@ -21,13 +21,20 @@ from .vsource_metadata import decode_vsource_metadata
 from .storage_metadata import decode_storage_metadata
 
 
-EXACT_METADATA_CACHE_VERSION = 1
+EXACT_METADATA_CACHE_VERSION = 2
 
 
 def _codec_fingerprint() -> str:
+    """Hash the cache schema and electrical decoders, not this orchestration file.
+
+    Changes to annotations, imports, cache I/O, or parallelism do not alter decoded
+    tensors and must not trigger a corpus-wide rebuild. Any intentional change to
+    shared feature assembly must bump ``EXACT_METADATA_CACHE_VERSION`` explicitly.
+    """
     digest = hashlib.sha256()
+    digest.update(f"exact-metadata-v{EXACT_METADATA_CACHE_VERSION}".encode())
     for path in (
-        Path(__file__), Path(__file__).with_name("line_metadata.py"),
+        Path(__file__).with_name("line_metadata.py"),
         Path(__file__).with_name("transformer_metadata.py"),
         Path(__file__).with_name("generator_metadata.py"),
         Path(__file__).with_name("shunt_metadata.py"),
@@ -36,6 +43,7 @@ def _codec_fingerprint() -> str:
         Path(__file__).with_name("vsource_metadata.py"),
         Path(__file__).with_name("storage_metadata.py"),
     ):
+        digest.update(path.name.encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
