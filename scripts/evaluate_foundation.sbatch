@@ -15,6 +15,10 @@ RUN_DIR="${RUN_DIR:?set RUN_DIR to the candidate run directory}"
 CKPT="${CKPT:-$RUN_DIR/best_foundation.pt}"
 SPLIT="${SPLIT:-unseen}"
 OUTPUT_DIR="${OUTPUT_DIR:-$RUN_DIR/task_reports_$SPLIT}"
+CONFIG_ARGS=()
+if [[ -n "${CONFIG:-}" ]]; then
+  CONFIG_ARGS=(--config "$CONFIG")
+fi
 mkdir -p "$OUTPUT_DIR"
 
 outputs=(pf.json pf_tree.json se_known.json param_one.json injection.json random_safe.json random.json)
@@ -30,13 +34,13 @@ fi
 run_task() {
   local task="$1"
   "$PYTHON_BIN" scripts/evaluate.py \
-    --ckpt "$CKPT" --split "$SPLIT" --task "$task" \
+    "${CONFIG_ARGS[@]}" --ckpt "$CKPT" --split "$SPLIT" --task "$task" \
     --output "$OUTPUT_DIR/$task.json"
 }
 
 run_task pf
 "$PYTHON_BIN" scripts/evaluate.py \
-  --ckpt "$CKPT" --split "$SPLIT" --task pf --tree-line --kcl-vsource \
+  "${CONFIG_ARGS[@]}" --ckpt "$CKPT" --split "$SPLIT" --task pf --tree-line --kcl-vsource \
   --output "$OUTPUT_DIR/pf_tree.json"
 run_task se_known
 run_task param_one

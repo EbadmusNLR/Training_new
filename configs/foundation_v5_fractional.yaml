@@ -1,0 +1,67 @@
+data:
+  root: /kfs2/projects/gogpt/Ebadmus/training_data_foundation_v5_fractional
+  cache_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/cache/foundation_v5_fractional
+  cast_float32: true
+  train_frac: 0.8
+  val_frac: 0.1
+  train_variants: 3
+  eval_variants: 1
+  samples_per_epoch: 1000000
+  num_workers: 6
+  exact_metadata_workers: 6
+  prefetch_factor: 2
+  feature_min_std: 1.0e-8
+mask:
+  mixture: {random_safe: 1.0}
+  p_voltage: 0.3
+  p_current: 0.15
+  p_icomp: 0.0
+  p_admittance: 0.0
+  p_terminal: 0.0
+  p_component: 0.0
+model:
+  hidden: 384
+  steps: 12
+  dropout: 0.0
+  normalize_features: true
+  use_electrical_pe: false
+  role_residual_heads: true
+  exact_line_metadata: true
+  exact_transformer_metadata: true
+  exact_generator_metadata: true
+loss:
+  feat_clamp: 20.0
+  lambda_recon: 1.0
+  recon_weights: {voltage: 10.0, y: 1.0, icomp: 1.0, ibus: 1.0}
+  lambda_edge: 0.02
+  lambda_drop: 0.02
+  lambda_elem: 2.0e-6
+  lambda_kcl: 1.0e-6
+  drop_floor: 1.0e-4
+  lambda_ibus_wape: 0.1
+  lambda_tree_line_wape: 0.0
+  tree_min_truth_abs: 0.0
+  balance_stores: 1.0
+  lambda_transformer_wape: 0.1
+train:
+  seed: 31
+  epochs: 36
+  batch_size: 8
+  lr: 1.0e-4
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_steps: 0
+  eval_every: 3
+  amp: bf16
+  out_dir: /kfs2/projects/gogpt/Ebadmus/Training_new/runs/foundation_v5_fractional
+  foundation_task_fields:
+    pf: [V, Ibus]
+    se_known: [V, Ibus]
+    param_one: [Y]
+    injection: [Icomp]
+    random_safe: [V, Y, Icomp, Ibus]
+    random: [V, Y, Icomp, Ibus]
+wandb:
+  enabled: true
+  project: Training_new_GridFM
+  tags: [foundation-v5, topology-grouped, exact-line-transformer-generator-y, fractional]
