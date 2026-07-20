@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from scripts.train import foundation_selection_score
+from scripts.train import evaluate_task_lenses, foundation_selection_score
 
 
 class FoundationSelectionTest(unittest.TestCase):
@@ -23,6 +23,30 @@ class FoundationSelectionTest(unittest.TestCase):
 
     def test_missing_required_task_fails_closed(self):
         self.assertTrue(math.isinf(foundation_selection_score({"pf": {}})))
+
+    def test_task_lenses_mutate_and_restore_the_live_dataset(self):
+        class Dataset:
+            mask_cfg = {"mixture": {"random_safe": 1.0}, "p_voltage": 0.3}
+
+        dataset = Dataset()
+        original = dataset.mask_cfg
+        metrics = evaluate_task_lenses(
+            dataset,
+            {"pf": ["V"], "param_one": ["Y"], "random": ["V", "Y"]},
+            lambda: (
+                next(iter(dataset.mask_cfg["mixture"])),
+                dataset.mask_cfg.get("p_admittance", 0.0),
+            ),
+        )
+        self.assertEqual(
+            metrics,
+            {
+                "pf": ("pf", 0.0),
+                "param_one": ("param_one", 0.0),
+                "random": ("random", 0.10),
+            },
+        )
+        self.assertIs(dataset.mask_cfg, original)
 
 
 if __name__ == "__main__":

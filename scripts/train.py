@@ -55,6 +55,36 @@ def foundation_selection_score(task_metrics: dict) -> float:
     return max(values) if values else float("inf")
 
 
+def evaluate_task_lenses(dataset, task_fields: dict, evaluate) -> dict:
+    """Evaluate each mask through a synchronous loader backed by ``dataset``.
+
+    A persistent-worker DataLoader owns a forked copy of the dataset, so parent
+    ``mask_cfg`` changes are invisible to it. The caller must therefore pass an
+    evaluator over a zero-worker loader.
+    """
+    original_mask = dataset.mask_cfg
+    metrics = {}
+    try:
+        for task in task_fields:
+            task_mask = {**original_mask, "mixture": {task: 1.0}}
+            if task == "random":
+                # Canonical all-field stress mask. The random-safe training
+                # config deliberately has zero base Y/Icomp probabilities.
+                task_mask.update({
+                    "p_voltage": 0.30,
+                    "p_current": 0.15,
+                    "p_icomp": 0.15,
+                    "p_admittance": 0.10,
+                    "p_terminal": 0.05,
+                    "p_component": 0.0,
+                })
+            dataset.mask_cfg = task_mask
+            metrics[task] = evaluate()
+    finally:
+        dataset.mask_cfg = original_mask
+    return metrics
+
+
 def loader(
     dataset, batch: int, workers: int, shuffle: bool,
     samples: int | None = None, prefetch_factor: int = 2,
@@ -289,6 +319,9 @@ def main() -> int:
     unseen_loader = loader(
         bundle.unseen, batch_size, workers, False, prefetch_factor=prefetch_factor
     )
+    # Task masks change between passes. Keep this loader synchronous so each
+    # pass observes the current parent-dataset mask rather than a stale fork.
+    task_loader = loader(bundle.unseen, batch_size, 0, False)
     steps = math.ceil(min(samples, len(bundle.train)) / batch_size)
     total_steps = max(1, int(cfg["train"]["epochs"]) * steps)
     warmup = min(int(cfg["train"].get("warmup_steps", 0)), total_steps // 10)
@@ -332,17 +365,11 @@ def main() -> int:
                 unseen_metrics = run_epoch(model, unseen_loader, cfg, device, s_kcl)
                 task_fields = cfg["train"].get("foundation_task_fields", {})
                 if task_fields:
-                    original_mask = bundle.unseen.mask_cfg
-                    try:
-                        for task in task_fields:
-                            bundle.unseen.mask_cfg = {
-                                **original_mask, "mixture": {task: 1.0}
-                            }
-                            task_metrics[task] = run_epoch(
-                                model, unseen_loader, cfg, device, s_kcl
-                            )
-                    finally:
-                        bundle.unseen.mask_cfg = original_mask
+                    task_metrics = evaluate_task_lenses(
+                        bundle.unseen,
+                        task_fields,
+                        lambda: run_epoch(model, task_loader, cfg, device, s_kcl),
+                    )
         eval_sec = time.perf_counter() - eval_started
         epoch_sec = time.perf_counter() - epoch_started
         rec = {
