@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
@@ -21,11 +22,20 @@ class DatasetBundle:
 
 
 def _names(dataset) -> set[str]:
-    return {dataset.caches[fi].name for fi, _ in dataset.items}
+    return {
+        getattr(dataset.caches[fi], "split_group", dataset.caches[fi].name)
+        for fi, _ in dataset.items
+    }
 
 
 def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetBundle:
     """Build feeder-disjoint splits and reject target-derived nominal fields."""
+    data_cfg = dict(data_cfg)
+    manifest = Path(__file__).with_name("topology_fingerprints.json")
+    if manifest.is_file():
+        data_cfg.setdefault("topology_manifest", str(manifest))
+        data_cfg.setdefault("split_seed", 42)
+        data_cfg.setdefault("require_topology_manifest_coverage", True)
     limit = data_cfg.get("limit_feeders")
     train, seen, unseen, test = build_datasets(data_cfg, mask_cfg, seed, limit=limit)
     attach_exact_metadata(

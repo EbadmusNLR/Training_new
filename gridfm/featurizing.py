@@ -26,13 +26,19 @@ build_master_json.py). Without that, no scaler could make currents comparable.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = MODULE_ROOT.parent
+sys.path[:0] = [str(MODULE_ROOT), str(PROJECT_ROOT)]
 
 # eps guards divide-by-zero only; nonzero is required for robust asinh scaling.
 FEAT_EPS = 1e-12
@@ -732,8 +738,10 @@ def _parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _scenario_baseline_json_path(root: Path, feeder_dir: Path) -> Path:
-    rel = feeder_dir.relative_to(root)
+def _scenario_baseline_json_path(
+    root: Path, feeder_dir: Path, source_root: Path | None = None,
+) -> Path:
+    rel = feeder_dir.relative_to(source_root or root)
     nested = root / "json" / rel / "master.json"
     if nested.is_file():
         return nested
@@ -757,6 +765,20 @@ def _scenario_families_by_store(payload: dict[str, Any]) -> dict[str, list[str]]
             for entry in entries
             if isinstance(entry, dict)
         ]
+    return out
+
+
+def _scenario_unified_families(raw_data) -> dict[str, list[str]]:
+    """One physical coordinate per component family; no baseline JSON needed."""
+    out = {}
+    for store_name, (dim, y_fields) in SCENARIO_Y_FIELDS.items():
+        if store_name not in raw_data.node_types:
+            continue
+        first = getattr(raw_data[store_name], y_fields[0][0], None)
+        if not hasattr(first, "shape"):
+            continue
+        family = "Line" if store_name == "line" else SPECS[store_name]["json_key"]
+        out[store_name] = [family] * int(first.shape[0])
     return out
 
 
@@ -849,25 +871,41 @@ def _scenario_build_feat_sample(raw_data, scaler: dict[str, Any], families: dict
     return feat_data
 
 
-def _scenario_featurize_one_feeder(root_str: str, feeder_dir_str: str, scaler: dict[str, Any], overwrite: bool) -> tuple[str, str]:
+def _scenario_featurize_one_feeder(
+    root_str: str, feeder_dir_str: str, out_root_str: str, json_root_str: str,
+    scaler: dict[str, Any], overwrite: bool, unified_line_scale: bool,
+) -> tuple[str, str]:
     import datakit.core.scenario_store as scenario_store
 
     root = Path(root_str)
     feeder_dir = Path(feeder_dir_str)
+    target_dir = Path(out_root_str) / feeder_dir.relative_to(root)
+    if (target_dir / "static.pt").is_file() and not overwrite:
+        target = scenario_store.FeederScenarios(target_dir)
+        if target.basis == "feat":
+            return str(feeder_dir.relative_to(root)), "cached"
     ds = scenario_store.FeederScenarios(feeder_dir)
-    if ds.basis == "feat" and not overwrite:
-        return feeder_dir.name, "cached"
     if ds.basis != "pu":
         raise ValueError(f"{feeder_dir.name}: expected pu-basis store, got {ds.basis}")
 
-    payload = json.loads(_scenario_baseline_json_path(root, feeder_dir).read_text())
-    families = _scenario_families_by_store(payload)
+    if unified_line_scale:
+        families = None
+    else:
+        payload = json.loads(
+            _scenario_baseline_json_path(
+                Path(json_root_str), feeder_dir, source_root=root
+            ).read_text()
+        )
+        families = _scenario_families_by_store(payload)
     writer = scenario_store.ScenarioWriter(basis="feat")
     for idx, variant_id in enumerate(ds.variant_ids):
         raw_data = ds[idx]
-        writer.add(int(variant_id), _scenario_build_feat_sample(raw_data, scaler, families))
-    writer.finalize(feeder_dir)
-    return feeder_dir.name, "ok"
+        row_families = _scenario_unified_families(raw_data) if families is None else families
+        writer.add(
+            int(variant_id), _scenario_build_feat_sample(raw_data, scaler, row_families)
+        )
+    writer.finalize(target_dir)
+    return str(feeder_dir.relative_to(root)), "ok"
 
 
 def _scenario_discover_feeders(root: Path) -> list[Path]:
@@ -883,14 +921,57 @@ def scenario_stores_main(argv: list[str]) -> int:
         )
     )
     ap.add_argument("--root", type=Path, required=True, help="scenario-store root containing feature_scaler.json and feeder stores")
+    ap.add_argument(
+        "--scaler", type=Path,
+        help="global scaler artifact; defaults to <root>/feature_scaler.json",
+    )
+    ap.add_argument(
+        "--out-root", type=Path,
+        help="write a separate feature corpus (recommended); default rewrites --root",
+    )
+    ap.add_argument(
+        "--json-root", type=Path,
+        help="root containing baseline json/<relative feeder>/master.json; defaults to --root",
+    )
+    ap.add_argument(
+        "--unified-line-scale", action="store_true",
+        help="use one Line scale for all line rows and avoid baseline-JSON family lookup",
+    )
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--limit", type=int, default=None, help="only the first N feeders")
+    ap.add_argument(
+        "--limit-per-corpus", type=int,
+        help="select this many hash-shuffled feeders from each top-level corpus",
+    )
+    ap.add_argument("--selection-seed", type=int, default=0)
     ap.add_argument("--overwrite", action="store_true", help="rewrite stores even if they already declare basis=feat")
     args = ap.parse_args(argv)
 
     root = args.root.resolve()
-    scaler = load_scaler_metadata(root / "feature_scaler.json")
+    scaler_path = (args.scaler or (root / "feature_scaler.json")).resolve()
+    scaler = load_scaler_metadata(scaler_path)
+    out_root = (args.out_root or root).resolve()
+    json_root = (args.json_root or root).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    if out_root != root:
+        shutil.copy2(scaler_path, out_root / "feature_scaler.json")
     feeders = _scenario_discover_feeders(root)
+    if args.limit is not None and args.limit_per_corpus is not None:
+        raise ValueError("use only one of --limit and --limit-per-corpus")
+    if args.limit_per_corpus is not None:
+        grouped: dict[str, list[Path]] = {}
+        for feeder in feeders:
+            corpus = feeder.relative_to(root).parts[0]
+            grouped.setdefault(corpus, []).append(feeder)
+        feeders = []
+        for corpus in sorted(grouped):
+            rows = sorted(
+                grouped[corpus],
+                key=lambda path: hashlib.sha256(
+                    f"{args.selection_seed}|{path.relative_to(root)}".encode()
+                ).digest(),
+            )
+            feeders.extend(rows[:args.limit_per_corpus])
     if args.limit is not None:
         feeders = feeders[: args.limit]
     if not feeders:
@@ -900,7 +981,11 @@ def scenario_stores_main(argv: list[str]) -> int:
     ok = cached = fail = 0
     with ProcessPoolExecutor(max_workers=max(1, int(args.workers))) as pool:
         future_map = {
-            pool.submit(_scenario_featurize_one_feeder, str(root), str(feeder), scaler, bool(args.overwrite)): feeder
+            pool.submit(
+                _scenario_featurize_one_feeder,
+                str(root), str(feeder), str(out_root), str(json_root), scaler,
+                bool(args.overwrite), bool(args.unified_line_scale),
+            ): feeder
             for feeder in feeders
         }
         for idx, fut in enumerate(as_completed(future_map), 1):

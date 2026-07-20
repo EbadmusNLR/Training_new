@@ -41,8 +41,8 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
             transformer_yr, transformer_yi, torch.ones(1, dtype=torch.bool)
         )
         em.attach_exact_metadata([cache], line=True, transformer=True)
-        before_line = line_info["definitions"]["metadata_y_feat"][0].clone()
-        before_transformer = transformer_info["definitions"]["metadata_y_feat"][0].clone()
+        before_line = line_info["derived_definitions"]["metadata_y_feat"][0].clone()
+        before_transformer = transformer_info["derived_definitions"]["metadata_y_feat"][0].clone()
         line_info["tmpl"].fill_(-1e30)
         transformer_info["tmpl"].fill_(1e30)
         em.attach_exact_metadata([cache], line=True, transformer=True)
@@ -50,9 +50,9 @@ def test_cached_features_ignore_target_and_apply_only_to_y() -> None:
         em.decode_line_metadata = original_line
         em.decode_transformer_metadata = original_transformer
 
-    assert torch.equal(before_line, line_info["definitions"]["metadata_y_feat"][0])
+    assert torch.equal(before_line, line_info["derived_definitions"]["metadata_y_feat"][0])
     assert torch.equal(
-        before_transformer, transformer_info["definitions"]["metadata_y_feat"][0]
+        before_transformer, transformer_info["derived_definitions"]["metadata_y_feat"][0]
     )
 
     line_pred = torch.randn(1, 38)
@@ -98,7 +98,35 @@ def test_unsupported_rows_fail_closed() -> None:
         em.decode_line_metadata = original
 
 
+def test_dynamic_definitions_are_variant_specific() -> None:
+    info = _info("line", 1, 38)
+    info["definitions"] = {
+        "sentinel": (None, (0, 1), (1, 1)),
+    }
+    cache = SimpleNamespace(
+        name="dynamic", stores={"line": info},
+        dyn=torch.tensor([[2.0], [7.0]], dtype=torch.float64).numpy(),
+    )
+    original = em.decode_line_metadata
+    try:
+        def decode(store):
+            value = float(store.sentinel.item())
+            yr = torch.zeros(1, 8, 8, dtype=torch.float64)
+            yi = torch.zeros_like(yr)
+            yr[:, :4, 4:] = -value * torch.eye(4)
+            return yr, yi, torch.ones(1, dtype=torch.bool)
+
+        em.decode_line_metadata = decode
+        em.attach_exact_metadata([cache], line=True, transformer=False)
+    finally:
+        em.decode_line_metadata = original
+    values = info["derived_definitions"]["metadata_y_feat"][1]
+    assert values.shape == (2, 1, 30)
+    assert not torch.equal(values[0], values[1])
+
+
 if __name__ == "__main__":
     test_cached_features_ignore_target_and_apply_only_to_y()
     test_unsupported_rows_fail_closed()
+    test_dynamic_definitions_are_variant_specific()
     print("EDGE_EXACT_METADATA_TEST_OK")

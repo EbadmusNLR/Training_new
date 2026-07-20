@@ -10,15 +10,20 @@ from .line_metadata import decode_line_metadata
 from .transformer_metadata import decode_transformer_metadata
 
 
-def _definition_store(info: dict, family: str) -> SimpleNamespace:
+def _definition_store(
+    info: dict, family: str, row=None,
+) -> SimpleNamespace:
     values = {}
     for name, (static, dynamic, _shape) in info.get("definitions", {}).items():
-        if dynamic is not None:
+        if static is not None:
+            values[name] = static
+        elif row is None:
             raise RuntimeError(
-                f"exact {family} metadata currently requires definition-static fields; "
-                f"{name} is dynamic"
+                f"exact {family} metadata requires a scenario row for dynamic field {name}"
             )
-        values[name] = static
+        else:
+            offset, numel = dynamic
+            values[name] = torch.from_numpy(row[offset:offset + numel]).reshape(_shape)
     return SimpleNamespace(**values)
 
 
@@ -26,8 +31,8 @@ def _feature(pu: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return torch.asinh(pu / (scale.double() + legacy_data.EPS)).to(scale.dtype)
 
 
-def _line_feature(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    yr, yi, supported = decode_line_metadata(_definition_store(info, "line"))
+def _line_feature(info: dict, row=None) -> tuple[torch.Tensor, torch.Tensor]:
+    yr, yi, supported = decode_line_metadata(_definition_store(info, "line", row))
     rows, cols = legacy_data.tri_rc(4)
     ys_r = -yr[:, :4, 4:]
     ys_i = -yi[:, :4, 4:]
@@ -39,9 +44,9 @@ def _line_feature(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
     return _feature(pu, info["scale"][:, :ny]), supported
 
 
-def _transformer_feature(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
+def _transformer_feature(info: dict, row=None) -> tuple[torch.Tensor, torch.Tensor]:
     yr, yi, supported = decode_transformer_metadata(
-        _definition_store(info, "transformer")
+        _definition_store(info, "transformer", row)
     )
     rows, cols = legacy_data.tri_rc(12)
     pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
@@ -50,7 +55,13 @@ def _transformer_feature(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def attach_exact_metadata(caches: list, line: bool, transformer: bool) -> None:
-    """Decode once per topology and attach small batch-ready feature tensors."""
+    """Predecode target-independent Y, retaining scenario-varying definitions.
+
+    Static definitions are decoded once per topology. If any required field is
+    dynamic, every scenario is decoded and the compact feature tensor is
+    indexed at sample time. This avoids both stale-Y reuse and decoder work in
+    every DataLoader epoch.
+    """
     if not line and not transformer:
         return
     requested = []
@@ -64,23 +75,36 @@ def attach_exact_metadata(caches: list, line: bool, transformer: bool) -> None:
             info = cache.stores.get(family)
             if info is None:
                 continue
-            feature, supported = decoder(info)
-            if feature.shape != (info["n"], legacy_data.y_width(family)):
-                raise RuntimeError(
-                    f"{cache.name}: invalid exact {family} feature shape {feature.shape}"
-                )
-            if not bool(supported.all()):
-                bad = int((~supported).sum())
-                raise RuntimeError(
-                    f"{cache.name}: exact {family} requested with {bad} unsupported rows"
-                )
-            info["definitions"]["metadata_y_feat"] = (
-                feature.contiguous(), None, tuple(feature.shape)
+            dynamic = any(
+                offset is not None
+                for _static, offset, _shape in info.get("definitions", {}).values()
             )
-            info["definitions"]["metadata_y_supported"] = (
-                supported.contiguous(), None, tuple(supported.shape)
-            )
-            counts[family] += int(supported.sum())
+            rows = [None] if not dynamic else list(cache.dyn)
+            features, support = [], []
+            for variant, row in enumerate(rows):
+                feature, supported = decoder(info, row)
+                expected = (info["n"], legacy_data.y_width(family))
+                if feature.shape != expected:
+                    raise RuntimeError(
+                        f"{cache.name}: invalid exact {family} feature shape "
+                        f"{feature.shape}, expected {expected}"
+                    )
+                if not bool(supported.all()):
+                    bad = int((~supported).sum())
+                    label = "static" if row is None else f"variant {variant}"
+                    raise RuntimeError(
+                        f"{cache.name}: exact {family} {label} has {bad} unsupported rows"
+                    )
+                features.append(feature.contiguous())
+                support.append(supported.contiguous())
+            derived = info.setdefault("derived_definitions", {})
+            if dynamic:
+                derived["metadata_y_feat"] = (None, torch.stack(features))
+                derived["metadata_y_supported"] = (None, torch.stack(support))
+            else:
+                derived["metadata_y_feat"] = (features[0], None)
+                derived["metadata_y_supported"] = (support[0], None)
+            counts[family] += int(sum(int(value.sum()) for value in support))
     for family, _ in requested:
         if counts[family] == 0:
             raise RuntimeError(f"exact {family} metadata requested but no rows were decoded")

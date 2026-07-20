@@ -161,8 +161,36 @@ def main() -> int:
     ap.add_argument("--device")
     ap.add_argument("--out", type=Path)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--seed", type=int)
+    ap.add_argument("--lr", type=float)
+    ap.add_argument("--batch-size", type=int)
+    ap.add_argument("--num-workers", type=int)
+    ap.add_argument("--init-ckpt", type=Path)
+    ap.add_argument("--scratch", action="store_true")
+    ap.add_argument(
+        "--exact-metadata", choices=("none", "line", "transformer", "both"),
+    )
     args = ap.parse_args()
     cfg = load_config(args.config)
+    if args.seed is not None:
+        cfg["train"]["seed"] = args.seed
+    if args.lr is not None:
+        cfg["train"]["lr"] = args.lr
+    if args.batch_size is not None:
+        cfg["train"]["batch_size"] = args.batch_size
+    if args.num_workers is not None:
+        cfg["data"]["num_workers"] = args.num_workers
+    if args.init_ckpt is not None and args.scratch:
+        ap.error("--init-ckpt and --scratch are mutually exclusive")
+    if args.init_ckpt is not None:
+        cfg["train"]["init_ckpt"] = str(args.init_ckpt)
+    elif args.scratch:
+        cfg["train"].pop("init_ckpt", None)
+    if args.exact_metadata is not None:
+        cfg["model"]["exact_line_metadata"] = args.exact_metadata in ("line", "both")
+        cfg["model"]["exact_transformer_metadata"] = args.exact_metadata in (
+            "transformer", "both"
+        )
     cfg["data"]["exact_line_metadata"] = bool(
         cfg["model"].get("exact_line_metadata", False)
     )
@@ -203,14 +231,19 @@ def main() -> int:
         model = model.double()
     elif model_dtype != "float32":
         raise ValueError(f"unsupported model.dtype={model_dtype}")
-    if bool(model_cfg.get("normalize_features")):
-        stats = fit_feature_stats(bundle.train, float(cfg["data"].get("feature_min_std", 1e-8)))
-        model.set_feature_stats(stats)
-        print("fitted train-only per-column feature normalization", flush=True)
     if cfg["train"].get("init_ckpt"):
         init = torch.load(Path(cfg["train"]["init_ckpt"]), map_location=device, weights_only=False)
         load_compatible_state(model, init["model"])
         print(f"initialized model from {cfg['train']['init_ckpt']}", flush=True)
+    if bool(model_cfg.get("normalize_features")):
+        # A warm checkpoint may have been trained under a different global
+        # scaler/corpus. Refit after loading so stale normalization buffers do
+        # not overwrite the train-only statistics of the current corpus.
+        stats = fit_feature_stats(
+            bundle.train, float(cfg["data"].get("feature_min_std", 1e-8))
+        )
+        model.set_feature_stats(stats)
+        print("fitted current train-only per-column feature normalization", flush=True)
     if cfg["train"].get("freeze_except_field_heads", False):
         for parameter in model.parameters():
             parameter.requires_grad_(False)

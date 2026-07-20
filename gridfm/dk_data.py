@@ -64,7 +64,12 @@ def _topology_groups():
 def _topology_group(feeder):
     p = Path(feeder)
     key = "/".join(p.parts[-2:])
-    return _topology_groups().get(key, "name:" + p.name)
+    groups = _topology_groups()
+    if key not in groups and key.startswith("minimal_component_v4/"):
+        legacy = "minimal_component/" + key.split("/", 1)[1]
+        if legacy in groups:
+            key = legacy
+    return groups.get(key, "name:" + p.name)
 
 
 def discover_feeders(root: str) -> list[str]:

@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Audit train/unseen/test leakage by content-derived topology fingerprints.
-
-The production split is feeder-name based. Vendored OpenDSS copies can therefore
-put the same physical graph under different paths into different splits. We report
-both an order-sensitive exact structural hash and a node-order-invariant
-Weisfeiler-Lehman-style hash of the heterogeneous bus/component incidence graph.
-"""
+"""Audit train/unseen/test leakage by content-derived topology fingerprints."""
 from __future__ import annotations
 
 import argparse
@@ -20,9 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT.parent
 sys.path.insert(0, str(PROJECT / "datakit"))
+sys.path.insert(0, str(PROJECT))
 sys.path.insert(0, str(ROOT))
 
-CORPORA = ("dss_data", "minimal_component", "new_dss_data", "SMART-DS_1000")
+CORPORA = ("dss_data", "minimal_component_v4", "new_dss_data", "SMART-DS_1000")
 
 
 def _h(parts):
@@ -34,7 +29,7 @@ def _h(parts):
 
 def fingerprint(row):
     corpus, feeder, split = row
-    from core.scenario_store import FeederScenarios
+    from datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, node_count, store_size
 
     try:
@@ -102,17 +97,26 @@ def summarize(rows, key):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument(
+        "--root", type=Path, default=PROJECT / "training_data",
+        help="root containing one directory per corpus",
+    )
+    ap.add_argument("--corpora", nargs="+", default=list(CORPORA))
     ap.add_argument("--json", default=None)
     ap.add_argument("--manifest", default=None,
                     help="write compact relative-feeder -> WL fingerprint mapping")
     ap.add_argument("--examples", type=int, default=12)
     a = ap.parse_args()
+    a.root = a.root.resolve()
 
-    from gridfm.dk_data import discover_feeders, split_feeders
+    from gridfm.dk_data import split_feeders
     items = []
-    for corpus in CORPORA:
-        root = str(PROJECT / "training_data" / corpus)
-        fs = discover_feeders(root)
+    for corpus in a.corpora:
+        root = a.root / corpus
+        fs = sorted(
+            str(path.parent) for path in root.rglob("static.pt")
+            if (path.parent / "dynamic.npy").is_file()
+        )
         split = split_feeders(fs, seed=42)
         for name, dirs in split.items():
             items.extend((corpus, d, name) for d in dirs)
@@ -136,7 +140,7 @@ def main():
         Path(a.json).write_text(json.dumps(rows, indent=2) + "\n")
     if a.manifest:
         mapping = {}
-        base = PROJECT / "training_data"
+        base = a.root.resolve()
         for r in rows:
             if "error" not in r:
                 mapping[str(Path(r["feeder"]).relative_to(base))] = r["wl"]
