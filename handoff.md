@@ -9,7 +9,7 @@
 - Next: finish the live chain, separate hybrid/raw scorecards, stabilize exact-cache fingerprinting, and remove only proven dead/generated remnants.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
 ## Next actions
-1. Make the validated structural-safe path the deployed identifiable scorecard while preserving raw-head diagnostics.
+1. Package the passing structural scorecard with the winning raw fallback after `15316282/283/284` completes.
 2. Monitor `15316282/283/284`; use only completed unseen scorecards and never select on test data.
 3. Update T99 and the v10 ledger row with final measured values and an explicit verdict.
 4. If structural-safe passes, make it the deployed identifiable reconstruction path while retaining raw heads as diagnostics/fallbacks.
