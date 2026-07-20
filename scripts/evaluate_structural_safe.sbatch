@@ -21,3 +21,5 @@ for task in pf se_known param_one injection random_safe; do
     --ckpt "$RUN_DIR/best_foundation.pt" --split unseen --task "$task" \
     --structural-safe --output "$OUT/$task.json"
 done
+"$PYTHON_BIN" scripts/structural_scorecard.py \
+  --reports-dir "$OUT" --output "$OUT/scorecard.json"
