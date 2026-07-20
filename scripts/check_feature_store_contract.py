@@ -96,18 +96,22 @@ def main() -> int:
             _assert_exact_conversion(
                 source_root / feeder.relative_to(root), feeder, scaler
             )
-    line_rows = transformer_rows = generator_rows = 0
+    row_counts = {family: 0 for family in ("line", "transformer", "generator", "capacitor", "reactor")}
     for feeder in feeders:
         meta = torch.load(feeder / "static.pt", map_location="cpu", weights_only=False)
         if meta.get("basis") != "feat":
             raise AssertionError(f"not feature basis: {feeder}")
         for entry in meta["layout"]:
             if entry["store"] == "line" and entry["field"] == "Ys_r_tri_feat":
-                line_rows += int(entry["shape"][0])
+                row_counts["line"] += int(entry["shape"][0])
             elif entry["store"] == "transformer" and entry["field"] == "Yxfmr_r_tri_feat":
-                transformer_rows += int(entry["shape"][0])
+                row_counts["transformer"] += int(entry["shape"][0])
             elif entry["store"] == "generator" and entry["field"] == "Ygen_r_tri_feat":
-                generator_rows += int(entry["shape"][0])
+                row_counts["generator"] += int(entry["shape"][0])
+            elif entry["store"] == "capacitor" and entry["field"] == "Ycap_r_tri_feat":
+                row_counts["capacitor"] += int(entry["shape"][0])
+            elif entry["store"] == "reactor" and entry["field"] == "Yreactor_r_tri_feat":
+                row_counts["reactor"] += int(entry["shape"][0])
     cfg = {
         "root": str(root), "cache_dir": str(root / ".contract_cache"),
         "cast_float32": True, "train_frac": 0.8, "val_frac": 0.1,
@@ -115,6 +119,7 @@ def main() -> int:
         "limit_feeders": len(feeders),
         "exact_line_metadata": True, "exact_transformer_metadata": True,
         "exact_generator_metadata": True,
+        "exact_capacitor_metadata": True, "exact_reactor_metadata": True,
         "exact_metadata_workers": args.workers,
     }
     mask = {
@@ -129,7 +134,7 @@ def main() -> int:
     for cache in bundle.train.caches:
         for variant in {0, cache.n_variants - 1}:
             sample = cache.sample(variant)
-            for family in ("line", "transformer", "generator"):
+            for family in ("line", "transformer", "generator", "capacitor", "reactor"):
                 if sample[family].num_nodes and not hasattr(
                     sample[family], "metadata_y_feat"
                 ):
@@ -162,14 +167,14 @@ def main() -> int:
             cache.sample(0) for cache in bundle.train.caches[start:start + 16]
         ]
         mixed = Batch.from_data_list(samples)
-        for family in ("line", "transformer", "generator"):
+        for family in ("line", "transformer", "generator", "capacitor", "reactor"):
             if not hasattr(mixed[family], "metadata_y_feat"):
                 raise AssertionError(
                     f"mixed-feeder batch missing exact field for {family}"
                 )
     print(
         f"FEATURE_STORE_CONTRACT_OK feeders={len(bundle.train.caches)} "
-        f"line={line_rows} transformer={transformer_rows} generator={generator_rows} "
+        + " ".join(f"{family}={count}" for family, count in row_counts.items()) + " "
         f"max_feature_rel={worst_feature_rel:.3e}"
     )
     return 0

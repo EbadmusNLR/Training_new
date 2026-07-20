@@ -57,7 +57,9 @@ class EdgeStateGridFM(nn.Module):
                  task_conditioning: bool = False, kcl_feedback: bool = False,
                  exact_line_metadata: bool = False,
                  exact_transformer_metadata: bool = False,
-                 exact_generator_metadata: bool = False):
+                 exact_generator_metadata: bool = False,
+                 exact_capacitor_metadata: bool = False,
+                 exact_reactor_metadata: bool = False):
         super().__init__()
         if aggregation not in {"mean", "local_sum", "sum"}:
             raise ValueError(
@@ -76,6 +78,8 @@ class EdgeStateGridFM(nn.Module):
         self.exact_line_metadata = exact_line_metadata
         self.exact_transformer_metadata = exact_transformer_metadata
         self.exact_generator_metadata = exact_generator_metadata
+        self.exact_capacitor_metadata = exact_capacitor_metadata
+        self.exact_reactor_metadata = exact_reactor_metadata
         # pu scale that normalizes the fed-back KCL residual; set from the corpus
         # current scaler by train.py/evaluate.py. asinh keeps it O(1).
         self.register_buffer("s_kcl", torch.tensor(1.0), persistent=False)
@@ -345,7 +349,8 @@ class EdgeStateGridFM(nn.Module):
             field_std[store] = self.feature_stats[store].std.to(preds[store].dtype)
         preds = apply_exact_metadata(
             batch, preds, self.exact_line_metadata, self.exact_transformer_metadata,
-            self.exact_generator_metadata,
+            self.exact_generator_metadata, self.exact_capacitor_metadata,
+            self.exact_reactor_metadata,
         )
         if return_aux:
             return preds, {

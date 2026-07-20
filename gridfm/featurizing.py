@@ -81,6 +81,14 @@ PASSIVE_DEFINITION_FIELDS: dict[str, tuple[str, ...]] = {
         "physics_params", "physics_mask", "physics_supported",
         "physics_schema_version", "terminal_kv_base", "system_base_mva",
     ),
+    "capacitor": (
+        "physics_params", "physics_mask", "physics_supported",
+        "physics_schema_version", "terminal_kv_base", "system_base_mva",
+    ),
+    "reactor": (
+        "physics_params", "physics_mask", "physics_supported",
+        "physics_schema_version", "terminal_kv_base", "system_base_mva",
+    ),
 }
 
 # Current datakit pu tensors are full matrices; DG_FM_Training consumes packed

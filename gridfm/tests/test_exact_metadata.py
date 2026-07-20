@@ -139,6 +139,51 @@ def test_unsupported_rows_fail_closed() -> None:
         em.decode_line_metadata = original
 
 
+def test_shunt_metadata_is_exact_and_target_independent() -> None:
+    capacitor_info = _info("capacitor", 1, 88)
+    reactor_info = _info("reactor", 1, 88)
+    cache = SimpleNamespace(
+        name="shunts", stores={"capacitor": capacitor_info, "reactor": reactor_info}
+    )
+    original = em.decode_shunt_metadata
+    yr = torch.diag_embed(torch.arange(1, 9, dtype=torch.float64)[None])
+    yi = -2 * yr
+    try:
+        em.decode_shunt_metadata = lambda _store, _family: (
+            yr, yi, torch.ones(1, dtype=torch.bool)
+        )
+        em.attach_exact_metadata(
+            [cache], line=False, transformer=False, capacitor=True, reactor=True
+        )
+    finally:
+        em.decode_shunt_metadata = original
+    cap = capacitor_info["derived_definitions"]["metadata_y_feat"][0]
+    reactor = reactor_info["derived_definitions"]["metadata_y_feat"][0]
+    assert cap.shape == reactor.shape == (1, 72)
+    cap_pred = torch.randn(1, 88)
+    reactor_pred = torch.randn(1, 88)
+    cap_current = cap_pred[:, 72:].clone()
+    reactor_current = reactor_pred[:, 72:].clone()
+    batch = {
+        "capacitor": SimpleNamespace(
+            num_nodes=1, metadata_y_feat=cap,
+            metadata_y_supported=torch.ones(1, dtype=torch.bool),
+        ),
+        "reactor": SimpleNamespace(
+            num_nodes=1, metadata_y_feat=reactor,
+            metadata_y_supported=torch.ones(1, dtype=torch.bool),
+        ),
+    }
+    out = em.apply_exact_metadata(
+        batch, {"capacitor": cap_pred, "reactor": reactor_pred},
+        False, False, False, True, True,
+    )
+    assert torch.equal(out["capacitor"][:, :72], cap)
+    assert torch.equal(out["reactor"][:, :72], reactor)
+    assert torch.equal(out["capacitor"][:, 72:], cap_current)
+    assert torch.equal(out["reactor"][:, 72:], reactor_current)
+
+
 def test_unused_definitions_are_not_collated() -> None:
     line_info = _info("line", 1, 38)
     line_info["definition_values"] = {"dynamic": torch.ones(2, 1).numpy()}
@@ -249,6 +294,7 @@ def test_disk_cache_reuses_and_invalidates_source() -> None:
 if __name__ == "__main__":
     test_cached_features_ignore_target_and_apply_only_to_y()
     test_unsupported_rows_fail_closed()
+    test_shunt_metadata_is_exact_and_target_independent()
     test_unused_definitions_are_not_collated()
     test_dynamic_definitions_are_variant_specific()
     test_parallel_predecode_matches_serial()

@@ -112,6 +112,12 @@ def main() -> int:
     cfg["data"]["exact_generator_metadata"] = bool(
         cfg["model"].get("exact_generator_metadata", False)
     )
+    cfg["data"]["exact_capacitor_metadata"] = bool(
+        cfg["model"].get("exact_capacitor_metadata", False)
+    )
+    cfg["data"]["exact_reactor_metadata"] = bool(
+        cfg["model"].get("exact_reactor_metadata", False)
+    )
     bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))

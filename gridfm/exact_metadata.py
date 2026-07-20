@@ -14,6 +14,7 @@ from .legacy import data as legacy_data
 from .line_metadata import decode_line_metadata
 from .transformer_metadata import decode_transformer_metadata
 from .generator_metadata import decode_generator_metadata
+from .shunt_metadata import decode_shunt_metadata
 
 
 EXACT_METADATA_CACHE_VERSION = 1
@@ -25,6 +26,7 @@ def _codec_fingerprint() -> str:
         Path(__file__), Path(__file__).with_name("line_metadata.py"),
         Path(__file__).with_name("transformer_metadata.py"),
         Path(__file__).with_name("generator_metadata.py"),
+        Path(__file__).with_name("shunt_metadata.py"),
     ):
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -103,11 +105,33 @@ def _generator_feature(
     return _feature(pu, info["scale"][:, :ny]), supported
 
 
+def _shunt_feature(
+    info: dict, family: str, row=None, variant: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    yr, yi, supported = decode_shunt_metadata(
+        _definition_store(info, family, row, variant), family
+    )
+    rows, cols = legacy_data.tri_rc(8)
+    pu = torch.cat((yr[:, rows, cols], yi[:, rows, cols]), dim=1)
+    ny = legacy_data.y_width(family)
+    return _feature(pu, info["scale"][:, :ny]), supported
+
+
+def _capacitor_feature(info: dict, row=None, variant: int | None = None):
+    return _shunt_feature(info, "capacitor", row, variant)
+
+
+def _reactor_feature(info: dict, row=None, variant: int | None = None):
+    return _shunt_feature(info, "reactor", row, variant)
+
+
 def _decode_cache(cache, families: tuple[str, ...]) -> dict:
     decoders = {
         "line": _line_feature,
         "transformer": _transformer_feature,
         "generator": _generator_feature,
+        "capacitor": _capacitor_feature,
+        "reactor": _reactor_feature,
     }
     result = {}
     for family in families:
@@ -202,7 +226,8 @@ def _decode_cache_index(
 
 def attach_exact_metadata(
     caches: list, line: bool, transformer: bool, workers: int = 0,
-    generator: bool = False, disk_cache_dir=None,
+    generator: bool = False, disk_cache_dir=None, capacitor: bool = False,
+    reactor: bool = False,
 ) -> None:
     """Predecode target-independent Y, retaining scenario-varying definitions.
 
@@ -218,6 +243,10 @@ def attach_exact_metadata(
         requested.append("transformer")
     if generator:
         requested.append("generator")
+    if capacitor:
+        requested.append("capacitor")
+    if reactor:
+        requested.append("reactor")
     families = tuple(requested)
     counts = {family: 0 for family in families}
     cache_hits = cache_misses = 0
@@ -280,7 +309,7 @@ def attach_exact_metadata(
     # Drop unused families too so generic/ablation arms do not collate and copy
     # target-independent fp64 metadata to the GPU on every training batch.
     for cache in caches:
-        for family in ("line", "transformer", "generator"):
+        for family in ("line", "transformer", "generator", "capacitor", "reactor"):
             info = cache.stores.get(family)
             if info is not None:
                 info["definitions"] = {}
@@ -298,11 +327,12 @@ def attach_exact_metadata(
 
 def apply_exact_metadata(
     batch, preds: dict[str, torch.Tensor], line: bool, transformer: bool,
-    generator: bool = False,
+    generator: bool = False, capacitor: bool = False, reactor: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Replace only supported passive-Y predictions; never read x_true."""
     for family, enabled in (
         ("line", line), ("transformer", transformer), ("generator", generator),
+        ("capacitor", capacitor), ("reactor", reactor),
     ):
         if not enabled or batch[family].num_nodes == 0:
             continue
