@@ -39,11 +39,27 @@ def copy_reports(source: Path, target: Path, split: str) -> None:
         shutil.copy2(optional, target / optional.name)
 
 
+def copy_structural_reports(source: Path, target: Path) -> dict:
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("pf.json", "se_known.json", "param_one.json", "injection.json",
+                 "random_safe.json", "scorecard.json"):
+        path = source / name
+        if not path.is_file():
+            raise SystemExit(f"missing structural report: {path}")
+        shutil.copy2(path, target / name)
+    scorecard = json.loads((source / "scorecard.json").read_text())
+    if scorecard.get("pass") is not True:
+        raise SystemExit("structural scorecard does not pass")
+    return scorecard
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--selection", type=Path, required=True)
     ap.add_argument("--seen-reports", type=Path, required=True)
     ap.add_argument("--test-reports", type=Path, required=True)
+    ap.add_argument("--structural-reports", type=Path,
+                    help="passing unseen identifiable-hybrid reports")
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
     receipt = json.loads(args.selection.read_text())
@@ -66,15 +82,23 @@ def main() -> int:
     copy_reports(unseen, args.output / "unseen", "unseen")
     copy_reports(args.seen_reports, args.output / "seen", "seen")
     copy_reports(args.test_reports, args.output / "test", "test")
+    structural = None
+    if args.structural_reports:
+        structural = copy_structural_reports(
+            args.structural_reports, args.output / "structural_unseen"
+        )
     shutil.copy2(args.selection, args.output / "selection.json")
     manifest = {
-        "model": "EdgeStateGridFM H384 role-balanced foundation",
+        "model": "GridFM identifiable structural reconstruction with learned fallback",
         "checkpoint_sha256": selected["checkpoint_sha256"],
         "selection_contract": receipt["selection_contract"],
         "unseen_checks_pct": selected["checks_pct"],
-        "physics_contract": "Ibus + Icomp = YV; KCL sums Ibus",
+        "physics_contract": "stored Ifeat=Ibus+Icomp=YV; physical KCL sums Ifeat-Icomp",
+        "structural_checks_pct": structural["checks_pct"] if structural else None,
         "inference": {
-            "external_power_flow_solver": False,
+            "fp64_power_flow_solver": structural is not None,
+            "exact_definition_Y": structural is not None,
+            "unique_Icomp_KCL_decoder": structural is not None,
             "slack_voltage_clamped": True,
             "tree_line_current_available": True,
             "stable_Yh_shunt_available": True,
