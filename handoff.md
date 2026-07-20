@@ -8,3 +8,13 @@
 - Live: structural-safe v2 `15316280`; corrected four-seed train/eval/select `15316282/283/284` (some array tasks may wait for H100s).
 - Next: record v2 Icomp/random-safe results, finish the live chain, then stabilize exact-cache fingerprinting and remove only proven dead/generated remnants.
 - Preserve unrelated edits; `handoff.md` itself was intentionally emptied before this rewrite, and every validated major change must be committed.
+## Next actions
+1. Monitor `15316280`; verify nonground Load Icomp and aggregate `random_safe` are below the 1% gate.
+2. Monitor `15316282/283/284`; use only completed unseen scorecards and never select on test data.
+3. Update T99 and the v10 ledger row with final measured values and an explicit verdict.
+4. If structural-safe passes, make it the deployed identifiable reconstruction path while retaining raw heads as diagnostics/fallbacks.
+5. Vectorize `kcl_decode_icomp` and replace the dense PF solve with a sparse fp64 implementation before large-feeder scaling.
+6. Decouple exact-cache validity from wrapper-only source edits; retain explicit schema and decoder fingerprints.
+7. Rerun unit, mask, structural, and topology-general gates after those speed changes; poison hidden targets again.
+8. Clean canceled/invalid v10 run directories and logs, stale cache temporaries, and proven dead probes without touching training corpora.
+9. Commit each validated cleanup/change separately and leave all nested repositories clean for handoff.
