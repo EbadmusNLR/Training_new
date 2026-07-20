@@ -215,6 +215,7 @@ def audit_target(
     holdout: int,
     selection: str = "prefix",
     candidates: int | None = None,
+    component_index: int = 0,
 ):
     scenarios = FeederScenarios(fdir)
     candidates = int(candidates or max(k_list))
@@ -230,7 +231,11 @@ def audit_target(
     y0_all = _complex_y(d0, s_target)
     if y0_all is None:
         return None
-    c = 0
+    c = component_index if component_index >= 0 else y0_all.shape[0] + component_index
+    if c < 0 or c >= y0_all.shape[0]:
+        raise IndexError(
+            f"component_index={component_index} outside {s_target} count={y0_all.shape[0]}"
+        )
     edges = elem_edges(d0, s_target, c)
     if not edges:
         return None
@@ -431,6 +436,8 @@ def main() -> int:
     parser.add_argument("--selection", choices=("prefix", "pivot"), default="prefix")
     parser.add_argument("--candidates", type=int, default=None,
                         help="candidate snapshots available to the selector; defaults to max K")
+    parser.add_argument("--component-index", type=int, default=0,
+                        help="component row to audit; use -1 for the last rendered target")
     parser.add_argument("--output")
     args = parser.parse_args()
     k_list = tuple(sorted(set(args.k)))
@@ -446,7 +453,8 @@ def main() -> int:
         for target in ("line", "transformer"):
             try:
                 audit = audit_target(fdir, target, k_list, args.holdout,
-                                     selection=args.selection, candidates=args.candidates)
+                                     selection=args.selection, candidates=args.candidates,
+                                     component_index=args.component_index)
             except Exception as exc:
                 failure = {"feeder": fdir, "target": target, "error": f"{type(exc).__name__}: {exc}"}
                 payload["failures"].append(failure)
