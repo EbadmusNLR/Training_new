@@ -13,6 +13,12 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def ifeat(report: dict) -> float:
+    """Read the terminal-feature metric, with legacy Ibus-named receipt support."""
+    key = "Ifeat_wape_pct" if "Ifeat_wape_pct" in report else "Ibus_wape_pct"
+    return float(report[key])
+
+
 def worst_scale(report: dict, role: str) -> dict:
     rows = [
         {"field": key.removesuffix("_wape_pct"), "pct": float(value)}
@@ -42,26 +48,26 @@ def main() -> int:
     random_safe = load(root / "random_safe.json")
     checks = {
         "pf_voltage": float(pf["V_wape_pct"]),
-        "pf_current_direct": float(pf["Ibus_wape_pct"]),
+        "pf_Ifeat_direct": ifeat(pf),
         "se_voltage": float(se["V_wape_pct"]),
-        "se_current": float(se["Ibus_wape_pct"]),
+        "se_Ifeat": ifeat(se),
         "parameter_Y": float(param["Y_wape_pct"]),
         "injection_Icomp": float(injection["Icomp_wape_pct"]),
         "worst_Y_scale_field": worst_scale(param, "Y")["pct"],
         "worst_Icomp_scale_field": worst_scale(injection, "Icomp")["pct"],
         "random_safe_voltage": float(random_safe["V_wape_pct"]),
-        "random_safe_current": float(random_safe["Ibus_wape_pct"]),
+        "random_safe_Ifeat": ifeat(random_safe),
         "random_safe_Y": float(random_safe["Y_wape_pct"]),
         "random_safe_Icomp": float(random_safe["Icomp_wape_pct"]),
     }
     diagnostics = {
         # The tree decoder is radial-only; retaining it as a diagnostic must
         # not make topology-general acceptance depend on a radial assumption.
-        "pf_current_structural": float(pf_tree["Ibus_wape_pct"]),
+        "pf_Ifeat_tree_radial": ifeat(pf_tree),
         # Joint arbitrary deletion is intentionally underdetermined from one
         # snapshot. random_safe is the identifiable acceptance curriculum.
         "random_voltage": float(random["V_wape_pct"]),
-        "random_current": float(random["Ibus_wape_pct"]),
+        "random_Ifeat": ifeat(random),
         "random_Y": float(random["Y_wape_pct"]),
         "random_Icomp": float(random["Icomp_wape_pct"]),
     }
