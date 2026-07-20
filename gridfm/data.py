@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 import torch
 
@@ -38,11 +39,22 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
         data_cfg.setdefault("require_topology_manifest_coverage", True)
     limit = data_cfg.get("limit_feeders")
     train, seen, unseen, test = build_datasets(data_cfg, mask_cfg, seed, limit=limit)
+    exact_started = time.perf_counter()
+    exact_line = bool(data_cfg.get("exact_line_metadata", False))
+    exact_transformer = bool(data_cfg.get("exact_transformer_metadata", False))
+    exact_workers = int(data_cfg.get("exact_metadata_workers", 0))
     attach_exact_metadata(
         train.caches,
-        bool(data_cfg.get("exact_line_metadata", False)),
-        bool(data_cfg.get("exact_transformer_metadata", False)),
+        exact_line,
+        exact_transformer,
+        exact_workers,
     )
+    if exact_line or exact_transformer:
+        print(
+            f"exact metadata prepared in {time.perf_counter() - exact_started:.1f}s "
+            f"with workers={exact_workers}",
+            flush=True,
+        )
     train_names, seen_names = _names(train), _names(seen)
     unseen_names, test_names = _names(unseen), _names(test)
     if train_names != seen_names:

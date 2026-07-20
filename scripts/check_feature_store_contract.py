@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+import os
 
 import torch
 
@@ -18,6 +19,7 @@ from datakit.core.scenario_store import FeederScenarios  # noqa: E402
 from gridfm.featurizing import (  # noqa: E402
     _scenario_build_feat_sample, _scenario_unified_families,
 )
+from gridfm.legacy import data as legacy_data  # noqa: E402
 
 
 def _assert_exact_conversion(source: Path, target: Path, scaler: dict) -> None:
@@ -62,6 +64,7 @@ def main() -> int:
         help="pu stores to compare exactly against the feature conversion",
     )
     parser.add_argument("--limit", type=int, default=2)
+    parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument(
         "--limit-per-corpus", type=int,
         help="check this many stores from each top-level corpus",
@@ -108,6 +111,7 @@ def main() -> int:
         "train_variants": 2, "eval_variants": 1,
         "limit_feeders": len(feeders),
         "exact_line_metadata": True, "exact_transformer_metadata": True,
+        "exact_metadata_workers": args.workers,
     }
     mask = {
         "mixture": {"pf": 1.0}, "p_voltage": 0.3, "p_current": 0.15,
@@ -117,6 +121,7 @@ def main() -> int:
     bundle = build_strict_datasets(cfg, mask, seed=0)
     if not bundle.train.caches:
         raise AssertionError("self-contained dataset build returned no caches")
+    worst_feature_rel = 0.0
     for cache in bundle.train.caches:
         for variant in {0, cache.n_variants - 1}:
             sample = cache.sample(variant)
@@ -127,9 +132,28 @@ def main() -> int:
                     raise AssertionError(
                         f"missing exact feature: {cache.name} variant={variant} {family}"
                     )
+                if sample[family].num_nodes:
+                    ny = legacy_data.y_width(family)
+                    decoded = sample[family].metadata_y_feat
+                    target = sample[family].x_true[:, :ny]
+                    row_rel = (
+                        (decoded.double() - target.double()).norm(dim=1)
+                        / target.double().norm(dim=1).clamp_min(1e-12)
+                    )
+                    worst_feature_rel = max(
+                        worst_feature_rel, float(row_rel.max().item())
+                    )
+                    if not torch.allclose(
+                        decoded, target, rtol=2e-5, atol=2e-6
+                    ):
+                        raise AssertionError(
+                            f"exact metadata disagrees with target Y: {cache.name} "
+                            f"variant={variant} {family} max_rel={float(row_rel.max()):.3e}"
+                        )
     print(
         f"FEATURE_STORE_CONTRACT_OK feeders={len(bundle.train.caches)} "
-        f"line={line_rows} transformer={transformer_rows}"
+        f"line={line_rows} transformer={transformer_rows} "
+        f"max_feature_rel={worst_feature_rel:.3e}"
     )
     return 0
 

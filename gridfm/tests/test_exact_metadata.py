@@ -98,6 +98,15 @@ def test_unsupported_rows_fail_closed() -> None:
         em.decode_line_metadata = original
 
 
+def test_unused_definitions_are_not_collated() -> None:
+    line_info = _info("line", 1, 38)
+    line_info["definition_values"] = {"dynamic": torch.ones(2, 1).numpy()}
+    cache = SimpleNamespace(name="generic", stores={"line": line_info})
+    em.attach_exact_metadata([cache], line=False, transformer=False)
+    assert line_info["definitions"] == {}
+    assert line_info["definition_values"] == {}
+
+
 def test_dynamic_definitions_are_variant_specific() -> None:
     info = _info("line", 1, 38)
     info["definitions"] = {
@@ -106,6 +115,7 @@ def test_dynamic_definitions_are_variant_specific() -> None:
     cache = SimpleNamespace(
         name="dynamic", stores={"line": info},
         dyn=torch.tensor([[2.0], [7.0]], dtype=torch.float64).numpy(),
+        n_variants=2,
     )
     original = em.decode_line_metadata
     try:
@@ -125,8 +135,57 @@ def test_dynamic_definitions_are_variant_specific() -> None:
     assert not torch.equal(values[0], values[1])
 
 
+def test_parallel_predecode_matches_serial() -> None:
+    def make_caches(prefix):
+        caches = []
+        for index in range(2):
+            info = _info("line", 1, 38)
+            info["definitions"] = {
+                "sentinel": (torch.tensor([[float(index + 1)]]), None, (1, 1)),
+            }
+            caches.append(
+                SimpleNamespace(name=f"{prefix}-{index}", stores={"line": info})
+            )
+        return caches
+
+    serial = make_caches("serial")
+    parallel = make_caches("parallel")
+    original = em.decode_line_metadata
+    try:
+        def decode(store):
+            value = float(store.sentinel.item())
+            yr = torch.zeros(1, 8, 8, dtype=torch.float64)
+            yi = torch.zeros_like(yr)
+            yr[:, :4, 4:] = -value * torch.eye(4)
+            return yr, yi, torch.ones(1, dtype=torch.bool)
+
+        em.decode_line_metadata = decode
+        em.attach_exact_metadata(
+            serial, line=True, transformer=False, workers=0
+        )
+        em.attach_exact_metadata(
+            parallel, line=True, transformer=False, workers=2
+        )
+    finally:
+        em.decode_line_metadata = original
+    for serial_cache, parallel_cache in zip(serial, parallel):
+        serial_value = serial_cache.stores["line"]["derived_definitions"][
+            "metadata_y_feat"
+        ][0]
+        parallel_value = parallel_cache.stores["line"]["derived_definitions"][
+            "metadata_y_feat"
+        ][0]
+        assert torch.equal(serial_value, parallel_value)
+    assert not torch.equal(
+        serial[0].stores["line"]["derived_definitions"]["metadata_y_feat"][0],
+        serial[1].stores["line"]["derived_definitions"]["metadata_y_feat"][0],
+    )
+
+
 if __name__ == "__main__":
     test_cached_features_ignore_target_and_apply_only_to_y()
     test_unsupported_rows_fail_closed()
+    test_unused_definitions_are_not_collated()
     test_dynamic_definitions_are_variant_specific()
+    test_parallel_predecode_matches_serial()
     print("EDGE_EXACT_METADATA_TEST_OK")

@@ -8,6 +8,7 @@ data:
   eval_variants: 1
   samples_per_epoch: 1000000
   num_workers: 6
+  exact_metadata_workers: 6
   prefetch_factor: 2
   feature_min_std: 1.0e-8
 mask:
