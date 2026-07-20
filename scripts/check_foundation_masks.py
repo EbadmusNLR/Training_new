@@ -57,6 +57,9 @@ def assert_identifiable_injection_mask(data) -> None:
             if slot >= spec.icomp:
                 continue
             if bool(hidden[comp, slot] or hidden[comp, spec.icomp + slot]):
+                assert bool(data["node"].kcl_mask[node]), (
+                    f"injection masked slot at non-KCL node {node}"
+                )
                 previous = hidden_at_node.setdefault(node, (store, comp))
                 assert previous == (store, comp), (
                     f"node {node} has hidden Icomp from {previous} and {(store, comp)}"
