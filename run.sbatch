@@ -24,6 +24,9 @@
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export PYTHONUNBUFFERED=1
+# datakit is a sibling repo on PYTHONPATH, not pip-installed. Without this every run
+# dies at import with ModuleNotFoundError: No module named 'datakit'.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 PYTHON_BIN="${PYTHON_BIN:-/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python}"
 
 # Config argument: bare name gets configs/ prefix and .yaml suffix.
