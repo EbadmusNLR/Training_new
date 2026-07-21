@@ -90,16 +90,22 @@ echo "[$(date '+%F %T')] stage 2/3: rewrite pu stores into feature space"
     --workers "${WORKERS}" \
     "${LIMIT_ARGS[@]}"
 
-# The gate checks EVERY feeder by default. A sampled gate is worse than useless here:
-# it demands all nine exact families decode a row, but rare families are concentrated in
-# a handful of feeders (in dss_data, generator lives in 3 of 77, storage in 4), so a small
-# sample reports "no rows were decoded" for data that is entirely correct. Per-feeder
-# exact decode is cached on disk, so gating the whole corpus is affordable.
+# Gate a bounded sample PER CORPUS -- not two stores, and not all 3190.
+#
+# Two stores is worse than useless: the gate demands all nine exact families decode a
+# row, but rare families sit in a handful of feeders (generator in 3 of 77 dss_data
+# feeders, storage in 4), so a tiny sample reports "no rows were decoded" for data that
+# is entirely correct. 120 per corpus covers every family with margin.
+#
+# All 3190 does not work either: attach_exact_metadata holds per-feeder state in a
+# ThreadPoolExecutor, and at full corpus that run reached 136GB RSS with CPULoad 1.37 --
+# it degenerates to one core and risks OOM. The same gate at 120/corpus used 1.9GB.
+# Bound the work, not the cores: this job always takes the whole node.
 echo "[$(date '+%F %T')] stage 3/3: exact-conversion + exact-Y contract gate"
 "${PYTHON_BIN}" -u scripts/check_feature_store_contract.py \
     --root "${OUT}" \
     --source-root "${SRC}" \
-    --limit "${GATE_LIMIT:-1000000}" \
+    --limit-per-corpus "${GATE_PER_CORPUS:-120}" \
     --workers "${WORKERS}"
 
 echo "[$(date '+%F %T')] feature store COMPLETE: ${OUT}"
