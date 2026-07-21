@@ -107,8 +107,8 @@ PASSIVE_DEFINITION_FIELDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Current datakit pu tensors are full matrices; DG_FM_Training consumes packed
-# lower triangles in these exact field names and dimensions.
+# Current datakit pu tensors are full matrices; Training_new's strict loader
+# consumes packed lower triangles in these exact field names and dimensions.
 SCENARIO_Y_FIELDS: dict[str, tuple[int, tuple[tuple[str, str, str], ...]]] = {
     "line": (4, (
         ("Ys_r_pu", "Ys_r_tri_feat", "r"),

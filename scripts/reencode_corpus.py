@@ -39,7 +39,7 @@ for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXP
 import numpy as np
 import torch
 
-# Pinned schema: keep this experiment independent of a dirty DG_FM_DK checkout.
+# Pinned schema: keep this experiment independent of external exporter edits.
 FEAT_EPS = 1e-12
 SPECS = {
     "line": {"json_key": "Line", "y_fields": ("Ys_r_tri", "Ys_i_tri", "Yh_i_tri"), "y_dim": 4, "icomp": 0},

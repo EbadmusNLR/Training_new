@@ -13,11 +13,11 @@ The non-negotiable inference contract is:
 - Content-derived topology groups, not names or samples, define unseen/test splits;
   structurally equivalent vendored copies can never cross split boundaries.
 
-The first architecture is `EdgeStateGridFM`: recurrent bipartite message passing over
-component-terminal incidences, explicit terminal voltage proposals, a graph-global state,
-and direct complex line-drop supervision. It reuses the already validated scenario-store
-decoder and float64 physics functions from `DG_FM_Training`; learned model code and strict
-evaluation live here.
+The current path is the datakit-backed four-array GridFM: datakit owns the source
+export and device-definition metadata, while Training_new owns strict splits,
+exact metadata integration, learned heads, and evaluation. The legacy
+`DG_FM_Training` bridge is still used only for the older strict loader/helpers; it
+is not the data authority.
 
 ## Quick gates
 
@@ -62,14 +62,10 @@ Nontrivial training must run on an allocated compute node through Slurm. Every p
 checkpoint must report both held operating points on known feeders and entirely held-out
 feeders using split-level WAPE percentages.
 
-## Selected foundation result
+## Current foundation result
 
-E51 is selected on unseen feeders. It reaches PF `1.691% V / 9.753% Ibus` direct
-(`6.557%` structural), known-injection SE `1.876% / 10.713%`, Y `0.843%`, and Icomp
-`0.479%`. Worst scale-normalized Y/Icomp fields are `2.628% / 1.200%`. The safe random
-mixture is `1.745% / 9.899% / 0.832% / 0.490%` for V/Ibus/Y/Icomp. It does not pass the
-1% all-task gate; the scorecard records every failure rather than promoting a false claim.
-On the fixed held-out test it reaches `2.106% V / 6.535% Ibus` with the stable hybrid
-branch-current policy, Y `0.918%`, and Icomp `0.481%`. The packaged artifact is
-`runs/foundation_best`; checkpoint SHA-256 is
-`1c9a97b9183e0527c42439e8d052135bdaef83d3e9598f7ab35961b5a821ee17`.
+The deployed identifiable path is structural-safe: exact device-definition Y,
+fp64 voltage solve, `I_feat=YV`, and KCL recovery for uniquely identifiable PC
+injections. `runs/foundation_best_structural_v10` is the promoted artifact;
+checkpoint SHA-256 starts `213670b9`. Raw learned heads remain fallback
+diagnostics because Icomp is still around `99-101%` WAPE.
