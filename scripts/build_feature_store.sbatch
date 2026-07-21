@@ -34,6 +34,10 @@ PROJECT=/kfs2/projects/gogpt/Ebadmus
 cd "${PROJECT}/Training_new"
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+# datakit is a sibling repo on PYTHONPATH, not pip-installed. Stage 1 patches sys.path
+# itself, but `-m gridfm.featurizing` imports gridfm/__init__.py -> datakit and needs
+# this set for real.
+export PYTHONPATH="${PROJECT}:${PROJECT}/Training_new${PYTHONPATH:+:${PYTHONPATH}}"
 
 PYTHON_BIN="${PYTHON_BIN:-${PROJECT}/.venv-train/bin/python}"
 SRC="${SRC:-${PROJECT}/training_data}"
@@ -50,7 +54,12 @@ WORKERS="${WORKERS%%(*}"
 
 [[ -d "${SRC}" ]] || { echo "no source corpus: ${SRC}" >&2; exit 2; }
 mkdir -p "${OUT}"
-SCALER="${OUT}/feature_scaler.json"
+# The scaler is fitted into a staging dir, not into OUT: stage 2 installs it into the
+# store itself, and fitting straight into OUT makes that copy a self-copy (SameFileError).
+# The staging dir doubles as the run's cache_dir.
+WORKDIR="${WORKDIR:-${PROJECT}/Training_new/cache/$(basename "${OUT}")}"
+mkdir -p "${WORKDIR}"
+SCALER="${WORKDIR}/feature_scaler.json"
 
 # A bare feeder count is the cheapest proof the source is really there before we
 # spend a node on it.
