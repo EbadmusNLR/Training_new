@@ -8,7 +8,7 @@
 - Raw learned heads still fail Icomp around `99-101%`; seed17 is fallback/diagnostic only.
 - Promoted artifact: `runs/foundation_best_structural_v10`, checkpoint SHA-256 `213670b9...18c0c4`.
 - Speed work: exact-cache fingerprint stabilized; KCL decode vectorized (`852x` microbench); sparse PF/multi-task eval still next.
-- `build_synthetic_corpus` is the canonical synthetic generator; cleanup commit `3e458d8`, scratch now belongs in `/tmp`/logs/data, not source.
+- `build_synthetic_corpus` is canonical; analysis writes to package `analysis/` (`b3eff2b`), scratch belongs in `/tmp`/logs/data.
 - Commit each validated major change; preserve unrelated edits and keep generated artifacts/checkpoints/logs out of Git.
 ## Next actions
 1. Build one-process multi-task evaluation so gates do not reload the model/dataset per lens.
