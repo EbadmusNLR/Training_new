@@ -1,0 +1,87 @@
+#!/bin/bash
+#SBATCH --job-name=tn_featstore
+#SBATCH --account=gogpt
+#SBATCH --partition=short
+#SBATCH --nodes=1
+#SBATCH --exclusive
+#SBATCH --mem=0
+#SBATCH --time=04:00:00
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/featstore-%j.out
+#
+# Rebuild a feature-space scenario corpus from the pu scenario stores.
+#
+# This exists because the v4..v8 feature stores were built by ad-hoc commands that
+# nothing recorded, so deleting them destroyed the only description of how to make
+# them again. Every future store comes from this file.
+#
+# Three stages, fail-closed:
+#   1. fit    -- one leakage-safe global scaler from TRAIN-split feeders only
+#                (train membership comes from gridfm/topology_fingerprints.json,
+#                 so structurally identical feeders can never straddle the split)
+#   2. featurize -- rewrite pu stores into feature-space stores under OUT
+#   3. gate   -- re-derive the conversion from the pu source and require an exact match
+#
+# The scaler is written into OUT, never into the source corpus: training_data/ is
+# read-only input and must stay that way.
+#
+# Usage:
+#   sbatch scripts/build_feature_store.sbatch                    # full v8 store
+#   SMOKE=1 sbatch scripts/build_feature_store.sbatch            # 8 feeders/corpus
+#   OUT=/path/to/store sbatch scripts/build_feature_store.sbatch
+set -euo pipefail
+
+PROJECT=/kfs2/projects/gogpt/Ebadmus
+cd "${PROJECT}/Training_new"
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+
+PYTHON_BIN="${PYTHON_BIN:-${PROJECT}/.venv-train/bin/python}"
+SRC="${SRC:-${PROJECT}/training_data}"
+SMOKE="${SMOKE:-0}"
+if [[ "${SMOKE}" == "1" ]]; then
+    OUT="${OUT:-${PROJECT}/training_data_foundation_smoke}"
+    PER_CORPUS="${PER_CORPUS:-8}"
+else
+    OUT="${OUT:-${PROJECT}/training_data_foundation_v8_fractional}"
+    PER_CORPUS="${PER_CORPUS:-0}"
+fi
+WORKERS="${WORKERS:-${SLURM_CPUS_ON_NODE:-$(nproc)}}"
+WORKERS="${WORKERS%%(*}"
+
+[[ -d "${SRC}" ]] || { echo "no source corpus: ${SRC}" >&2; exit 2; }
+mkdir -p "${OUT}"
+SCALER="${OUT}/feature_scaler.json"
+
+# A bare feeder count is the cheapest proof the source is really there before we
+# spend a node on it.
+echo "[$(date '+%F %T')] src=${SRC} out=${OUT} workers=${WORKERS} smoke=${SMOKE}"
+
+LIMIT_ARGS=()
+if [[ "${PER_CORPUS}" != "0" ]]; then
+    LIMIT_ARGS=(--limit-per-corpus "${PER_CORPUS}")
+fi
+
+echo "[$(date '+%F %T')] stage 1/3: fit leakage-safe scaler"
+"${PYTHON_BIN}" -u scripts/fit_scenario_scaler.py \
+    --root "${SRC}" \
+    --out "${SCALER}" \
+    --workers "${WORKERS}" \
+    "${LIMIT_ARGS[@]}"
+
+echo "[$(date '+%F %T')] stage 2/3: rewrite pu stores into feature space"
+"${PYTHON_BIN}" -u -m gridfm.featurizing scenario-stores \
+    --root "${SRC}" \
+    --scaler "${SCALER}" \
+    --out-root "${OUT}" \
+    --unified-line-scale \
+    --workers "${WORKERS}" \
+    "${LIMIT_ARGS[@]}"
+
+echo "[$(date '+%F %T')] stage 3/3: exact-conversion + exact-Y contract gate"
+"${PYTHON_BIN}" -u scripts/check_feature_store_contract.py \
+    --root "${OUT}" \
+    --source-root "${SRC}" \
+    --limit-per-corpus 2 \
+    --workers 8
+
+echo "[$(date '+%F %T')] feature store COMPLETE: ${OUT}"
