@@ -146,7 +146,14 @@ def main() -> int:
     cfg["data"]["exact_metadata_keep_pu"] = bool(
         args.exact_pf_ceiling or args.structural_safe
     )
-    bundle = build_strict_datasets(cfg["data"], cfg["mask"], int(cfg["train"]["seed"]))
+    # Decode exact metadata only for the split being scored. All four splits share
+    # one caches list, so the default decodes every feeder in the slice and made a
+    # 90-feeder unseen evaluation need the same memory as training (it OOM-killed
+    # at 110G on a 900-feeder window).
+    bundle = build_strict_datasets(
+        cfg["data"], cfg["mask"], int(cfg["train"]["seed"]),
+        metadata_splits=(args.split,),
+    )
     dataset = getattr(bundle, args.split)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = None

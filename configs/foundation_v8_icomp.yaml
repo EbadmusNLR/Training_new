@@ -12,14 +12,14 @@ data:
   exact_metadata_workers: 6
   prefetch_factor: 2
   feature_min_std: 1.0e-8
+# Pure injection diagnostic. random_safe already reaches this mode on 20% of
+# samples, so the baseline is not Icomp-blind -- the question this arm answers is
+# whether 5x the injection exposure moves the 94.6% Icomp WAPE at all, or whether
+# the target is unlearnable from one snapshot regardless of how often it is shown.
+# Rates are omitted deliberately: injection mode hardcodes its own (see
+# validate_mask_cfg); listing them here would only look like control.
 mask:
-  mixture: {random_safe: 1.0}
-  p_voltage: 0.3
-  p_current: 0.15
-  p_icomp: 0.3
-  p_admittance: 0.0
-  p_terminal: 0.0
-  p_component: 0.0
+  mixture: {injection: 1.0}
 model:
   hidden: 384
   steps: 12

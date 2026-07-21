@@ -29,8 +29,18 @@ def _names(dataset) -> set[str]:
     }
 
 
-def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetBundle:
-    """Build feeder-disjoint splits and reject target-derived nominal fields."""
+def build_strict_datasets(
+    data_cfg: dict, mask_cfg: dict, seed: int,
+    metadata_splits: tuple[str, ...] | None = None,
+) -> DatasetBundle:
+    """Build feeder-disjoint splits and reject target-derived nominal fields.
+
+    metadata_splits limits the exact-Y decode to the feeders those splits actually
+    use. All four datasets share one caches list, so the default decodes metadata
+    for every feeder in the slice -- which is what training wants, but means
+    scoring ~90 unseen feeders drags in all 900 and needs training-scale memory.
+    Evaluation passes its own split and pays only for that.
+    """
     data_cfg = dict(data_cfg)
     manifest = Path(__file__).with_name("topology_fingerprints.json")
     if manifest.is_file():
@@ -51,8 +61,19 @@ def build_strict_datasets(data_cfg: dict, mask_cfg: dict, seed: int) -> DatasetB
     exact_storage = bool(data_cfg.get("exact_storage_metadata", False))
     exact_keep_pu = bool(data_cfg.get("exact_metadata_keep_pu", False))
     exact_workers = int(data_cfg.get("exact_metadata_workers", 0))
+    if metadata_splits:
+        available = {"train": train, "seen": seen, "unseen": unseen, "test": test}
+        unknown = set(metadata_splits) - set(available)
+        if unknown:
+            raise ValueError(f"unknown metadata_splits: {sorted(unknown)}")
+        wanted = sorted({
+            fi for name in metadata_splits for fi, _ in available[name].items
+        })
+        decode_caches = [train.caches[i] for i in wanted]
+    else:
+        decode_caches = train.caches
     attach_exact_metadata(
-        train.caches,
+        decode_caches,
         exact_line,
         exact_transformer,
         exact_workers,

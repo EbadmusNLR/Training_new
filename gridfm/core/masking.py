@@ -25,6 +25,11 @@ Icomp is the component injection current -- the load/generation itself. pf
 mode therefore keeps it VISIBLE (p_icomp=0): "given topology + loads, solve
 PF" is well-posed; masking Icomp too made pf underdetermined (the model could
 only guess the loading level, ~10% V error compounding with depth).
+
+These p_* rates apply ONLY when cfg has no "mixture", or when the drawn mode is
+"random". Every other named mode hardcodes the rates its capability requires --
+see _MODE_HONORS_RATES and validate_mask_cfg, which warns when a config sets
+rates that its mixture can never read.
 """
 from __future__ import annotations
 
@@ -109,10 +114,18 @@ def _effective_rates(cfg: dict, rng: np.random.Generator) -> tuple[dict, str]:
     Legacy keys p_pf/p_se are accepted as pf/se.
     """
     mix = cfg.get("mixture")
-    base = {k: float(cfg[k]) for k in _RATES}
-    base["p_icomp"] = float(cfg.get("p_icomp", cfg["p_current"]))
+
+    def base_rates() -> dict:
+        # Built only on the paths that actually read the rates, so a mode-only
+        # config (mixture={injection: 1.0}) may omit keys it cannot use rather
+        # than list them and imply a control it does not have. The KeyError is
+        # kept for the paths that DO read them -- there a missing key is a typo.
+        out = {k: float(cfg[k]) for k in _RATES}
+        out["p_icomp"] = float(cfg.get("p_icomp", cfg["p_current"]))
+        return out
+
     if not mix:
-        return base, "base"
+        return base_rates(), "base"
     modes = {k.removeprefix("p_"): float(v) for k, v in mix.items()}
     u, acc = rng.random(), 0.0
     for mode, p in modes.items():
@@ -165,7 +178,7 @@ def _effective_rates(cfg: dict, rng: np.random.Generator) -> tuple[dict, str]:
             return dict(_OFF), sub
         if mode == "random":
             jitter = rng.uniform(0.5, 1.5)
-            return {k: min(1.0, v * jitter) for k, v in base.items()}, mode
+            return {k: min(1.0, v * jitter) for k, v in base_rates().items()}, mode
         if mode == "sysid":
             # parameter/system identification: full state visible, reconstruct
             # component parameters — Y AND the injection Icomp — jointly.
@@ -179,7 +192,46 @@ def _effective_rates(cfg: dict, rng: np.random.Generator) -> tuple[dict, str]:
             return {**_OFF, "p_component": rng.uniform(0.2, 0.5)}, mode
         raise ValueError(f"unknown mixture mode: {mode}")
     jitter = rng.uniform(0.5, 1.5)
-    return {k: min(1.0, v * jitter) for k, v in base.items()}, "jitter"
+    return {k: min(1.0, v * jitter) for k, v in base_rates().items()}, "jitter"
+
+
+# Named modes are self-describing: each one hardcodes the rates that make its
+# capability identifiable, so the configured p_* rates are DEAD for every mode
+# but "random". That is deliberate, but it used to be silent -- a run configured
+# with p_icomp=0.3 under mixture={random_safe:1.0} trained with the exact mask
+# distribution of a p_icomp=0.0 run, and three GPU-hours went into an arm that
+# differed from its baseline only by an ignored key. validate_mask_cfg makes the
+# discard audible at dataset-build time.
+_MODE_HONORS_RATES = frozenset({"random"})
+_RATE_KEYS = ("p_voltage", "p_current", "p_icomp", "p_admittance",
+              "p_terminal", "p_component")
+
+
+def inert_rate_keys(cfg: dict) -> tuple[str, ...]:
+    """Rate keys the configured mixture can never read."""
+    mix = cfg.get("mixture")
+    if not mix:
+        return ()
+    modes = {str(k).removeprefix("p_") for k in mix}
+    if modes & _MODE_HONORS_RATES:
+        return ()
+    return tuple(k for k in _RATE_KEYS if k in cfg)
+
+
+def validate_mask_cfg(cfg: dict) -> None:
+    """Warn when configured rates cannot reach the chosen mixture modes."""
+    inert = inert_rate_keys(cfg)
+    if not inert:
+        return
+    modes = ", ".join(sorted(str(k) for k in cfg["mixture"]))
+    detail = ", ".join(f"{k}={cfg[k]}" for k in inert)
+    print(
+        f"WARNING mask config: {detail} IGNORED -- mixture modes ({modes}) set "
+        f"their own rates. Changing these keys will not change this run. Use "
+        f"mixture={{random: 1.0}} to drive the rates directly, or select the "
+        f"named mode whose capability you want (e.g. injection).",
+        flush=True,
+    )
 
 
 def apply_masks(data: HeteroData, cfg: dict, rng: np.random.Generator) -> None:

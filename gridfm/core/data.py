@@ -690,6 +690,9 @@ class ScenarioDataset(torch.utils.data.Dataset):
 
 def build_datasets(cfg: dict, mask_cfg: dict, seed: int, limit: int | None = None):
     """Returns (train, val_seen, val_unseen, test) ScenarioDatasets."""
+    from .masking import validate_mask_cfg
+
+    validate_mask_cfg(mask_cfg)
     root = Path(cfg["root"])
     feeders = discover_feeders(root)
     # Fractional diagnostics need reproducible component-family slices, not
