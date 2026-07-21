@@ -11,6 +11,8 @@
 # visible V (see gridfm/probes/noisy_se_probe.py).
 set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
 CKPT="${CKPT:-runs/dk_foundation_15261953/last.pt}"
 /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python -u gridfm/probes/noisy_se_probe.py \

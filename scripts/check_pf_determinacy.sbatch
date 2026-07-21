@@ -8,6 +8,8 @@
 #SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/determinacy-%j.out
 #SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/determinacy-%j.err
 set -uo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 R=/kfs2/projects/gogpt/Ebadmus; PY=$R/.venv/bin/python
 export PYTHONUNBUFFERED=1
 for c in dss_data minimal_component new_dss_data SMART-DS_1000; do

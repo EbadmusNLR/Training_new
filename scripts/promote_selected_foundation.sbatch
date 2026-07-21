@@ -10,6 +10,8 @@
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/foundation-promote-%j.err
 
 set -euo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 ROOT=/kfs2/projects/gogpt/Ebadmus/Training_new
 PYTHON_BIN="${PYTHON_BIN:-/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python}"
 SELECTION="${SELECTION:?set SELECTION to an unseen-only selection receipt}"

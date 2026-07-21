@@ -26,6 +26,8 @@
 set -uo pipefail
 ulimit -n 65536 2>/dev/null || true
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1
 # .venv is torch+cu130 and the node driver is 12.4 -> CUDA unavailable, silently CPU-only.
 # .venv-train is cu126, which runs on any 12.x driver (CUDA minor-version compatibility)

@@ -11,6 +11,8 @@
 # scored against the same checkpoint's V head (see gridfm/probes/direct_solve_e2e.py).
 set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
 CKPT="${CKPT:-runs/fix_lr2e4/last.pt}"
 TASKS="${TASKS:-}"    # e.g. "random pf sw80 sw50 sw20 sw0"

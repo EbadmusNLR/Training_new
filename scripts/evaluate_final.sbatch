@@ -9,6 +9,8 @@
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/slurm-%j.out
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1
 PYTHON_BIN="${PYTHON_BIN:-/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python}"
 SELECTION="${SELECTION:-runs/final_selection.json}"

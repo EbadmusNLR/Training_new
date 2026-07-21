@@ -11,5 +11,7 @@
 # the parameter-estimation corner is LINEAR when V is observable (user scenario).
 set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=32
 /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python -u gridfm/probes/y_recovery_probe.py --per-corpus 3

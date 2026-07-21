@@ -11,6 +11,8 @@
 #SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/synthetic-diversity-%j.err
 
 set -euo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 
 PROJECT=/kfs2/projects/gogpt/Ebadmus
 ROOT=${ROOT:-$PROJECT/Training_new/runs/synthetic_v2_pilot_15299610}

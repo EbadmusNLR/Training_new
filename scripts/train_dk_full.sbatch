@@ -19,6 +19,8 @@
 
 set -uo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=4
 # .venv is cu130 vs the 12.4 driver -> CPU-only. .venv-train (cu126) gets the H100s.
 PY=/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python

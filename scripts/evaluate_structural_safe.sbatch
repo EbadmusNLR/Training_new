@@ -9,6 +9,8 @@
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/structural-safe-%j.out
 
 set -euo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 ROOT=/kfs2/projects/gogpt/Ebadmus/Training_new
 PYTHON_BIN=/kfs2/projects/gogpt/Ebadmus/.venv-train/bin/python
 RUN_DIR="${RUN_DIR:?set RUN_DIR}"

@@ -9,6 +9,8 @@
 #SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/t22-fixed-pair-%j.err
 
 set -euo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 
 ROOT="/kfs2/projects/gogpt/Ebadmus"
 PY="${ROOT}/.venv/bin/python"

@@ -13,6 +13,8 @@
 #SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/valfin-%A_%a.out
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 source /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/activate
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 export CORPUS_ROOT=/kfs2/projects/gogpt/Ebadmus/training_data/${CORPUS}

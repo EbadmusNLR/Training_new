@@ -13,6 +13,8 @@
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/foundation-v5-eval-%A_%a.err
 
 set -euo pipefail
+# datakit is a sibling repo on PYTHONPATH, not pip-installed.
+export PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:/kfs2/projects/gogpt/Ebadmus/Training_new${PYTHONPATH:+:${PYTHONPATH}}
 
 ROOT=/kfs2/projects/gogpt/Ebadmus/Training_new
 TRAIN_JOB_ID="${TRAIN_JOB_ID:?set TRAIN_JOB_ID to the v5 training array ID}"
