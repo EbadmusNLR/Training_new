@@ -5,8 +5,8 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH -t 1:00:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-pair-%j.out
-#SBATCH -e /kfs2/projects/gogpt/Ebadmus/Training_new/logs/t22-fixed-pair-%j.err
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/t22-fixed-pair-%j.out
+#SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/t22-fixed-pair-%j.err
 
 set -euo pipefail
 

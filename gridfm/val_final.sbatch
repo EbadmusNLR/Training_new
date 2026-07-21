@@ -10,7 +10,7 @@
 #SBATCH --array=0-19
 #SBATCH --mem=0
 #SBATCH -t 3:00:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/valfin-%A_%a.out
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/valfin-%A_%a.out
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 source /kfs2/projects/gogpt/Ebadmus/.venv-train/bin/activate

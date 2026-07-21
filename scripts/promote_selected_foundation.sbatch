@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=00:20:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/foundation-promote-%j.out
-#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/foundation-promote-%j.err
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/foundation-promote-%j.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/foundation-promote-%j.err
 
 set -euo pipefail
 ROOT=/kfs2/projects/gogpt/Ebadmus/Training_new

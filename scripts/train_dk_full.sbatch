@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=440G
 #SBATCH --time=40:00:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_full-%j.out
-#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_full-%j.err
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/dk_full-%j.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/dk_full-%j.err
 
 # FULL foundation pretraining: all 4 H100s on the node via torchrun DDP.
 # DO NOT LAUNCH until the 3-seed gates pass their criteria (scripts/launch_gates.sh):

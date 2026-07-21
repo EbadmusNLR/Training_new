@@ -9,8 +9,8 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/foundation-v4-batch-%A_%a.out
-#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/foundation-v4-batch-%A_%a.err
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/foundation-v4-batch-%A_%a.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/foundation-v4-batch-%A_%a.err
 
 set -euo pipefail
 

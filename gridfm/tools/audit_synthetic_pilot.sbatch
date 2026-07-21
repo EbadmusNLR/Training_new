@@ -7,8 +7,8 @@
 #SBATCH -c 32
 #SBATCH --mem=128G
 #SBATCH -t 01:00:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/synthetic-diversity-%j.out
-#SBATCH -e /kfs2/projects/gogpt/Ebadmus/Training_new/logs/synthetic-diversity-%j.err
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/synthetic-diversity-%j.out
+#SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/synthetic-diversity-%j.err
 
 set -euo pipefail
 

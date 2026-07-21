@@ -8,8 +8,8 @@
 # WALL env sets walltime. Ask the SHORTEST honest time: short requests backfill
 # into scheduler gaps, a 4h request waits for a 4h hole. Gates run ~35 min.
 #SBATCH --time=01:00:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.out
-#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/dk_pf-%j.err
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/dk_pf-%j.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/dk_pf-%j.err
 
 # PF training over ALL FOUR corpora (stratified splits; see dk_train.py --roots).
 #
@@ -50,7 +50,7 @@ FB="${FB:-0}"
 NORM="${NORM:-1}"
 WORKERS="${WORKERS:-16}"
 OUT="${OUT:-/kfs2/projects/gogpt/Ebadmus/Training_new/runs/dk_pf_probe_${SLURM_JOB_ID}}"
-mkdir -p "$OUT" /kfs2/projects/gogpt/Ebadmus/Training_new/logs
+mkdir -p "$OUT" /kfs2/projects/gogpt/Ebadmus/logs
 
 echo "[$(date '+%F %T')] host=$(hostname) gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
 "$PY" -c "import torch;assert torch.cuda.is_available(), 'CUDA UNAVAILABLE -- wrong venv or driver';print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"

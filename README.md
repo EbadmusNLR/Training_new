@@ -24,7 +24,7 @@ is not the data authority.
 ```bash
 python -m unittest discover -s tests -v
 mkdir -p logs
-sbatch smoke.sbatch
+bash -n run.sbatch scripts/*.sbatch gridfm/*.sbatch gridfm/probes/*.sbatch gridfm/tools/*.sbatch
 ```
 
 Full fractional run: `sbatch run.sbatch`. The production corpus is

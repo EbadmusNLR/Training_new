@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=220G
 #SBATCH --time=04:00:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/runs/smartds_train-%j.out
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/smartds_train-%j.out
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export PYTHONUNBUFFERED=1

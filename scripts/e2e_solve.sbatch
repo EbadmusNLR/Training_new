@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=180G
 #SBATCH --time=01:00:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/e2e_solve-%j.out
-#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/e2e_solve-%j.err
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/e2e_solve-%j.out
+#SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/e2e_solve-%j.err
 # E2E: checkpoint's hidden-Icomp estimates -> ONE direct fp64 Ybus solve -> V,
 # scored against the same checkpoint's V head (see gridfm/probes/direct_solve_e2e.py).
 set -uo pipefail

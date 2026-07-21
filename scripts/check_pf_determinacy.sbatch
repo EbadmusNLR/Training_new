@@ -5,8 +5,8 @@
 #SBATCH -N 1
 #SBATCH --exclusive
 #SBATCH -t 03:30:00
-#SBATCH -o /kfs2/projects/gogpt/Ebadmus/Training_new/logs/determinacy-%j.out
-#SBATCH -e /kfs2/projects/gogpt/Ebadmus/Training_new/logs/determinacy-%j.err
+#SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/determinacy-%j.out
+#SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/determinacy-%j.err
 set -uo pipefail
 R=/kfs2/projects/gogpt/Ebadmus; PY=$R/.venv/bin/python
 export PYTHONUNBUFFERED=1

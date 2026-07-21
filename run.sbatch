@@ -5,8 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --output=slurm-%j.out
-
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/slurm-%j.out
 set -euo pipefail
 cd /kfs2/projects/gogpt/Ebadmus/Training_new
 export PYTHONUNBUFFERED=1

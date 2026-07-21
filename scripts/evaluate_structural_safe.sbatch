@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=00:30:00
-#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/Training_new/logs/structural-safe-%j.out
+#SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/structural-safe-%j.out
 
 set -euo pipefail
 ROOT=/kfs2/projects/gogpt/Ebadmus/Training_new
