@@ -24,7 +24,7 @@ mixtures=(
 icomp_weights=(5 10 10 20)
 ibus_weights=(1 1 0 1)
 i=$SLURM_ARRAY_TASK_ID
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 $PROJECT/.venv-cu124/bin/python "$ROOT/scripts/train.py" \
   --config "$ROOT/configs/foundation_v8_fractional.yaml" --scratch \

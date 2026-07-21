@@ -74,7 +74,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--physics-current", action="store_true",
-        help="diagnostic only: decode stored terminal feature I_feat=YV after voltage completion",
+        help="diagnostic only: decode the stored terminal target I_bus+Icomp=YV after voltage completion",
     )
     ap.add_argument("--voltage-refine-steps", type=int, default=0)
     ap.add_argument("--voltage-refine-damping", type=float, default=0.25)

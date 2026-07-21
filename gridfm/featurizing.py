@@ -559,7 +559,7 @@ def summarize_feature_magnitudes(payloads: list[dict[str, Any]], specs: dict[str
                     if isinstance(y_vals, list):
                         y_abs.extend(abs(float(v)) for v in y_vals)
 
-    return {"I_feat": _summary(i_abs), "Y_feat": _summary(y_abs)}
+    return {"I_bus_plus_Icomp": _summary(i_abs), "Y_feat": _summary(y_abs)}
 
 
 def summarize_feature_magnitudes_from_json_paths(json_paths: list[Path]) -> dict[str, dict[str, float]]:
@@ -638,11 +638,11 @@ def _apply_scaler(all_paths: list[Path], scaler: dict[str, Any], indent: int) ->
 
 def _print_feature_distribution_stats(json_paths: list[Path]) -> None:
     stats = summarize_feature_magnitudes_from_json_paths(json_paths)
-    i_stats = stats.get("I_feat", {})
+    i_stats = stats.get("I_bus_plus_Icomp", stats.get("I_feat", {}))
     y_stats = stats.get("Y_feat", {})
     print("Feature magnitude summary (absolute values):")
     print(
-        "  |I_feat|: "
+        "  |I_bus+Icomp|: "
         f"count={int(i_stats.get('count', 0))} "
         f"p50={i_stats.get('p50', 0.0):.6g} "
         f"p95={i_stats.get('p95', 0.0):.6g} "
@@ -730,12 +730,12 @@ def _top_feature_outliers_from_json_paths(
 def _print_top_feature_outliers(json_paths: list[Path], scaler: dict[str, Any], top_k: int = 20) -> None:
     top_i, top_y = _top_feature_outliers_from_json_paths(json_paths, scaler, top_k=top_k)
 
-    print(f"Top {top_k} largest |I_feat| entries:")
+    print(f"Top {top_k} largest |I_bus+Icomp| entries:")
     if not top_i:
         print("  <none>")
     for idx, row in enumerate(top_i, 1):
         print(
-            f"  {idx:2d}. |I_feat|={row['abs_feat']:.6g} "
+            f"  {idx:2d}. |I_bus+Icomp|={row['abs_feat']:.6g} "
             f"family={row['family']} field={row['field']} "
             f"pu={row['pu']:.6g} scale={row['scale']:.6g} file={row['file']}"
         )

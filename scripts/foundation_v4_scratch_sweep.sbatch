@@ -22,7 +22,7 @@ epochs=(24 24 24 24 36 36 36 36)
 seeds=(42 42 42 42 0 17 31 73)
 i=$SLURM_ARRAY_TASK_ID
 
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 $PROJECT/.venv-cu124/bin/python "$ROOT/scripts/train.py" \

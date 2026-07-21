@@ -25,7 +25,7 @@ def nodal_current_residual(batch, field_feat: dict) -> torch.Tensor:
 
     field_feat[store] is the model's full predicted component feature block. Its
     stored terminal feature and Icomp are completed independently, then physical
-    Ibus=I_feat-Icomp is summed. r_n = Σ_e Ibus_{e→n}, zeroed at
+    Ibus=(Ibus+Icomp)-Icomp is summed. r_n = Σ_e Ibus_{e→n}, zeroed at
     ground. Unlike Y·V this is well-conditioned (O(1)) AND differentiable in the
     predictions (dr/dIbus = 1), so it needs no detach — the network learns to
     drive it to zero. Task-agnostic: works whether V, Y, Icomp, or Ibus is the

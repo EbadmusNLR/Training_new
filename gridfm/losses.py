@@ -102,7 +102,7 @@ def physical_ibus_wape_loss(
     batch, preds, clamp: float, stores=None, min_truth_abs: float = 0.0,
     graph_mask=None,
 ):
-    """Legacy-named WAPE of stored I_feat=Ibus+Icomp in pu, not feature space."""
+    """WAPE of the stored terminal target I_bus + Icomp (= Y V) in pu, not feature space."""
     num = preds["node"].new_zeros(())
     den = preds["node"].new_zeros(())
     for store in (stores or SPECS):
@@ -180,7 +180,7 @@ def objective(batch, raw_preds, aux, cfg: dict, s_kcl: float):
         transformer_wape = physical_ibus_wape_loss(
             batch, preds, clamp, ("transformer",)
         )
-    # Physics-consistency current WAPE: decode stored I_feat = Y·V (through the
+    # Physics-consistency current WAPE: decode stored I_bus + Icomp = Y·V (through the
     # element physics) for stiff families and match truth. Unlike the free-head
     # WAPE above, the only trainable path is the node voltage, so this trains V
     # to be accurate in the direction the stiff reactor/line current depends on

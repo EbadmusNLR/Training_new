@@ -19,7 +19,7 @@ seeds=(31 42 17 73)
 i=$SLURM_ARRAY_TASK_ID
 label="all_seed${seeds[$i]}"
 
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 $PROJECT/.venv-cu124/bin/python "$ROOT/scripts/train.py" \
   --config "$ROOT/configs/foundation_v6_fractional.yaml" --scratch \

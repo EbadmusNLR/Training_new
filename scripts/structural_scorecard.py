@@ -7,8 +7,19 @@ import json
 from pathlib import Path
 
 
+# The stored terminal target is I_bus + Icomp (= Y V). Older receipts named that
+# sum "Ifeat", which read as a third physical quantity; the vocabulary is just
+# I_bus and Icomp. Accept the legacy key so historical reports stay readable.
+LEGACY_KEYS = {"Ibus_plus_Icomp_wape_pct": ("Ifeat_wape_pct", "Ibus_wape_pct")}
+
+
 def metric(report: dict, key: str) -> float:
     value = report.get(key)
+    if value is None:
+        for legacy in LEGACY_KEYS.get(key, ()):
+            if legacy in report:
+                value = report[legacy]
+                break
     if value is None:
         raise SystemExit(f"{report.get('task')}: missing {key}")
     return float(value)
@@ -29,13 +40,14 @@ def main() -> int:
         reports[task] = row
     checks = {
         "pf_V": metric(reports["pf"], "V_wape_pct"),
-        "pf_Ifeat": metric(reports["pf"], "Ifeat_wape_pct"),
+        "pf_Ibus_plus_Icomp": metric(reports["pf"], "Ibus_plus_Icomp_wape_pct"),
         "se_V": metric(reports["se_known"], "V_wape_pct"),
-        "se_Ifeat": metric(reports["se_known"], "Ifeat_wape_pct"),
+        "se_Ibus_plus_Icomp": metric(reports["se_known"], "Ibus_plus_Icomp_wape_pct"),
         "param_Y": metric(reports["param_one"], "Y_wape_pct"),
         "injection_Icomp": metric(reports["injection"], "Icomp_wape_pct"),
         "random_safe_V": metric(reports["random_safe"], "V_wape_pct"),
-        "random_safe_Ifeat": metric(reports["random_safe"], "Ifeat_wape_pct"),
+        "random_safe_Ibus_plus_Icomp": metric(
+            reports["random_safe"], "Ibus_plus_Icomp_wape_pct"),
         "random_safe_Icomp": metric(reports["random_safe"], "Icomp_wape_pct"),
         "random_safe_Y": metric(reports["random_safe"], "Y_wape_pct"),
     }

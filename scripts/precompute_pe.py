@@ -24,7 +24,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 def _one(args):
     feeder_dir, scaler = args
-    from gridfm import legacy  # noqa: F401 -- adds DG_FM_Training to sys.path
+    from gridfm import legacy  # noqa: F401 -- pulls in gridfm.core schema
     import data as D
     cache = Path(feeder_dir) / "pe_cache_v1.pt"
     if cache.is_file():

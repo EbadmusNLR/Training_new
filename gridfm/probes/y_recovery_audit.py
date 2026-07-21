@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # This audit worktree lives beside, rather than beneath, ``Training_new``.
 # Seed the canonical legacy contract path because ``gridfm.legacy`` derives its
 # root from the worktree location and imports those modules by their old names.
-sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/DG_FM_Training")
+sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 
 from core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, node_count

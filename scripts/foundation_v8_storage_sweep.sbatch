@@ -17,7 +17,7 @@ PROJECT=/kfs2/projects/gogpt/Ebadmus
 ROOT=$PROJECT/Training_new
 seeds=(31 42 17 73)
 i=$SLURM_ARRAY_TASK_ID
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 $PROJECT/.venv-cu124/bin/python "$ROOT/scripts/train.py" \
   --config "$ROOT/configs/foundation_v8_fractional.yaml" --scratch \

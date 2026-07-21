@@ -21,7 +21,7 @@ metadata=(both all all all all all)
 seeds=(31 31 17 0 73 42)
 i=$SLURM_ARRAY_TASK_ID
 
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 $PROJECT/.venv-cu124/bin/python "$ROOT/scripts/train.py" \

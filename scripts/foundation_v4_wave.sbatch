@@ -27,7 +27,7 @@ case "$label" in
   scratch_generic) extra=(--exact-metadata none --scratch --lr 1e-4) ;;
 esac
 
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 srun --ntasks=1 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

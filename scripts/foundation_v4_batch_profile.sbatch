@@ -18,7 +18,7 @@ PROJECT=/kfs2/projects/gogpt/Ebadmus
 ROOT=$PROJECT/Training_new
 batches=(4 16 24 32)
 batch=${batches[$SLURM_ARRAY_TASK_ID]}
-export PYTHONPATH="$PROJECT:$ROOT:$PROJECT/DG_FM_Training"
+export PYTHONPATH="$PROJECT:$ROOT"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 srun --ntasks=1 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

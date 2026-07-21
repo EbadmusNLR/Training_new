@@ -132,7 +132,7 @@ class DKSolver(nn.Module):
             self.slot_emb[s] = nn.Embedding(dim, hidden // 4)
             self.edge_mlp[s] = MLP(2 * hidden + hidden // 4, hidden, hidden)
             self.comp_gru[s] = nn.GRUCell(hidden, hidden)
-            self.cur_head[s] = MLP(hidden, 2 * dim, hidden, zero_last=True)  # I_feat r,i per slot
+            self.cur_head[s] = MLP(hidden, 2 * dim, hidden, zero_last=True)  # (I_bus + Icomp) r,i per slot
             # fitted global per-family scales (buffers -> saved & moved with model)
             isc = max(float(scales["I"][s]) if scales else I_SCALE, 1e-9)
             self.register_buffer(f"iscale_{s}", torch.tensor(isc))

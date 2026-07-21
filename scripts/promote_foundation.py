@@ -93,7 +93,7 @@ def main() -> int:
         "checkpoint_sha256": selected["checkpoint_sha256"],
         "selection_contract": receipt["selection_contract"],
         "unseen_checks_pct": selected["checks_pct"],
-        "physics_contract": "stored Ifeat=Ibus+Icomp=YV; physical KCL sums Ifeat-Icomp",
+        "physics_contract": "stored terminal target = I_bus + Icomp = YV; physical KCL uses I_bus = (I_bus+Icomp) - Icomp",
         "structural_checks_pct": structural["checks_pct"] if structural else None,
         "inference": {
             "fp64_power_flow_solver": structural is not None,
