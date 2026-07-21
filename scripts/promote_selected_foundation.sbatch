@@ -3,8 +3,10 @@
 #SBATCH --account=gogpt
 #SBATCH --partition=debug-gpu
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
+# Kestrel allocates whole nodes; a partial --mem just caps you below the node's real
+# memory (gpu-h100s = 360G) and OOMs. Take the node.
+#SBATCH --exclusive
+#SBATCH --mem=0
 #SBATCH --time=00:20:00
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/foundation-promote-%j.out
 #SBATCH --error=/kfs2/projects/gogpt/Ebadmus/logs/foundation-promote-%j.err

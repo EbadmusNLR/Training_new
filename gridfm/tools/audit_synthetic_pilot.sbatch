@@ -5,7 +5,10 @@
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -c 32
-#SBATCH --mem=128G
+# Kestrel allocates whole nodes; a partial --mem just caps you below the node's real
+# memory (gpu-h100s = 360G) and OOMs. Take the node.
+#SBATCH --exclusive
+#SBATCH --mem=0
 #SBATCH -t 01:00:00
 #SBATCH -o /kfs2/projects/gogpt/Ebadmus/logs/synthetic-diversity-%j.out
 #SBATCH -e /kfs2/projects/gogpt/Ebadmus/logs/synthetic-diversity-%j.err

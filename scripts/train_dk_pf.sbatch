@@ -3,8 +3,10 @@
 #SBATCH --account=gogpt
 #SBATCH --partition=gpu-h100s
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=220G
+# Kestrel allocates whole nodes; a partial --mem just caps you below the node's real
+# memory (gpu-h100s = 360G) and OOMs. Take the node.
+#SBATCH --exclusive
+#SBATCH --mem=0
 # WALL env sets walltime. Ask the SHORTEST honest time: short requests backfill
 # into scheduler gaps, a 4h request waits for a 4h hole. Gates run ~35 min.
 #SBATCH --time=01:00:00

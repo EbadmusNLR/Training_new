@@ -3,8 +3,10 @@
 #SBATCH --account=gogpt
 #SBATCH --partition=short
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+# Kestrel allocates whole nodes; a partial --mem just caps you below the node's real
+# memory (gpu-h100s = 360G) and OOMs. Take the node.
+#SBATCH --exclusive
+#SBATCH --mem=0
 #SBATCH --time=01:00:00
 #SBATCH --output=det2f-%j.out
 
