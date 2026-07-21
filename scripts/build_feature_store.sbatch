@@ -86,11 +86,16 @@ echo "[$(date '+%F %T')] stage 2/3: rewrite pu stores into feature space"
     --workers "${WORKERS}" \
     "${LIMIT_ARGS[@]}"
 
+# The gate checks EVERY feeder by default. A sampled gate is worse than useless here:
+# it demands all nine exact families decode a row, but rare families are concentrated in
+# a handful of feeders (in dss_data, generator lives in 3 of 77, storage in 4), so a small
+# sample reports "no rows were decoded" for data that is entirely correct. Per-feeder
+# exact decode is cached on disk, so gating the whole corpus is affordable.
 echo "[$(date '+%F %T')] stage 3/3: exact-conversion + exact-Y contract gate"
 "${PYTHON_BIN}" -u scripts/check_feature_store_contract.py \
     --root "${OUT}" \
     --source-root "${SRC}" \
-    --limit-per-corpus 2 \
-    --workers 8
+    --limit "${GATE_LIMIT:-1000000}" \
+    --workers "${WORKERS}"
 
 echo "[$(date '+%F %T')] feature store COMPLETE: ${OUT}"

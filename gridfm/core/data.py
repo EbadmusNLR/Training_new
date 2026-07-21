@@ -679,7 +679,7 @@ class ScenarioDataset(torch.utils.data.Dataset):
         return len(self.items)
 
     def __getitem__(self, idx: int) -> HeteroData:
-        from masking import apply_masks
+        from .masking import apply_masks
 
         fi, variant = self.items[idx]
         data = self.caches[fi].sample(variant)
