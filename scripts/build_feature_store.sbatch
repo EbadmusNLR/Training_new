@@ -43,8 +43,12 @@ PYTHON_BIN="${PYTHON_BIN:-${PROJECT}/.venv-train/bin/python}"
 SRC="${SRC:-${PROJECT}/training_data}"
 SMOKE="${SMOKE:-0}"
 if [[ "${SMOKE}" == "1" ]]; then
-    OUT="${OUT:-${PROJECT}/training_data_foundation_smoke}"
+    # Smoke output goes under scratch/ and deletes itself on success, so a throwaway
+    # store never survives next to the real corpora. On failure it is kept and its path
+    # printed, because that is when you need to look inside it.
+    OUT="${OUT:-${PROJECT}/Training_new/scratch/featstore_smoke_${SLURM_JOB_ID:-$$}}"
     PER_CORPUS="${PER_CORPUS:-8}"
+    trap 'rc=$?; if [[ $rc -eq 0 ]]; then rm -rf "${OUT}" "${WORKDIR}"; echo "[smoke] cleaned up ${OUT}"; else echo "[smoke] FAILED (rc=$rc); kept for inspection: ${OUT}" >&2; fi' EXIT
 else
     OUT="${OUT:-${PROJECT}/training_data_foundation_v8_fractional}"
     PER_CORPUS="${PER_CORPUS:-0}"
