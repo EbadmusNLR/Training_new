@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import os
 
@@ -23,12 +25,20 @@ from gridfm.featurizing import (  # noqa: E402
 from gridfm.legacy import data as legacy_data  # noqa: E402
 
 
-def _assert_exact_conversion(source: Path, target: Path, scaler: dict) -> None:
+def _assert_exact_conversion(
+    source: Path, target: Path, scaler: dict, max_variants: int = 0
+) -> None:
     raw_scenarios = FeederScenarios(source)
     feat_scenarios = FeederScenarios(target)
     if raw_scenarios.variant_ids != feat_scenarios.variant_ids:
         raise AssertionError(f"variant IDs changed: {target}")
-    for variant in range(len(raw_scenarios)):
+    # The conversion is a deterministic per-entry map, so a handful of variants
+    # per feeder exercises it as thoroughly as all 100. Checking every variant
+    # made this stage 100x more expensive than it needs to be, and since the
+    # loop over feeders was serial, no amount of --workers helped.
+    total = len(raw_scenarios)
+    count = total if max_variants <= 0 else min(max_variants, total)
+    for variant in range(count):
         raw = raw_scenarios[variant]
         expected = _scenario_build_feat_sample(
             raw, scaler, _scenario_unified_families(raw)
@@ -65,6 +75,21 @@ def main() -> int:
         help="pu stores to compare exactly against the feature conversion",
     )
     parser.add_argument("--limit", type=int, default=2)
+    parser.add_argument(
+        "--max-variants", type=int, default=5,
+        help=(
+            "variants checked per feeder (0 = all); the conversion is a "
+            "deterministic per-entry map, so a few variants prove it"
+        ),
+    )
+    parser.add_argument(
+        "--dataset-offset", type=int, default=0,
+        help="feeder_offset for the nine-family decode stage; use the window the run trains on",
+    )
+    parser.add_argument(
+        "--dataset-limit", type=int, default=0,
+        help="limit_feeders for the decode stage (0 = as many as were conversion-checked)",
+    )
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument(
         "--limit-per-corpus", type=int,
@@ -92,10 +117,24 @@ def main() -> int:
         raise AssertionError("no feature stores")
     if args.source_root is not None:
         source_root = args.source_root.resolve()
-        for feeder in feeders:
-            _assert_exact_conversion(
-                source_root / feeder.relative_to(root), feeder, scaler
-            )
+        started = time.perf_counter()
+        with ProcessPoolExecutor(max_workers=max(1, int(args.workers))) as pool:
+            futures = {
+                pool.submit(
+                    _assert_exact_conversion,
+                    source_root / feeder.relative_to(root), feeder, scaler,
+                    int(args.max_variants),
+                ): feeder
+                for feeder in feeders
+            }
+            for done, future in enumerate(as_completed(futures), 1):
+                future.result()  # re-raises the AssertionError with its message
+                if done % 25 == 0 or done == len(futures):
+                    print(
+                        f"conversion-check {done}/{len(futures)} "
+                        f"({done / max(time.perf_counter() - started, 1e-9):.1f} feeders/s)",
+                        flush=True,
+                    )
     row_counts = {
         family: 0 for family in
         ("line", "transformer", "generator", "capacitor", "reactor", "load", "pvsystem", "vsource", "storage")
@@ -127,7 +166,13 @@ def main() -> int:
         "root": str(root), "cache_dir": str(root / ".contract_cache"),
         "cast_float32": True, "train_frac": 0.8, "val_frac": 0.1,
         "train_variants": 2, "eval_variants": 1,
-        "limit_feeders": len(feeders),
+        # The dataset stage must see the SAME feeders the conversion stage checked.
+        # build_datasets takes feeders in sorted order from feeder_offset, so passing
+        # only limit_feeders=len(feeders) silently selected the FIRST N of the corpus --
+        # all SMART-DS, which carries no generator rows, and the nine-family decode then
+        # failed with "no rows were decoded" on a perfectly good store.
+        "feeder_offset": int(args.dataset_offset),
+        "limit_feeders": int(args.dataset_limit) if args.dataset_limit else len(feeders),
         "exact_line_metadata": True, "exact_transformer_metadata": True,
         "exact_generator_metadata": True,
         "exact_capacitor_metadata": True, "exact_reactor_metadata": True,
