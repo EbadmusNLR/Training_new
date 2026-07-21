@@ -1,5 +1,5 @@
 import sys, time, glob, os, json, torch, numpy as np
-sys.path.insert(0,"/kfs2/projects/gogpt/Ebadmus/DG_FM_Training")
+sys.path.insert(0,"/kfs2/projects/gogpt/Ebadmus/Training_new")
 import data as D
 
 # 1) SMALL feeder: sparse-vs-dense equivalence by forcing both paths

@@ -111,11 +111,8 @@ def init_wandb(cfg: dict, out: Path):
     wc = cfg.get("wandb", {})
     if not wc.get("enabled", False):
         return None
-    # wandb key: prefer this repo's .env; fall back to the legacy location only
-    # if it happens to exist (DG_FM_Training is no longer a dependency).
+    # wandb key from this repo's own .env (Training_new is self-contained).
     env_path = ROOT / ".env"
-    if not env_path.is_file():
-        env_path = ROOT.parent / "DG_FM_Training" / ".env"
     if "WANDB_API_KEY" not in os.environ and env_path.is_file():
         for line in env_path.read_text().splitlines():
             key, sep, value = line.partition("=")

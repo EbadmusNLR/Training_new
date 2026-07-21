@@ -13,7 +13,7 @@ from torch_geometric.data import Batch
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT.parent
-sys.path[:0] = [str(ROOT), str(PROJECT), str(PROJECT / "DG_FM_Training")]
+sys.path[:0] = [str(ROOT), str(PROJECT)]
 
 from gridfm.data import build_strict_datasets  # noqa: E402
 from datakit.core.scenario_store import FeederScenarios  # noqa: E402

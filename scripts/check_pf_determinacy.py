@@ -14,7 +14,7 @@ such a corpus produces an architecture mystery with a data cause.
 
 This is not hypothetical: the previous effort measured ~16% determinacy before export
 fixes and ~96-98% after, and its real SMART-DS corpus sat at effectively 0% with the
-grounding/neutral export named as the blocker (DG_FM_Training/memory.md). SMART-DS is 95%
+grounding/neutral export named as the blocker (see historical memory notes). SMART-DS is 95%
 of this corpus by node count, so its determinacy decides whether PF training is viable at
 all.
 

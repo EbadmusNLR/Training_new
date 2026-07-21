@@ -19,7 +19,7 @@ Usage (sbatch a CPU node; ~2000 feeders):
     python scripts/generate_training_data/reencode_corpus.py \
         --src  ../training_data/minimal_component_ifields \
         --out  ../training_data/minimal_component_v2 \
-        --flags /kfs2/projects/gogpt/Ebadmus/DG_FM_Training/cache/line_triplex.pt
+        --flags /kfs2/projects/gogpt/Ebadmus/Training_new/cache/line_triplex.pt
 """
 from __future__ import annotations
 

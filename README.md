@@ -15,21 +15,25 @@ The non-negotiable inference contract is:
 
 The current path is the datakit-backed four-array GridFM: datakit owns the source
 export and device-definition metadata, while Training_new owns strict splits,
-exact metadata integration, learned heads, and evaluation. The legacy
-`DG_FM_Training` bridge is still used only for the older strict loader/helpers; it
-is not the data authority.
+exact metadata integration, learned heads, and evaluation. Training_new is
+self-contained: the corpus schema, masking and physics helpers live in
+`gridfm/core/` (re-exported via `gridfm.legacy` for the existing import sites),
+so nothing depends on the old `DG_FM_Training` tree any more.
 
 ## Quick gates
 
 ```bash
-python -m unittest discover -s tests -v
+PYTHONPATH=/kfs2/projects/gogpt/Ebadmus:$PWD python -m unittest discover -s tests -v
 mkdir -p logs
+# (datakit is a sibling repo on PYTHONPATH, not pip-installed)
 bash -n run.sbatch scripts/*.sbatch gridfm/*.sbatch gridfm/probes/*.sbatch gridfm/tools/*.sbatch
 ```
 
-Full fractional run: `sbatch run.sbatch`. The production corpus is
-`minimal_component_det2f`; its exact-current re-encoding and clean-validator evidence are
-recorded in `experiments.md`.
+Full fractional run: `sbatch run.sbatch` (GPU; pass a config name, e.g.
+`sbatch run.sbatch foundation_v8_fractional`, which is also the default). The feature
+corpus is built from `training_data/` into `training_data_foundation_v8_fractional/`;
+the nine-family exact-Y decode and clean-validator evidence are recorded in
+`training_experiments.md` (T88-T94).
 
 Evaluate every identifiable task plus the explicit all-field stress mask, then select only
 from unseen-topology scorecards:
