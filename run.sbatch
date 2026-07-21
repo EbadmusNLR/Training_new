@@ -3,8 +3,8 @@
 #SBATCH --account=gogpt
 #SBATCH --partition=gpu-h100s
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --exclusive
+#SBATCH --mem=0
 #SBATCH --time=04:00:00
 #SBATCH --output=/kfs2/projects/gogpt/Ebadmus/logs/slurm-%j.out
 # THE training launcher. Consolidated from the old run.sbatch + train_smartds.sbatch,
