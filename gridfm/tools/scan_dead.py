@@ -16,7 +16,7 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 
 
 def one(path):
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents
     name = os.path.basename(os.path.dirname(path))
     try:

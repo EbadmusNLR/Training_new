@@ -23,7 +23,7 @@ FAMILIES = ("load", "pvsystem", "storage", "capacitor", "generator", "line", "tr
 
 def one(args):
     path, max_var = args
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
     from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, SHUNT_STORES,
                                 AMBIG_STORES)

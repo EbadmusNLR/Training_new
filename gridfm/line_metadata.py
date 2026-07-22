@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from datakit.core.passive_metadata import decode_line_physics_pu
+from datakit.core.physics_metadata import decode_line_physics_pu
 
 
 def _line_yprim(decoded: dict[str, list[float]]) -> torch.Tensor:

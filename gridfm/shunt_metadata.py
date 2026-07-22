@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from datakit.core.shunt_metadata import (
+from datakit.core.physics_metadata import (
     decode_capacitor_physics_si,
     decode_reactor_physics_si,
     decode_shunt_physics_pu,

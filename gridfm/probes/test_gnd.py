@@ -12,7 +12,7 @@ sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
 
 def one(path):
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import store_size, stored_currents
     from gridfm.dk_tree import _series_edges, classify_series, TREE_STORES, AMBIG_STORES
     c = Counter()

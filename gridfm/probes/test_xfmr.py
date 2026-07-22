@@ -6,7 +6,7 @@ stored primary. No stiff Y@V, no per-type branching."""
 import glob, os, sys
 import numpy as np
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from gridfm.dk_physics import store_size, stored_currents
 import torch

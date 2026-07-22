@@ -27,7 +27,7 @@ import torch
 
 import sys
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
-from core.scenario_store import FeederScenarios  # noqa: E402
+from Datakit.core.scenario_store import FeederScenarios  # noqa: E402
 
 from .dk_physics import FC, STORES, store_size, node_count, terminal_slot, line_yprim  # noqa: E402
 

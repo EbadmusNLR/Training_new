@@ -13,7 +13,7 @@ CORPUS = os.environ.get("CORPUS", "new_dss_data")
 TD = f"/kfs2/projects/gogpt/Ebadmus/training_data/{CORPUS}"
 
 def one(path):
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
     from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, SHUNT_STORES,
                                 AMBIG_STORES, UnsupportedNetwork)

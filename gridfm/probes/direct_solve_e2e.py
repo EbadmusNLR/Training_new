@@ -20,7 +20,7 @@ import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new/scripts")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, node_count, terminal_slot
 from gridfm.dk_data import (DKFeeder, DKDataset, make_dk_collate, discover_feeders,
                             split_feeders)

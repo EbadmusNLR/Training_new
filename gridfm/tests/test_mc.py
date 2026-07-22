@@ -10,7 +10,7 @@ FAM = ("load","generator","pvsystem","storage","capacitor","line","reactor","tra
 
 def one(a):
     path, mv = a
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
     from gridfm.dk_tree import reconstruct_full, build_recon_ctx, SHUNT_STORES, AMBIG_STORES
     name = os.path.basename(os.path.dirname(path))

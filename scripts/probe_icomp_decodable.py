@@ -23,7 +23,7 @@ PROJECT = ROOT.parent
 sys.path[:0] = [str(ROOT), str(PROJECT)]
 
 from datakit.core.scenario_store import FeederScenarios  # noqa: E402
-from datakit.core import pc_metadata as pc  # noqa: E402
+from datakit.core import physics_metadata as pc  # noqa: E402
 
 FEATURES = {
     "load": pc.LOAD_PHYSICS_FEATURES,

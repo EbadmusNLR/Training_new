@@ -16,7 +16,7 @@ TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
 
 
 def one(path):
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import store_size
     from gridfm.dk_tree import build_xfmr_system
     name = os.path.basename(os.path.dirname(path))

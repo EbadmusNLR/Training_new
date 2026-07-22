@@ -3,7 +3,7 @@ import glob, os, sys
 import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
 from gridfm.dk_tree import reconstruct_full, build_recon_ctx, SHUNT_STORES, AMBIG_STORES
 TD = os.path.join("/kfs2/projects/gogpt/Ebadmus/training_data", os.environ.get("CORPUS","dss_data"))

@@ -9,7 +9,7 @@ Also answers: is the residual fp32, or unreconstructed ground-touching conductor
 import glob, os, sys, random
 import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
 from gridfm.dk_tree import reconstruct_full, _series_edges, SHUNT_STORES, SERIES_STORES

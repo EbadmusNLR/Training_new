@@ -1,6 +1,6 @@
 import glob, os, sys, time
 sys.path.insert(0,"/kfs2/projects/gogpt/Ebadmus/datakit"); sys.path.insert(0,"/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_tree import build_recon_ctx
 TD="/kfs2/projects/gogpt/Ebadmus/training_data"
 for corpus in ("SMART-DS_1000","minimal_component"):

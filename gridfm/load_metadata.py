@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from datakit.core.pc_metadata import decode_load_physics_pu
+from datakit.core.physics_metadata import decode_load_physics_pu
 
 
 def decode_load_metadata(store) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

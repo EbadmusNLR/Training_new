@@ -6,7 +6,7 @@ node voltages / stored |I| / load count, never on the score or a name match.
 import glob, json, os, re, shutil, sys, torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, store_size, stored_currents
 ROOT = "/kfs2/projects/gogpt/Ebadmus"
 EXC = f"{ROOT}/data/excluded"

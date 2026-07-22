@@ -14,7 +14,7 @@ import numpy as np
 import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 
 TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
 

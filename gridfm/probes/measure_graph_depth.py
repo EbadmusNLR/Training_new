@@ -26,7 +26,7 @@ import numpy as np
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, store_size, node_count
 from gridfm.dk_tree import build_recon_ctx
 

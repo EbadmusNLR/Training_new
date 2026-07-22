@@ -23,7 +23,7 @@ FLOOR = 1e-9          # |I| below this is solver noise, not a current
 
 def one(a):
     path, nv = a
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, store_size, stored_currents, element_currents
     from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, classify_series,
                                 SHUNT_STORES, AMBIG_STORES)

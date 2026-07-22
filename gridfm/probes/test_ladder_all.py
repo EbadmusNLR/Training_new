@@ -25,7 +25,7 @@ def one(args):
     import scipy.sparse as sp
     import scipy.sparse.linalg as spla
     import torch
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     from gridfm.dk_physics import STORES, FC, store_size, _y_full, terminal_slot, node_count
     name = os.path.basename(os.path.dirname(path))
 

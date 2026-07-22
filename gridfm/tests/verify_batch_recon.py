@@ -10,7 +10,7 @@ import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from torch_geometric.data import Batch
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import (STORES, store_size, stored_currents, element_currents,
                                node_count, ensure_batch_schema, FC)
 from gridfm.dk_tree import (reconstruct_full, build_recon_ctx, batch_recon_ctx,

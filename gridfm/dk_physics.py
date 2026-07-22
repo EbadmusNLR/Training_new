@@ -230,7 +230,7 @@ def nodal_kcl_residual(data, per_store_I: dict) -> torch.Tensor:
 if __name__ == "__main__":
     import sys, glob, os
     sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
 
     fs = sorted(glob.glob("/kfs2/projects/gogpt/Ebadmus/training_data/SMART-DS_1000/*/static.pt"),
                 key=os.path.getsize)

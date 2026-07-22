@@ -6,7 +6,7 @@ import glob, os, sys
 from collections import Counter
 import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 from gridfm.dk_physics import STORES, FC, store_size
 from gridfm.dk_tree import _slot_node_map, check_assumptions

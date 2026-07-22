@@ -20,7 +20,7 @@ TD = "/kfs2/projects/gogpt/Ebadmus/training_data"
 
 def one(args):
     path, nv = args
-    from core.scenario_store import FeederScenarios
+    from Datakit.core.scenario_store import FeederScenarios
     name = os.path.basename(os.path.dirname(path))
     try:
         fs = FeederScenarios(os.path.dirname(path))

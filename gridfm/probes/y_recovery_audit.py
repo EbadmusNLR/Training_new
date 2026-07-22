@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # root from the worktree location and imports those modules by their old names.
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
 
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, node_count
 from gridfm.probes.y_recovery_probe import elem_edges, terminal_currents_all
 from gridfm.tests.test_ladder import build_ybus, _y_full

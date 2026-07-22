@@ -8,7 +8,7 @@ transformer and needs its impedance.
 import glob, os, sys
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_tree import (_series_edges, _slack_xfmrsec_roots, _tree_from_edges,
                             TREE_STORES, AMBIG_STORES, classify_series)
 TD = "/kfs2/projects/gogpt/Ebadmus/training_data/dss_data"

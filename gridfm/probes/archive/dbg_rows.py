@@ -9,7 +9,7 @@ import numpy as np
 import torch
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/datakit")
 sys.path.insert(0, "/kfs2/projects/gogpt/Ebadmus/Training_new")
-from core.scenario_store import FeederScenarios
+from Datakit.core.scenario_store import FeederScenarios
 from gridfm.dk_physics import STORES, FC, store_size, stored_currents, element_currents
 from gridfm.dk_tree import (build_xfmr_system, _full_residual, _inj_index,
                             SHUNT_STORES, AMBIG_STORES)
